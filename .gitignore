@@ -7,3 +7,4 @@ bcachefs
 tags
 cscope*
 bcachefs-tools
+fragmentation-analyze
