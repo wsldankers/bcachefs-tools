@@ -792,27 +792,30 @@ int bchu_data(struct bchfs_handle fs, struct bch_ioctl_data cmd)
 	int progress_fd = xioctl(fs.ioctl_fd, BCH_IOCTL_DATA, &cmd);
 
 	while (1) {
-		struct bch_ioctl_data_progress p;
+		struct bch_ioctl_data_event e;
 
-		if (read(progress_fd, &p, sizeof(p)) != sizeof(p))
-			die("error reading from progress fd");
+		if (read(progress_fd, &e, sizeof(e)) != sizeof(e))
+			die("error reading from progress fd %m");
 
-		if (p.data_type == U8_MAX)
+		if (e.type)
+			continue;
+
+		if (e.p.data_type == U8_MAX)
 			break;
 
 		printf("\33[2K\r");
 
 		printf("%llu%% complete: current position %s",
-		       p.sectors_done * 100 / p.sectors_total,
-		       bch2_data_types[p.data_type]);
+		       e.p.sectors_done * 100 / e.p.sectors_total,
+		       bch2_data_types[e.p.data_type]);
 
-		switch (p.data_type) {
+		switch (e.p.data_type) {
 		case BCH_DATA_BTREE:
 		case BCH_DATA_USER:
 			printf(" %s:%llu:%llu",
-			       bch2_btree_ids[p.btree_id],
-			       p.pos.inode,
-			       p.pos.offset);
+			       bch2_btree_ids[e.p.btree_id],
+			       e.p.pos.inode,
+			       e.p.pos.offset);
 		}
 
 		sleep(1);
