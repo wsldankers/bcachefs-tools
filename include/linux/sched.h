@@ -146,6 +146,7 @@ static inline struct timespec current_kernel_time(void)
 	return ts;
 }
 
+#define current_kernel_time64()	current_kernel_time()
 #define CURRENT_TIME		(current_kernel_time())
 
 #endif /* __TOOLS_LINUX_SCHED_H */

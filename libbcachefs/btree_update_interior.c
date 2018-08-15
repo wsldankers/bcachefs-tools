@@ -34,7 +34,7 @@ static void btree_node_interior_verify(struct btree *b)
 
 	BUG_ON(!b->level);
 
-	bch2_btree_node_iter_init(&iter, b, b->key.k.p, false, false);
+	bch2_btree_node_iter_init(&iter, b, b->key.k.p, false);
 #if 1
 	BUG_ON(!(k = bch2_btree_node_iter_peek(&iter, b)) ||
 	       bkey_cmp_left_packed(b, k, &b->key.k.p));
@@ -183,7 +183,8 @@ found:
 	 */
 	replicas = bch2_extent_nr_dirty_ptrs(k);
 	if (replicas)
-		stats->s[replicas - 1].data[S_META] -= c->opts.btree_node_size;
+		stats->replicas[replicas - 1].data[BCH_DATA_BTREE] -=
+			c->opts.btree_node_size * replicas;
 
 	/*
 	 * We're dropping @k from the btree, but it's still live until the
@@ -210,7 +211,7 @@ found:
 		struct bch_fs_usage tmp = { 0 };
 
 		bch2_mark_key(c, bkey_i_to_s_c(&d->key),
-			     -c->opts.btree_node_size, true, b
+			     -c->opts.btree_node_size, BCH_DATA_BTREE, b
 			     ? gc_pos_btree_node(b)
 			     : gc_pos_btree_root(as->btree_id),
 			     &tmp, 0, 0);
@@ -289,7 +290,7 @@ static void bch2_btree_node_free_ondisk(struct bch_fs *c,
 	BUG_ON(!pending->index_update_done);
 
 	bch2_mark_key(c, bkey_i_to_s_c(&pending->key),
-		     -c->opts.btree_node_size, true,
+		     -c->opts.btree_node_size, BCH_DATA_BTREE,
 		     gc_phase(GC_PHASE_PENDING_DELETE),
 		     &stats, 0, 0);
 	/*
@@ -577,6 +578,8 @@ err_free:
 static void bch2_btree_update_free(struct btree_update *as)
 {
 	struct bch_fs *c = as->c;
+
+	bch2_journal_pin_flush(&c->journal, &as->journal);
 
 	BUG_ON(as->nr_new_nodes);
 	BUG_ON(as->nr_pending);
@@ -1095,7 +1098,7 @@ static void bch2_btree_set_root_inmem(struct btree_update *as, struct btree *b)
 	__bch2_btree_set_root_inmem(c, b);
 
 	bch2_mark_key(c, bkey_i_to_s_c(&b->key),
-		      c->opts.btree_node_size, true,
+		      c->opts.btree_node_size, BCH_DATA_BTREE,
 		      gc_pos_btree_root(b->btree_id),
 		      &stats, 0, 0);
 
@@ -1142,7 +1145,8 @@ static void bch2_btree_set_root(struct btree_update *as, struct btree *b,
 	struct btree *old;
 
 	trace_btree_set_root(c, b);
-	BUG_ON(!b->written);
+	BUG_ON(!b->written &&
+	       !test_bit(BCH_FS_HOLD_BTREE_WRITES, &c->flags));
 
 	old = btree_node_root(c, b);
 
@@ -1182,7 +1186,7 @@ static void bch2_insert_fixup_btree_ptr(struct btree_update *as, struct btree *b
 
 	if (bkey_extent_is_data(&insert->k))
 		bch2_mark_key(c, bkey_i_to_s_c(insert),
-			     c->opts.btree_node_size, true,
+			     c->opts.btree_node_size, BCH_DATA_BTREE,
 			     gc_pos_btree_node(b), &stats, 0, 0);
 
 	while ((k = bch2_btree_node_iter_peek_all(node_iter, b)) &&
@@ -1317,7 +1321,7 @@ static void btree_split_insert_keys(struct btree_update *as, struct btree *b,
 
 	BUG_ON(btree_node_type(b) != BKEY_TYPE_BTREE);
 
-	bch2_btree_node_iter_init(&node_iter, b, k->k.p, false, false);
+	bch2_btree_node_iter_init(&node_iter, b, k->k.p, false);
 
 	while (!bch2_keylist_empty(keys)) {
 		k = bch2_keylist_front(keys);
@@ -1963,7 +1967,7 @@ static void __bch2_btree_node_update_key(struct bch_fs *c,
 		bch2_btree_node_lock_write(b, iter);
 
 		bch2_mark_key(c, bkey_i_to_s_c(&new_key->k_i),
-			      c->opts.btree_node_size, true,
+			      c->opts.btree_node_size, BCH_DATA_BTREE,
 			      gc_pos_btree_root(b->btree_id),
 			      &stats, 0, 0);
 		bch2_btree_node_free_index(as, NULL,
@@ -2150,7 +2154,7 @@ ssize_t bch2_btree_updates_print(struct bch_fs *c, char *buf)
 				 as->mode,
 				 as->nodes_written,
 				 atomic_read(&as->cl.remaining) & CLOSURE_REMAINING_MASK,
-				 bch2_journal_pin_seq(&c->journal, &as->journal));
+				 as->journal.seq);
 	mutex_unlock(&c->btree_interior_update_lock);
 
 	return out - buf;

@@ -45,10 +45,10 @@ static const char * const bch2_quota_counters[] = {
 	"inodes",
 };
 
-void bch2_quota_to_text(struct bch_fs *c, char *buf,
-			size_t size, struct bkey_s_c k)
+int bch2_quota_to_text(struct bch_fs *c, char *buf,
+		       size_t size, struct bkey_s_c k)
 {
-	char *out = buf, *end= buf + size;
+	char *out = buf, *end = buf + size;
 	struct bkey_s_c_quota dq;
 	unsigned i;
 
@@ -63,6 +63,8 @@ void bch2_quota_to_text(struct bch_fs *c, char *buf,
 					 le64_to_cpu(dq.v->c[i].softlimit));
 		break;
 	}
+
+	return out - buf;
 }
 
 #ifdef CONFIG_BCACHEFS_QUOTA
@@ -538,7 +540,7 @@ static int bch2_quota_remove(struct super_block *sb, unsigned uflags)
 		ret = bch2_btree_delete_range(c, BTREE_ID_QUOTAS,
 					      POS(QTYP_USR, 0),
 					      POS(QTYP_USR + 1, 0),
-					      ZERO_VERSION, NULL, NULL, NULL);
+					      NULL);
 		if (ret)
 			return ret;
 	}
@@ -550,7 +552,7 @@ static int bch2_quota_remove(struct super_block *sb, unsigned uflags)
 		ret = bch2_btree_delete_range(c, BTREE_ID_QUOTAS,
 					      POS(QTYP_GRP, 0),
 					      POS(QTYP_GRP + 1, 0),
-					      ZERO_VERSION, NULL, NULL, NULL);
+					      NULL);
 		if (ret)
 			return ret;
 	}
@@ -562,7 +564,7 @@ static int bch2_quota_remove(struct super_block *sb, unsigned uflags)
 		ret = bch2_btree_delete_range(c, BTREE_ID_QUOTAS,
 					      POS(QTYP_PRJ, 0),
 					      POS(QTYP_PRJ + 1, 0),
-					      ZERO_VERSION, NULL, NULL, NULL);
+					      NULL);
 		if (ret)
 			return ret;
 	}
@@ -761,7 +763,7 @@ static int bch2_set_quota(struct super_block *sb, struct kqid qid,
 	if (qdq->d_fieldmask & QC_INO_HARD)
 		new_quota.v.c[Q_INO].hardlimit = cpu_to_le64(qdq->d_ino_hardlimit);
 
-	ret = bch2_btree_insert_at(c, NULL, NULL, NULL, 0,
+	ret = bch2_btree_insert_at(c, NULL, NULL, 0,
 				   BTREE_INSERT_ENTRY(&iter, &new_quota.k_i));
 	bch2_btree_iter_unlock(&iter);
 

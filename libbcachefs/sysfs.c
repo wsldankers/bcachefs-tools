@@ -229,41 +229,42 @@ static size_t bch2_btree_cache_size(struct bch_fs *c)
 
 static ssize_t show_fs_alloc_debug(struct bch_fs *c, char *buf)
 {
+	char *out = buf, *end = buf + PAGE_SIZE;
 	struct bch_fs_usage stats = bch2_fs_usage_read(c);
+	unsigned replicas, type;
 
-	return scnprintf(buf, PAGE_SIZE,
-			 "capacity:\t\t%llu\n"
-			 "1 replicas:\n"
-			 "\tmeta:\t\t%llu\n"
-			 "\tdirty:\t\t%llu\n"
-			 "\treserved:\t%llu\n"
-			 "2 replicas:\n"
-			 "\tmeta:\t\t%llu\n"
-			 "\tdirty:\t\t%llu\n"
-			 "\treserved:\t%llu\n"
-			 "3 replicas:\n"
-			 "\tmeta:\t\t%llu\n"
-			 "\tdirty:\t\t%llu\n"
-			 "\treserved:\t%llu\n"
-			 "4 replicas:\n"
-			 "\tmeta:\t\t%llu\n"
-			 "\tdirty:\t\t%llu\n"
-			 "\treserved:\t%llu\n"
+	out += scnprintf(out, end - out,
+			 "capacity:\t\t%llu\n",
+			 c->capacity);
+
+	for (replicas = 0; replicas < ARRAY_SIZE(stats.replicas); replicas++) {
+		out += scnprintf(out, end - out,
+				 "%u replicas:\n",
+				 replicas + 1);
+
+		for (type = BCH_DATA_SB; type < BCH_DATA_NR; type++)
+			out += scnprintf(out, end - out,
+					 "\t%s:\t\t%llu\n",
+					 bch2_data_types[type],
+					 stats.replicas[replicas].data[type]);
+		out += scnprintf(out, end - out,
+				 "\treserved:\t%llu\n",
+				 stats.replicas[replicas].persistent_reserved);
+	}
+
+	out += scnprintf(out, end - out, "bucket usage\n");
+
+	for (type = BCH_DATA_SB; type < BCH_DATA_NR; type++)
+		out += scnprintf(out, end - out,
+				 "\t%s:\t\t%llu\n",
+				 bch2_data_types[type],
+				 stats.buckets[type]);
+
+	out += scnprintf(out, end - out,
 			 "online reserved:\t%llu\n",
-			 c->capacity,
-			 stats.s[0].data[S_META],
-			 stats.s[0].data[S_DIRTY],
-			 stats.s[0].persistent_reserved,
-			 stats.s[1].data[S_META],
-			 stats.s[1].data[S_DIRTY],
-			 stats.s[1].persistent_reserved,
-			 stats.s[2].data[S_META],
-			 stats.s[2].data[S_DIRTY],
-			 stats.s[2].persistent_reserved,
-			 stats.s[3].data[S_META],
-			 stats.s[3].data[S_DIRTY],
-			 stats.s[3].persistent_reserved,
 			 stats.online_reserved);
+
+	return out - buf;
 }
 
 static ssize_t bch2_compression_stats(struct bch_fs *c, char *buf)
@@ -779,13 +780,15 @@ static ssize_t show_dev_alloc_debug(struct bch_dev *ca, char *buf)
 		"    meta:               %llu\n"
 		"    user:               %llu\n"
 		"    cached:             %llu\n"
-		"    available:          %llu\n"
+		"    available:          %lli\n"
 		"sectors:\n"
 		"    sb:                 %llu\n"
 		"    journal:            %llu\n"
 		"    meta:               %llu\n"
 		"    user:               %llu\n"
 		"    cached:             %llu\n"
+		"    fragmented:         %llu\n"
+		"    copygc threshold:   %llu\n"
 		"freelist_wait:          %s\n"
 		"open buckets:           %u/%u (reserved %u)\n"
 		"open_buckets_wait:      %s\n",
@@ -800,12 +803,14 @@ static ssize_t show_dev_alloc_debug(struct bch_dev *ca, char *buf)
 		stats.buckets[BCH_DATA_BTREE],
 		stats.buckets[BCH_DATA_USER],
 		stats.buckets[BCH_DATA_CACHED],
-		__dev_buckets_available(ca, stats),
+		ca->mi.nbuckets - ca->mi.first_bucket - stats.buckets_unavailable,
 		stats.sectors[BCH_DATA_SB],
 		stats.sectors[BCH_DATA_JOURNAL],
 		stats.sectors[BCH_DATA_BTREE],
 		stats.sectors[BCH_DATA_USER],
 		stats.sectors[BCH_DATA_CACHED],
+		stats.sectors_fragmented,
+		ca->copygc_threshold,
 		c->freelist_wait.list.first		? "waiting" : "empty",
 		c->open_buckets_nr_free, OPEN_BUCKETS_COUNT, BTREE_NODE_RESERVE,
 		c->open_buckets_wait.list.first		? "waiting" : "empty");

@@ -403,6 +403,7 @@ static void bch2_fs_free(struct bch_fs *c)
 	bch2_fs_compress_exit(c);
 	percpu_free_rwsem(&c->usage_lock);
 	free_percpu(c->usage_percpu);
+	mempool_exit(&c->btree_iters_pool);
 	mempool_exit(&c->btree_bounce_pool);
 	bioset_exit(&c->btree_bio);
 	mempool_exit(&c->btree_interior_update_pool);
@@ -434,6 +435,8 @@ void bch2_fs_stop(struct bch_fs *c)
 {
 	struct bch_dev *ca;
 	unsigned i;
+
+	bch_verbose(c, "shutting down");
 
 	for_each_member_device(ca, c, i)
 		if (ca->kobj.state_in_sysfs &&
@@ -475,6 +478,8 @@ void bch2_fs_stop(struct bch_fs *c)
 	for (i = 0; i < c->sb.nr_devices; i++)
 		if (c->devs[i])
 			bch2_dev_free(rcu_dereference_protected(c->devs[i], 1));
+
+	bch_verbose(c, "shutdown complete");
 
 	kobject_put(&c->kobj);
 }
@@ -628,6 +633,8 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 	    percpu_init_rwsem(&c->usage_lock) ||
 	    mempool_init_kvpmalloc_pool(&c->btree_bounce_pool, 1,
 					btree_bytes(c)) ||
+	    mempool_init_kmalloc_pool(&c->btree_iters_pool, 1,
+			sizeof(struct btree_iter) * BTREE_ITER_MAX) ||
 	    bch2_io_clock_init(&c->io_clock[READ]) ||
 	    bch2_io_clock_init(&c->io_clock[WRITE]) ||
 	    bch2_fs_journal_init(&c->journal) ||
@@ -1019,14 +1026,6 @@ static int __bch2_dev_attach_bdev(struct bch_dev *ca, struct bch_sb_handle *sb)
 		ca->disk_sb.bdev->bd_holder = ca;
 	memset(sb, 0, sizeof(*sb));
 
-	if (ca->fs)
-		mutex_lock(&ca->fs->sb_lock);
-
-	bch2_mark_dev_superblock(ca->fs, ca, BCH_BUCKET_MARK_MAY_MAKE_UNAVAILABLE);
-
-	if (ca->fs)
-		mutex_unlock(&ca->fs->sb_lock);
-
 	percpu_ref_reinit(&ca->io_ref);
 
 	return 0;
@@ -1051,6 +1050,11 @@ static int bch2_dev_attach_bdev(struct bch_fs *c, struct bch_sb_handle *sb)
 	ret = __bch2_dev_attach_bdev(ca, sb);
 	if (ret)
 		return ret;
+
+	mutex_lock(&c->sb_lock);
+	bch2_mark_dev_superblock(ca->fs, ca,
+			BCH_BUCKET_MARK_MAY_MAKE_UNAVAILABLE);
+	mutex_unlock(&c->sb_lock);
 
 	bch2_dev_sysfs_online(c, ca);
 
@@ -1280,8 +1284,7 @@ int bch2_dev_remove(struct bch_fs *c, struct bch_dev *ca, int flags)
 	ret = bch2_btree_delete_range(c, BTREE_ID_ALLOC,
 				      POS(ca->dev_idx, 0),
 				      POS(ca->dev_idx + 1, 0),
-				      ZERO_VERSION,
-				      NULL, NULL, NULL);
+				      NULL);
 	if (ret) {
 		bch_err(ca, "Remove failed, error deleting alloc info");
 		goto err;
@@ -1329,6 +1332,24 @@ err:
 	return ret;
 }
 
+static void dev_usage_clear(struct bch_dev *ca)
+{
+	struct bucket_array *buckets;
+	int cpu;
+
+	for_each_possible_cpu(cpu) {
+		struct bch_dev_usage *p =
+			per_cpu_ptr(ca->usage_percpu, cpu);
+		memset(p, 0, sizeof(*p));
+	}
+
+	down_read(&ca->bucket_lock);
+	buckets = bucket_array(ca);
+
+	memset(buckets->b, 0, sizeof(buckets->b[0]) * buckets->nbuckets);
+	up_read(&ca->bucket_lock);
+}
+
 /* Add new device to running filesystem: */
 int bch2_dev_add(struct bch_fs *c, const char *path)
 {
@@ -1367,10 +1388,27 @@ int bch2_dev_add(struct bch_fs *c, const char *path)
 		return ret;
 	}
 
+	/*
+	 * We want to allocate journal on the new device before adding the new
+	 * device to the filesystem because allocating after we attach requires
+	 * spinning up the allocator thread, and the allocator thread requires
+	 * doing btree writes, which if the existing devices are RO isn't going
+	 * to work
+	 *
+	 * So we have to mark where the superblocks are, but marking allocated
+	 * data normally updates the filesystem usage too, so we have to mark,
+	 * allocate the journal, reset all the marks, then remark after we
+	 * attach...
+	 */
+	bch2_mark_dev_superblock(ca->fs, ca,
+			BCH_BUCKET_MARK_MAY_MAKE_UNAVAILABLE);
+
 	err = "journal alloc failed";
 	ret = bch2_dev_journal_alloc(ca);
 	if (ret)
 		goto err;
+
+	dev_usage_clear(ca);
 
 	mutex_lock(&c->state_lock);
 	mutex_lock(&c->sb_lock);
@@ -1421,6 +1459,9 @@ have_slot:
 
 	ca->disk_sb.sb->dev_idx	= dev_idx;
 	bch2_dev_attach(c, ca, dev_idx);
+
+	bch2_mark_dev_superblock(c, ca,
+			BCH_BUCKET_MARK_MAY_MAKE_UNAVAILABLE);
 
 	bch2_write_super(c);
 	mutex_unlock(&c->sb_lock);

@@ -122,13 +122,14 @@ static u8 bch2_gc_mark_key(struct bch_fs *c, enum bkey_type type,
 
 	switch (type) {
 	case BKEY_TYPE_BTREE:
-		bch2_mark_key(c, k, c->opts.btree_node_size, true, pos, NULL,
+		bch2_mark_key(c, k, c->opts.btree_node_size,
+			      BCH_DATA_BTREE, pos, NULL,
 			      0, flags|
 			      BCH_BUCKET_MARK_MAY_MAKE_UNAVAILABLE|
 			      BCH_BUCKET_MARK_GC_LOCK_HELD);
 		break;
 	case BKEY_TYPE_EXTENTS:
-		bch2_mark_key(c, k, k.k->size, false, pos, NULL,
+		bch2_mark_key(c, k, k.k->size, BCH_DATA_USER, pos, NULL,
 			      0, flags|
 			      BCH_BUCKET_MARK_MAY_MAKE_UNAVAILABLE|
 			      BCH_BUCKET_MARK_GC_LOCK_HELD);
@@ -215,7 +216,6 @@ static unsigned btree_gc_mark_node(struct bch_fs *c, struct btree *b)
 
 	if (btree_node_has_ptrs(b))
 		for_each_btree_node_key_unpack(b, k, &iter,
-					       btree_node_is_extents(b),
 					       &unpacked) {
 			bch2_bkey_debugcheck(c, b, k);
 			stale = max(stale, bch2_gc_mark_key(c, type, k, 0));
@@ -324,9 +324,16 @@ void bch2_mark_dev_superblock(struct bch_fs *c, struct bch_dev *ca,
 	unsigned i;
 	u64 b;
 
+	/*
+	 * This conditional is kind of gross, but we may be called from the
+	 * device add path, before the new device has actually been added to the
+	 * running filesystem:
+	 */
 	if (c) {
 		lockdep_assert_held(&c->sb_lock);
 		percpu_down_read_preempt_disable(&c->usage_lock);
+	} else {
+		preempt_disable();
 	}
 
 	for (i = 0; i < layout->nr_superblocks; i++) {
@@ -354,6 +361,8 @@ void bch2_mark_dev_superblock(struct bch_fs *c, struct bch_dev *ca,
 	if (c) {
 		percpu_up_read_preempt_enable(&c->usage_lock);
 		spin_unlock(&c->journal.lock);
+	} else {
+		preempt_enable();
 	}
 }
 
@@ -386,7 +395,8 @@ static void bch2_mark_pending_btree_node_frees(struct bch_fs *c)
 	for_each_pending_btree_node_free(c, as, d)
 		if (d->index_update_done)
 			bch2_mark_key(c, bkey_i_to_s_c(&d->key),
-				      c->opts.btree_node_size, true, pos,
+				      c->opts.btree_node_size,
+				      BCH_DATA_BTREE, pos,
 				      &stats, 0,
 				      BCH_BUCKET_MARK_MAY_MAKE_UNAVAILABLE|
 				      BCH_BUCKET_MARK_GC_LOCK_HELD);
@@ -479,7 +489,8 @@ static void bch2_gc_start(struct bch_fs *c)
 		struct bch_fs_usage *p =
 			per_cpu_ptr(c->usage_percpu, cpu);
 
-		memset(p->s, 0, sizeof(p->s));
+		memset(p->replicas, 0, sizeof(p->replicas));
+		memset(p->buckets, 0, sizeof(p->buckets));
 	}
 
 	percpu_up_write(&c->usage_lock);
@@ -558,9 +569,6 @@ void bch2_gc(struct bch_fs *c)
 	bch2_mark_pending_btree_node_frees(c);
 	bch2_mark_allocator_buckets(c);
 
-	for_each_member_device(ca, c, i)
-		atomic_long_set(&ca->saturated_count, 0);
-
 	/* Indicates that gc is no longer in progress: */
 	gc_pos_set(c, gc_phase(GC_PHASE_DONE));
 	c->gc_count++;
@@ -587,15 +595,14 @@ out:
 
 static void recalc_packed_keys(struct btree *b)
 {
+	struct bset *i = btree_bset_first(b);
 	struct bkey_packed *k;
 
 	memset(&b->nr, 0, sizeof(b->nr));
 
 	BUG_ON(b->nsets != 1);
 
-	for (k =  btree_bkey_first(b, b->set);
-	     k != btree_bkey_last(b, b->set);
-	     k = bkey_next(k))
+	vstruct_for_each(i, k)
 		btree_keys_account_key_add(&b->nr, 0, k);
 }
 
@@ -1032,7 +1039,6 @@ static int bch2_initial_gc_btree(struct bch_fs *c, enum btree_id id)
 			struct bkey_s_c k;
 
 			for_each_btree_node_key_unpack(b, k, &node_iter,
-						       btree_node_is_extents(b),
 						       &unpacked) {
 				ret = bch2_btree_mark_key_initial(c,
 							btree_node_type(b), k);

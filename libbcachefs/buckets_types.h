@@ -1,7 +1,10 @@
 #ifndef _BUCKETS_TYPES_H
 #define _BUCKETS_TYPES_H
 
+#include "bcachefs_format.h"
 #include "util.h"
+
+#define BUCKET_JOURNAL_SEQ_BITS		16
 
 struct bucket_mark {
 	union {
@@ -56,23 +59,17 @@ struct bch_dev_usage {
 	u64			sectors_fragmented;
 };
 
-/* kill, switch to bch_data_type? */
-enum s_alloc {
-	S_META,
-	S_DIRTY,
-	S_ALLOC_NR,
-};
-
 struct bch_fs_usage {
 	/* all fields are in units of 512 byte sectors: */
-	/* _uncompressed_ sectors: */
 	u64			online_reserved;
 	u64			available_cache;
 
 	struct {
-		u64		data[S_ALLOC_NR];
+		u64		data[BCH_DATA_NR];
 		u64		persistent_reserved;
-	}			s[BCH_REPLICAS_MAX];
+	}			replicas[BCH_REPLICAS_MAX];
+
+	u64			buckets[BCH_DATA_NR];
 };
 
 /*

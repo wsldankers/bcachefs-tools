@@ -3,6 +3,8 @@
 
 #include <linux/types.h>
 
+#define timespec64  timespec
+
 typedef __s64 time64_t;
 
 /* Parameters used to convert the timespec values: */
@@ -41,5 +43,9 @@ static inline struct timespec timespec_trunc(struct timespec t, unsigned gran)
 	}
 	return t;
 }
+
+#define ns_to_timespec64	ns_to_timespec
+#define timespec64_to_ns	timespec_to_ns
+#define timespec64_trunc	timespec_trunc
 
 #endif /* _LINUX_TIME64_H */

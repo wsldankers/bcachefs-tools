@@ -11,14 +11,13 @@ struct btree_node_iter;
 struct btree_node_iter_large;
 struct btree_insert;
 struct btree_insert_entry;
-struct extent_insert_hook;
 struct bch_devs_mask;
 union bch_extent_crc;
 
 const char *bch2_btree_ptr_invalid(const struct bch_fs *, struct bkey_s_c);
 void bch2_btree_ptr_debugcheck(struct bch_fs *, struct btree *,
 			       struct bkey_s_c);
-void bch2_btree_ptr_to_text(struct bch_fs *, char *, size_t, struct bkey_s_c);
+int bch2_btree_ptr_to_text(struct bch_fs *, char *, size_t, struct bkey_s_c);
 void bch2_ptr_swab(const struct bkey_format *, struct bkey_packed *);
 
 #define bch2_bkey_btree_ops (struct bkey_ops) {			\
@@ -30,7 +29,7 @@ void bch2_ptr_swab(const struct bkey_format *, struct bkey_packed *);
 
 const char *bch2_extent_invalid(const struct bch_fs *, struct bkey_s_c);
 void bch2_extent_debugcheck(struct bch_fs *, struct btree *, struct bkey_s_c);
-void bch2_extent_to_text(struct bch_fs *, char *, size_t, struct bkey_s_c);
+int bch2_extent_to_text(struct bch_fs *, char *, size_t, struct bkey_s_c);
 bool bch2_ptr_normalize(struct bch_fs *, struct btree *, struct bkey_s);
 enum merge_result bch2_extent_merge(struct bch_fs *, struct btree *,
 				    struct bkey_i *, struct bkey_i *);
@@ -61,9 +60,22 @@ int bch2_extent_pick_ptr(struct bch_fs *, struct bkey_s_c,
 			 struct bch_devs_mask *,
 			 struct extent_pick_ptr *);
 
+void bch2_extent_trim_atomic(struct bkey_i *, struct btree_iter *);
+
+static inline bool bch2_extent_is_atomic(struct bkey *k,
+					 struct btree_iter *iter)
+{
+	struct btree *b = iter->l[0].b;
+
+	return bkey_cmp(k->p, b->key.k.p) <= 0 &&
+		bkey_cmp(bkey_start_pos(k), b->data->min_key) >= 0;
+}
+
 enum btree_insert_ret
-bch2_insert_fixup_extent(struct btree_insert *,
-			struct btree_insert_entry *);
+bch2_extent_can_insert(struct btree_insert *, struct btree_insert_entry *,
+		       unsigned *);
+enum btree_insert_ret
+bch2_insert_fixup_extent(struct btree_insert *, struct btree_insert_entry *);
 
 bool bch2_extent_normalize(struct bch_fs *, struct bkey_s);
 void bch2_extent_mark_replicas_cached(struct bch_fs *, struct bkey_s_extent,

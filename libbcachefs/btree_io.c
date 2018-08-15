@@ -22,7 +22,7 @@
 /* btree_node_iter_large: */
 
 #define btree_node_iter_cmp_heap(h, _l, _r)				\
-	__btree_node_iter_cmp((iter)->is_extents, b,			\
+	__btree_node_iter_cmp(b,					\
 			       __btree_node_offset_to_key(b, (_l).k),	\
 			       __btree_node_offset_to_key(b, (_r).k))
 
@@ -248,6 +248,9 @@ static unsigned sort_extent_whiteouts(struct bkey_packed *dst,
 	sort_iter_sort(iter, sort_extent_whiteouts_cmp);
 
 	while ((in = sort_iter_next(iter, sort_extent_whiteouts_cmp))) {
+		if (bkey_deleted(in))
+			continue;
+
 		EBUG_ON(bkeyp_val_u64s(f, in));
 		EBUG_ON(in->type != KEY_TYPE_DISCARD);
 
@@ -309,7 +312,7 @@ static unsigned should_compact_bset(struct btree *b, struct bset_tree *t,
 
 	if (mode == COMPACT_LAZY) {
 		if (should_compact_bset_lazy(b, t) ||
-		    (compacting && bset_unwritten(b, bset(b, t))))
+		    (compacting && !bset_written(b, bset(b, t))))
 			return dead_u64s;
 	} else {
 		if (bset_written(b, bset(b, t)))
@@ -356,7 +359,7 @@ bool __bch2_compact_whiteouts(struct bch_fs *c, struct btree *b,
 		struct bkey_packed *k, *n, *out, *start, *end;
 		struct btree_node_entry *src = NULL, *dst = NULL;
 
-		if (t != b->set && bset_unwritten(b, i)) {
+		if (t != b->set && !bset_written(b, i)) {
 			src = container_of(i, struct btree_node_entry, keys);
 			dst = max(write_block(b),
 				  (void *) btree_bkey_last(b, t -1));
@@ -396,7 +399,7 @@ bool __bch2_compact_whiteouts(struct bch_fs *c, struct btree *b,
 				continue;
 
 			if (bkey_whiteout(k)) {
-				unreserve_whiteout(b, t, k);
+				unreserve_whiteout(b, k);
 				memcpy_u64s(u_pos, k, bkeyp_key_u64s(f, k));
 				set_bkeyp_val_u64s(f, u_pos, 0);
 				u_pos = bkey_next(u_pos);
@@ -467,7 +470,7 @@ static bool bch2_drop_whiteouts(struct btree *b)
 		start	= btree_bkey_first(b, t);
 		end	= btree_bkey_last(b, t);
 
-		if (bset_unwritten(b, i) &&
+		if (!bset_written(b, i) &&
 		    t != b->set) {
 			struct bset *dst =
 			       max_t(struct bset *, write_block(b),
@@ -785,8 +788,7 @@ void bch2_btree_sort_into(struct bch_fs *c,
 
 	bch2_bset_set_no_aux_tree(dst, dst->set);
 
-	bch2_btree_node_iter_init_from_start(&src_iter, src,
-					    btree_node_is_extents(src));
+	bch2_btree_node_iter_init_from_start(&src_iter, src);
 
 	if (btree_node_ops(src)->key_normalize ||
 	    btree_node_ops(src)->key_merge)
@@ -829,7 +831,7 @@ static bool btree_node_compact(struct bch_fs *c, struct btree *b,
 	for (unwritten_idx = 0;
 	     unwritten_idx < b->nsets;
 	     unwritten_idx++)
-		if (bset_unwritten(b, bset(b, &b->set[unwritten_idx])))
+		if (!bset_written(b, bset(b, &b->set[unwritten_idx])))
 			break;
 
 	if (b->nsets - unwritten_idx > 1) {
@@ -852,7 +854,7 @@ void bch2_btree_build_aux_trees(struct btree *b)
 
 	for_each_bset(b, t)
 		bch2_bset_build_aux_tree(b, t,
-				bset_unwritten(b, bset(b, t)) &&
+				!bset_written(b, bset(b, t)) &&
 				t == bset_tree_last(b));
 }
 
@@ -1171,7 +1173,7 @@ int bch2_btree_node_read_done(struct bch_fs *c, struct btree *b, bool have_retry
 	int ret, retry_read = 0, write = READ;
 
 	iter = mempool_alloc(&c->fill_iter, GFP_NOIO);
-	__bch2_btree_node_iter_large_init(iter, btree_node_is_extents(b));
+	iter->used = 0;
 
 	if (bch2_meta_read_fault("btree"))
 		btree_err(BTREE_ERR_MUST_RETRY, c, b, NULL,
@@ -1945,9 +1947,9 @@ bool bch2_btree_post_write_cleanup(struct bch_fs *c, struct btree *b)
 	clear_btree_node_just_written(b);
 
 	/*
-	 * Note: immediately after write, bset_unwritten()/bset_written() don't
-	 * work - the amount of data we had to write after compaction might have
-	 * been smaller than the offset of the last bset.
+	 * Note: immediately after write, bset_written() doesn't work - the
+	 * amount of data we had to write after compaction might have been
+	 * smaller than the offset of the last bset.
 	 *
 	 * However, we know that all bsets have been written here, as long as
 	 * we're still holding the write lock:

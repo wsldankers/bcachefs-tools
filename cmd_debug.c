@@ -204,9 +204,7 @@ static void list_nodes_keys(struct bch_fs *c, enum btree_id btree_id,
 
 		buf[0] = '\t';
 
-		for_each_btree_node_key_unpack(b, k, &node_iter,
-					       btree_node_is_extents(b),
-					       &unpacked) {
+		for_each_btree_node_key_unpack(b, k, &node_iter, &unpacked) {
 			bch2_bkey_val_to_text(c, bkey_type(0, btree_id),
 					      buf + 1, sizeof(buf) - 1, k);
 			puts(buf);

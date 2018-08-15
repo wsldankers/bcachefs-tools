@@ -6,7 +6,7 @@
 #include <linux/math64.h>
 
 const char *bch2_inode_invalid(const struct bch_fs *, struct bkey_s_c);
-void bch2_inode_to_text(struct bch_fs *, char *, size_t, struct bkey_s_c);
+int bch2_inode_to_text(struct bch_fs *, char *, size_t, struct bkey_s_c);
 
 #define bch2_bkey_inode_ops (struct bkey_ops) {		\
 	.key_invalid	= bch2_inode_invalid,		\
@@ -45,21 +45,19 @@ int __bch2_inode_create(struct btree_trans *,
 int bch2_inode_create(struct bch_fs *, struct bch_inode_unpacked *,
 		      u64, u64, u64 *);
 
-int bch2_inode_truncate(struct bch_fs *, u64, u64,
-		       struct extent_insert_hook *, u64 *);
 int bch2_inode_rm(struct bch_fs *, u64);
 
 int bch2_inode_find_by_inum(struct bch_fs *, u64,
 			   struct bch_inode_unpacked *);
 
-static inline struct timespec bch2_time_to_timespec(struct bch_fs *c, u64 time)
+static inline struct timespec64 bch2_time_to_timespec(struct bch_fs *c, u64 time)
 {
-	return ns_to_timespec(time * c->sb.time_precision + c->sb.time_base_lo);
+	return ns_to_timespec64(time * c->sb.time_precision + c->sb.time_base_lo);
 }
 
-static inline u64 timespec_to_bch2_time(struct bch_fs *c, struct timespec ts)
+static inline u64 timespec_to_bch2_time(struct bch_fs *c, struct timespec64 ts)
 {
-	s64 ns = timespec_to_ns(&ts) - c->sb.time_base_lo;
+	s64 ns = timespec64_to_ns(&ts) - c->sb.time_base_lo;
 
 	if (c->sb.time_precision == 1)
 		return ns;

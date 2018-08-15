@@ -114,11 +114,6 @@ static inline u8 ptr_stale(struct bch_dev *ca,
 
 /* bucket gc marks */
 
-/* The dirty and cached sector counts saturate. If this occurs,
- * reference counting alone will not free the bucket, and a btree
- * GC must be performed. */
-#define GC_MAX_SECTORS_USED ((1U << 15) - 1)
-
 static inline unsigned bucket_sectors_used(struct bucket_mark mark)
 {
 	return mark.dirty_sectors + mark.cached_sectors;
@@ -172,26 +167,12 @@ static inline u64 dev_buckets_free(struct bch_fs *c, struct bch_dev *ca)
 
 /* Filesystem usage: */
 
-static inline enum bch_data_type s_alloc_to_data_type(enum s_alloc s)
-{
-	switch (s) {
-	case S_META:
-		return BCH_DATA_BTREE;
-	case S_DIRTY:
-		return BCH_DATA_USER;
-	default:
-		BUG();
-	}
-}
-
 struct bch_fs_usage __bch2_fs_usage_read(struct bch_fs *);
 struct bch_fs_usage bch2_fs_usage_read(struct bch_fs *);
 void bch2_fs_usage_apply(struct bch_fs *, struct bch_fs_usage *,
 			 struct disk_reservation *, struct gc_pos);
 
-u64 __bch2_fs_sectors_used(struct bch_fs *, struct bch_fs_usage);
 u64 bch2_fs_sectors_used(struct bch_fs *, struct bch_fs_usage);
-u64 bch2_fs_sectors_free(struct bch_fs *, struct bch_fs_usage);
 
 static inline bool is_available_bucket(struct bucket_mark mark)
 {
@@ -209,7 +190,7 @@ static inline bool bucket_needs_journal_commit(struct bucket_mark m,
 
 void bch2_bucket_seq_cleanup(struct bch_fs *);
 
-bool bch2_invalidate_bucket(struct bch_fs *, struct bch_dev *,
+void bch2_invalidate_bucket(struct bch_fs *, struct bch_dev *,
 			    size_t, struct bucket_mark *);
 void bch2_mark_alloc_bucket(struct bch_fs *, struct bch_dev *,
 			    size_t, bool, struct gc_pos, unsigned);
@@ -222,8 +203,8 @@ void bch2_mark_metadata_bucket(struct bch_fs *, struct bch_dev *,
 #define BCH_BUCKET_MARK_GC_WILL_VISIT		(1 << 2)
 #define BCH_BUCKET_MARK_GC_LOCK_HELD		(1 << 3)
 
-void bch2_mark_key(struct bch_fs *, struct bkey_s_c, s64, bool, struct gc_pos,
-		   struct bch_fs_usage *, u64, unsigned);
+void bch2_mark_key(struct bch_fs *, struct bkey_s_c, s64, enum bch_data_type,
+		   struct gc_pos, struct bch_fs_usage *, u64, unsigned);
 
 void bch2_recalc_sectors_available(struct bch_fs *);
 

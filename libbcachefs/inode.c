@@ -227,8 +227,8 @@ const char *bch2_inode_invalid(const struct bch_fs *c, struct bkey_s_c k)
 	}
 }
 
-void bch2_inode_to_text(struct bch_fs *c, char *buf,
-			size_t size, struct bkey_s_c k)
+int bch2_inode_to_text(struct bch_fs *c, char *buf,
+		       size_t size, struct bkey_s_c k)
 {
 	char *out = buf, *end = out + size;
 	struct bkey_s_c_inode inode;
@@ -248,6 +248,8 @@ void bch2_inode_to_text(struct bch_fs *c, char *buf,
 #undef  BCH_INODE_FIELD
 		break;
 	}
+
+	return out - buf;
 }
 
 void bch2_inode_init(struct bch_fs *c, struct bch_inode_unpacked *inode_u,
@@ -255,8 +257,8 @@ void bch2_inode_init(struct bch_fs *c, struct bch_inode_unpacked *inode_u,
 		     struct bch_inode_unpacked *parent)
 {
 	s64 now = timespec_to_bch2_time(c,
-		timespec_trunc(current_kernel_time(),
-			       c->sb.time_precision));
+		timespec64_trunc(current_kernel_time64(),
+				 c->sb.time_precision));
 
 	memset(inode_u, 0, sizeof(*inode_u));
 
@@ -347,7 +349,8 @@ again:
 			inode_u->bi_generation	= bkey_generation(k);
 
 			bch2_inode_pack(inode_p, inode_u);
-			bch2_trans_update(trans, iter, &inode_p->inode.k_i, 0);
+			bch2_trans_update(trans,
+				BTREE_INSERT_ENTRY(iter, &inode_p->inode.k_i));
 			return 0;
 		}
 	}
@@ -369,32 +372,13 @@ int bch2_inode_create(struct bch_fs *c, struct bch_inode_unpacked *inode_u,
 			__bch2_inode_create(&trans, inode_u, min, max, hint));
 }
 
-int bch2_inode_truncate(struct bch_fs *c, u64 inode_nr, u64 new_size,
-			struct extent_insert_hook *hook, u64 *journal_seq)
-{
-	return bch2_btree_delete_range(c, BTREE_ID_EXTENTS,
-				       POS(inode_nr, new_size),
-				       POS(inode_nr + 1, 0),
-				       ZERO_VERSION, NULL, hook,
-				       journal_seq);
-}
-
 int bch2_inode_rm(struct bch_fs *c, u64 inode_nr)
 {
 	struct btree_iter iter;
 	struct bkey_i_inode_generation delete;
+	struct bpos start = POS(inode_nr, 0);
+	struct bpos end = POS(inode_nr + 1, 0);
 	int ret;
-
-	ret = bch2_inode_truncate(c, inode_nr, 0, NULL, NULL);
-	if (ret < 0)
-		return ret;
-
-	ret = bch2_btree_delete_range(c, BTREE_ID_XATTRS,
-				     POS(inode_nr, 0),
-				     POS(inode_nr + 1, 0),
-				     ZERO_VERSION, NULL, NULL, NULL);
-	if (ret < 0)
-		return ret;
 
 	/*
 	 * If this was a directory, there shouldn't be any real dirents left -
@@ -404,11 +388,13 @@ int bch2_inode_rm(struct bch_fs *c, u64 inode_nr)
 	 * XXX: the dirent could ideally would delete whiteouts when they're no
 	 * longer needed
 	 */
-	ret = bch2_btree_delete_range(c, BTREE_ID_DIRENTS,
-				     POS(inode_nr, 0),
-				     POS(inode_nr + 1, 0),
-				     ZERO_VERSION, NULL, NULL, NULL);
-	if (ret < 0)
+	ret   = bch2_btree_delete_range(c, BTREE_ID_EXTENTS,
+					start, end, NULL) ?:
+		bch2_btree_delete_range(c, BTREE_ID_XATTRS,
+					start, end, NULL) ?:
+		bch2_btree_delete_range(c, BTREE_ID_DIRENTS,
+					start, end, NULL);
+	if (ret)
 		return ret;
 
 	bch2_btree_iter_init(&iter, c, BTREE_ID_INODES, POS(inode_nr, 0),
@@ -452,7 +438,7 @@ int bch2_inode_rm(struct bch_fs *c, u64 inode_nr)
 			delete.v.bi_generation = cpu_to_le32(bi_generation);
 		}
 
-		ret = bch2_btree_insert_at(c, NULL, NULL, NULL,
+		ret = bch2_btree_insert_at(c, NULL, NULL,
 				BTREE_INSERT_ATOMIC|
 				BTREE_INSERT_NOFAIL,
 				BTREE_INSERT_ENTRY(&iter, &delete.k_i));

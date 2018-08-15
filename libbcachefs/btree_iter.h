@@ -40,7 +40,7 @@ static inline bool __iter_has_node(const struct btree_iter *iter,
 	 */
 
 	return iter->l[b->level].b == b &&
-		iter->lock_seq[b->level] >> 1 == b->lock.state.seq >> 1;
+		iter->l[b->level].lock_seq >> 1 == b->lock.state.seq >> 1;
 }
 
 static inline struct btree_iter *
@@ -100,8 +100,8 @@ static inline void bch2_btree_iter_verify_locks(struct btree_iter *iter) {}
 #endif
 
 void bch2_btree_node_iter_fix(struct btree_iter *, struct btree *,
-			     struct btree_node_iter *, struct bset_tree *,
-			     struct bkey_packed *, unsigned, unsigned);
+			      struct btree_node_iter *, struct bkey_packed *,
+			      unsigned, unsigned);
 
 int bch2_btree_iter_unlock(struct btree_iter *);
 
@@ -271,9 +271,9 @@ static inline int btree_iter_err(struct bkey_s_c k)
 
 /* new multiple iterator interface: */
 
-int bch2_trans_preload_iters(struct btree_trans *);
-void bch2_trans_iter_free(struct btree_trans *,
-				struct btree_iter *);
+void bch2_trans_preload_iters(struct btree_trans *);
+void bch2_trans_iter_put(struct btree_trans *, struct btree_iter *);
+void bch2_trans_iter_free(struct btree_trans *, struct btree_iter *);
 
 struct btree_iter *__bch2_trans_get_iter(struct btree_trans *, enum btree_id,
 					 struct bpos, unsigned, u64);
@@ -307,6 +307,11 @@ bch2_trans_copy_iter(struct btree_trans *trans, struct btree_iter *src)
 }
 
 void __bch2_trans_begin(struct btree_trans *);
+
+static inline void bch2_trans_begin_updates(struct btree_trans *trans)
+{
+	trans->nr_updates = 0;
+}
 
 void *bch2_trans_kmalloc(struct btree_trans *, size_t);
 int bch2_trans_unlock(struct btree_trans *);

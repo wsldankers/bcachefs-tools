@@ -121,7 +121,7 @@ static void update_inode(struct bch_fs *c,
 
 	bch2_inode_pack(&packed, inode);
 	ret = bch2_btree_insert(c, BTREE_ID_INODES, &packed.inode.k_i,
-				NULL, NULL, NULL, 0);
+				NULL, NULL, 0);
 	if (ret)
 		die("error creating file: %s", strerror(-ret));
 }
@@ -350,7 +350,7 @@ static void link_data(struct bch_fs *c, struct bch_inode_unpacked *dst,
 					extent_i_to_s_c(e).s_c);
 
 		ret = bch2_btree_insert(c, BTREE_ID_EXTENTS, &e->k_i,
-					&res, NULL, NULL, 0);
+					&res, NULL, 0);
 		if (ret)
 			die("btree insert error %s", strerror(-ret));
 
