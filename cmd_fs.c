@@ -87,7 +87,7 @@ static void print_fs_usage(const char *path, enum units units)
 	printf("%-20s%12s%12s%12s%12s\n",
 	       "By replicas:", "1x", "2x", "3x", "4x");
 
-	for (j = BCH_DATA_BTREE; j < BCH_DATA_NR; j++) {
+	for (j = BCH_DATA_SB; j < BCH_DATA_NR; j++) {
 		printf_pad(20, "  %s:", bch2_data_types[j]);
 
 		for (i = 0; i < BCH_REPLICAS_MAX; i++)
