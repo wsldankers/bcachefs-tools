@@ -16,3 +16,9 @@ esac
 
 . /usr/share/initramfs-tools/hook-functions
 
+manual_add_modules 'bcachefs'
+
+# chacha20 and poly1305 are used for encrypted bcachefs filesystems.
+add_loaded_modules 'chacha20[-_]*'
+add_loaded_modules 'poly1305[-_]*'
+
