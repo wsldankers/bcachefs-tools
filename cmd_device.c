@@ -28,7 +28,7 @@ static void device_add_usage(void)
 	     "  -S, --fs_size=size          Size of filesystem on device\n"
 	     "  -B, --bucket=size           Bucket size\n"
 	     "  -D, --discard               Enable discards\n"
-	     "  -t, --tier=#                Higher tier (e.g. 1) indicates slower devices\n"
+	     "  -g, --group=group           Disk group\n"
 	     "  -f, --force                 Use device even if it appears to already be formatted\n"
 	     "  -h, --help                  Display this help and exit\n"
 	     "\n"
