@@ -25,6 +25,8 @@
 #include <linux/generic-radix-tree.h>
 #include <linux/xattr.h>
 #include "libbcachefs/bcachefs.h"
+#include "libbcachefs/alloc_background.h"
+#include "libbcachefs/alloc_foreground.h"
 #include "libbcachefs/btree_update.h"
 #include "libbcachefs/buckets.h"
 #include "libbcachefs/dirent.h"

@@ -9,7 +9,6 @@
 #include "tools-util.h"
 
 #include "libbcachefs/bcachefs.h"
-#include "libbcachefs/alloc.h"
 #include "libbcachefs/bset.h"
 #include "libbcachefs/btree_cache.h"
 #include "libbcachefs/btree_iter.h"
