@@ -122,7 +122,7 @@ struct stat xstat(const char *path)
 {
 	struct stat statbuf;
 	if (stat(path, &statbuf))
-		die("stat error: %m");
+		die("stat error statting %s: %m", path);
 	return statbuf;
 }
 
@@ -619,6 +619,8 @@ char *dev_to_mount(char *dev)
 	if (!f)
 		die("error opening /proc/mounts: %m");
 
+	struct stat d1 = xstat(dev);
+
 	while (getline(&line, &n, f) != -1) {
 		char *d, *p = line;
 		char *devs = strsep(&p, " ");
@@ -628,11 +630,27 @@ char *dev_to_mount(char *dev)
 			continue;
 
 		p = devs;
-		while ((d = strsep(&p, ":")))
-			if (!strcmp(d, dev)) {
-				ret = strdup(mount);
-				goto found;
+		while ((d = strsep(&p, ":"))) {
+			struct stat d2;
+
+			if (stat(d, &d2))
+				continue;
+
+			if (S_ISBLK(d1.st_mode) != S_ISBLK(d2.st_mode))
+				continue;
+
+			if (S_ISBLK(d1.st_mode)) {
+				if (d1.st_rdev != d2.st_rdev)
+					continue;
+			} else {
+				if (d1.st_dev != d2.st_dev ||
+				    d1.st_ino != d2.st_ino)
+					continue;
 			}
+
+			ret = strdup(mount);
+			goto found;
+		}
 	}
 found:
 	fclose(f);
