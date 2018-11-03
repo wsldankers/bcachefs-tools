@@ -196,7 +196,9 @@ struct bch_sb *bch2_format(struct format_opts opts,
 	uuid_generate(sb.sb->uuid.b);
 
 	if (opts.label)
-		strncpy((char *) sb.sb->label, opts.label, sizeof(sb.sb->label));
+		memcpy(sb.sb->label,
+		       opts.label,
+		       min(strlen(opts.label), sizeof(sb.sb->label)));
 
 	SET_BCH_SB_CSUM_TYPE(sb.sb,		opts.meta_csum_type);
 	SET_BCH_SB_META_CSUM_TYPE(sb.sb,	opts.meta_csum_type);
