@@ -67,8 +67,8 @@ static int bch2_migrate_index_update(struct bch_write_op *op)
 		struct bkey_i_extent *insert, *new =
 			bkey_i_to_extent(bch2_keylist_front(keys));
 		BKEY_PADDED(k) _new, _insert;
-		struct bch_extent_ptr *ptr;
-		struct bch_extent_crc_unpacked crc;
+		const union bch_extent_entry *entry;
+		struct extent_ptr_decoded p;
 		bool did_work = false;
 		int nr;
 
@@ -98,15 +98,12 @@ static int bch2_migrate_index_update(struct bch_write_op *op)
 		bch2_cut_back(new->k.p, &insert->k);
 		bch2_cut_back(insert->k.p, &new->k);
 
-		if (m->data_cmd == DATA_REWRITE) {
-			ptr = (struct bch_extent_ptr *)
-				bch2_extent_has_device(extent_i_to_s_c(insert),
-						       m->data_opts.rewrite_dev);
-			bch2_extent_drop_ptr(extent_i_to_s(insert), ptr);
-		}
+		if (m->data_cmd == DATA_REWRITE)
+			bch2_extent_drop_device(extent_i_to_s(insert),
+						m->data_opts.rewrite_dev);
 
-		extent_for_each_ptr_crc(extent_i_to_s(new), ptr, crc) {
-			if (bch2_extent_has_device(extent_i_to_s_c(insert), ptr->dev)) {
+		extent_for_each_ptr_decode(extent_i_to_s(new), p, entry) {
+			if (bch2_extent_has_device(extent_i_to_s_c(insert), p.ptr.dev)) {
 				/*
 				 * raced with another move op? extent already
 				 * has a pointer to the device we just wrote
@@ -115,8 +112,7 @@ static int bch2_migrate_index_update(struct bch_write_op *op)
 				continue;
 			}
 
-			bch2_extent_crc_append(insert, crc);
-			extent_ptr_append(insert, *ptr);
+			bch2_extent_ptr_decoded_append(insert, &p);
 			did_work = true;
 		}
 
@@ -153,7 +149,7 @@ static int bch2_migrate_index_update(struct bch_write_op *op)
 			goto next;
 		}
 
-		ret = bch2_mark_bkey_replicas(c, BCH_DATA_USER,
+		ret = bch2_mark_bkey_replicas(c, BKEY_TYPE_EXTENTS,
 					      extent_i_to_s_c(insert).s_c);
 		if (ret)
 			break;
@@ -379,8 +375,8 @@ static int bch2_move_extent(struct bch_fs *c,
 			    struct data_opts data_opts)
 {
 	struct moving_io *io;
-	const struct bch_extent_ptr *ptr;
-	struct bch_extent_crc_unpacked crc;
+	const union bch_extent_entry *entry;
+	struct extent_ptr_decoded p;
 	unsigned sectors = e.k->size, pages;
 	int ret = -ENOMEM;
 
@@ -393,8 +389,8 @@ static int bch2_move_extent(struct bch_fs *c,
 		SECTORS_IN_FLIGHT_PER_DEVICE);
 
 	/* write path might have to decompress data: */
-	extent_for_each_ptr_crc(e, ptr, crc)
-		sectors = max_t(unsigned, sectors, crc.uncompressed_size);
+	extent_for_each_ptr_decode(e, p, entry)
+		sectors = max_t(unsigned, sectors, p.crc.uncompressed_size);
 
 	pages = DIV_ROUND_UP(sectors, PAGE_SECTORS);
 	io = kzalloc(sizeof(struct moving_io) +
@@ -605,7 +601,7 @@ static int bch2_gc_data_replicas(struct bch_fs *c)
 
 	for_each_btree_key(&iter, c, BTREE_ID_EXTENTS, POS_MIN,
 			   BTREE_ITER_PREFETCH, k) {
-		ret = bch2_mark_bkey_replicas(c, BCH_DATA_USER, k);
+		ret = bch2_mark_bkey_replicas(c, BKEY_TYPE_EXTENTS, k);
 		if (ret)
 			break;
 	}
@@ -629,7 +625,7 @@ static int bch2_gc_btree_replicas(struct bch_fs *c)
 
 	for (id = 0; id < BTREE_ID_NR; id++) {
 		for_each_btree_node(&iter, c, id, POS_MIN, BTREE_ITER_PREFETCH, b) {
-			ret = bch2_mark_bkey_replicas(c, BCH_DATA_BTREE,
+			ret = bch2_mark_bkey_replicas(c, BKEY_TYPE_BTREE,
 						      bkey_i_to_s_c(&b->key));
 
 			bch2_btree_iter_cond_resched(&iter);

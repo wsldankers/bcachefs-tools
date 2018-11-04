@@ -346,7 +346,7 @@ static unsigned get_dev_has_data(struct bch_sb *sb, unsigned dev)
 
 	if (replicas)
 		for_each_replicas_entry(replicas, r)
-			for (i = 0; i < r->nr; i++)
+			for (i = 0; i < r->nr_devs; i++)
 				if (r->devs[i] == dev)
 					data_has |= 1 << r->data_type;
 
@@ -502,7 +502,7 @@ static void bch2_sb_print_replicas(struct bch_sb *sb, struct bch_sb_field *f,
 		printf_pad(32, "  %s:", bch2_data_types[e->data_type]);
 
 		putchar('[');
-		for (i = 0; i < e->nr; i++) {
+		for (i = 0; i < e->nr_devs; i++) {
 			if (i)
 				putchar(' ');
 			printf("%u", e->devs[i]);

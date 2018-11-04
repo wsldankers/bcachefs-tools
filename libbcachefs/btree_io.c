@@ -35,7 +35,7 @@ void bch2_btree_node_iter_large_push(struct btree_node_iter_large *iter,
 				 __btree_node_key_to_offset(b, end)
 			 });
 
-		__heap_add(iter, n, btree_node_iter_cmp_heap);
+		__heap_add(iter, n, btree_node_iter_cmp_heap, NULL);
 	}
 }
 
@@ -48,9 +48,9 @@ void bch2_btree_node_iter_large_advance(struct btree_node_iter_large *iter,
 	EBUG_ON(iter->data->k > iter->data->end);
 
 	if (iter->data->k == iter->data->end)
-		heap_del(iter, 0, btree_node_iter_cmp_heap);
+		heap_del(iter, 0, btree_node_iter_cmp_heap, NULL);
 	else
-		heap_sift_down(iter, 0, btree_node_iter_cmp_heap);
+		heap_sift_down(iter, 0, btree_node_iter_cmp_heap, NULL);
 }
 
 static void verify_no_dups(struct btree *b,
@@ -1345,10 +1345,8 @@ static void btree_node_read_work(struct work_struct *work)
 	struct bch_dev *ca	= bch_dev_bkey_exists(c, rb->pick.ptr.dev);
 	struct btree *b		= rb->bio.bi_private;
 	struct bio *bio		= &rb->bio;
-	struct bch_devs_mask avoid;
+	struct bch_io_failures failed = { .nr = 0 };
 	bool can_retry;
-
-	memset(&avoid, 0, sizeof(avoid));
 
 	goto start;
 	while (1) {
@@ -1372,8 +1370,9 @@ start:
 			percpu_ref_put(&ca->io_ref);
 		rb->have_ioref = false;
 
-		__set_bit(rb->pick.ptr.dev, avoid.d);
-		can_retry = bch2_btree_pick_ptr(c, b, &avoid, &rb->pick) > 0;
+		bch2_mark_io_failure(&failed, &rb->pick);
+
+		can_retry = bch2_btree_pick_ptr(c, b, &failed, &rb->pick) > 0;
 
 		if (!bio->bi_status &&
 		    !bch2_btree_node_read_done(c, b, can_retry))
@@ -1408,7 +1407,7 @@ static void btree_node_read_endio(struct bio *bio)
 void bch2_btree_node_read(struct bch_fs *c, struct btree *b,
 			  bool sync)
 {
-	struct extent_pick_ptr pick;
+	struct extent_ptr_decoded pick;
 	struct btree_read_bio *rb;
 	struct bch_dev *ca;
 	struct bio *bio;
@@ -1425,7 +1424,9 @@ void bch2_btree_node_read(struct bch_fs *c, struct btree *b,
 
 	ca = bch_dev_bkey_exists(c, pick.ptr.dev);
 
-	bio = bio_alloc_bioset(GFP_NOIO, btree_pages(c), &c->btree_bio);
+	bio = bio_alloc_bioset(GFP_NOIO, buf_pages(b->data,
+						   btree_bytes(c)),
+			       &c->btree_bio);
 	rb = container_of(bio, struct btree_read_bio, bio);
 	rb->c			= c;
 	rb->start_time		= local_clock();
@@ -1568,9 +1569,9 @@ retry:
 
 	new_key = bkey_i_to_extent(&tmp.k);
 	e = extent_i_to_s(new_key);
-	extent_for_each_ptr_backwards(e, ptr)
-		if (bch2_dev_list_has_dev(wbio->wbio.failed, ptr->dev))
-			bch2_extent_drop_ptr(e, ptr);
+
+	bch2_extent_drop_ptrs(e, ptr,
+		bch2_dev_list_has_dev(wbio->wbio.failed, ptr->dev));
 
 	if (!bch2_extent_nr_ptrs(e.c))
 		goto err;
@@ -1880,7 +1881,9 @@ void __bch2_btree_node_write(struct bch_fs *c, struct btree *b,
 
 	trace_btree_write(b, bytes_to_write, sectors_to_write);
 
-	wbio = container_of(bio_alloc_bioset(GFP_NOIO, 1 << order, &c->btree_bio),
+	wbio = container_of(bio_alloc_bioset(GFP_NOIO,
+				buf_pages(data, sectors_to_write << 9),
+				&c->btree_bio),
 			    struct btree_write_bio, wbio.bio);
 	wbio_init(&wbio->wbio.bio);
 	wbio->data			= data;

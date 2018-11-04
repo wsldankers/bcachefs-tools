@@ -88,7 +88,7 @@ struct btree_nr_keys bch2_key_sort_fix_overlapping(struct bset *dst,
 
 	memset(&nr, 0, sizeof(nr));
 
-	heap_resort(iter, key_sort_cmp);
+	heap_resort(iter, key_sort_cmp, NULL);
 
 	while (!bch2_btree_node_iter_large_end(iter)) {
 		if (!should_drop_next_key(iter, b)) {
@@ -101,7 +101,7 @@ struct btree_nr_keys bch2_key_sort_fix_overlapping(struct bset *dst,
 		}
 
 		sort_key_next(iter, b, iter->data);
-		heap_sift_down(iter, 0, key_sort_cmp);
+		heap_sift_down(iter, 0, key_sort_cmp, NULL);
 	}
 
 	dst->u64s = cpu_to_le16((u64 *) out - dst->_data);
@@ -122,20 +122,11 @@ bch2_extent_has_device(struct bkey_s_c_extent e, unsigned dev)
 	return NULL;
 }
 
-bool bch2_extent_drop_device(struct bkey_s_extent e, unsigned dev)
+void bch2_extent_drop_device(struct bkey_s_extent e, unsigned dev)
 {
 	struct bch_extent_ptr *ptr;
-	bool dropped = false;
 
-	extent_for_each_ptr_backwards(e, ptr)
-		if (ptr->dev == dev) {
-			__bch2_extent_drop_ptr(e, ptr);
-			dropped = true;
-		}
-
-	if (dropped)
-		bch2_extent_drop_redundant_crcs(e);
-	return dropped;
+	bch2_extent_drop_ptrs(e, ptr, ptr->dev == dev);
 }
 
 const struct bch_extent_ptr *
@@ -231,21 +222,21 @@ unsigned bch2_extent_durability(struct bch_fs *c, struct bkey_s_c_extent e)
 
 unsigned bch2_extent_is_compressed(struct bkey_s_c k)
 {
-	struct bkey_s_c_extent e;
-	const struct bch_extent_ptr *ptr;
-	struct bch_extent_crc_unpacked crc;
 	unsigned ret = 0;
 
 	switch (k.k->type) {
 	case BCH_EXTENT:
-	case BCH_EXTENT_CACHED:
-		e = bkey_s_c_to_extent(k);
+	case BCH_EXTENT_CACHED: {
+		struct bkey_s_c_extent e = bkey_s_c_to_extent(k);
+		const union bch_extent_entry *entry;
+		struct extent_ptr_decoded p;
 
-		extent_for_each_ptr_crc(e, ptr, crc)
-			if (!ptr->cached &&
-			    crc.compression_type != BCH_COMPRESSION_NONE &&
-			    crc.compressed_size < crc.live_size)
-				ret = max_t(unsigned, ret, crc.compressed_size);
+		extent_for_each_ptr_decode(e, p, entry)
+			if (!p.ptr.cached &&
+			    p.crc.compression_type != BCH_COMPRESSION_NONE &&
+			    p.crc.compressed_size < p.crc.live_size)
+				ret = max_t(unsigned, ret, p.crc.compressed_size);
+	}
 	}
 
 	return ret;
@@ -254,34 +245,50 @@ unsigned bch2_extent_is_compressed(struct bkey_s_c k)
 bool bch2_extent_matches_ptr(struct bch_fs *c, struct bkey_s_c_extent e,
 			     struct bch_extent_ptr m, u64 offset)
 {
-	const struct bch_extent_ptr *ptr;
-	struct bch_extent_crc_unpacked crc;
+	const union bch_extent_entry *entry;
+	struct extent_ptr_decoded p;
 
-	extent_for_each_ptr_crc(e, ptr, crc)
-		if (ptr->dev	== m.dev &&
-		    ptr->gen	== m.gen &&
-		    (s64) ptr->offset + crc.offset - bkey_start_offset(e.k) ==
+	extent_for_each_ptr_decode(e, p, entry)
+		if (p.ptr.dev	== m.dev &&
+		    p.ptr.gen	== m.gen &&
+		    (s64) p.ptr.offset + p.crc.offset - bkey_start_offset(e.k) ==
 		    (s64) m.offset  - offset)
-			return ptr;
+			return true;
 
-	return NULL;
+	return false;
 }
 
-/* Doesn't cleanup redundant crcs */
-void __bch2_extent_drop_ptr(struct bkey_s_extent e, struct bch_extent_ptr *ptr)
+union bch_extent_entry *bch2_extent_drop_ptr(struct bkey_s_extent e,
+					     struct bch_extent_ptr *ptr)
 {
+	union bch_extent_entry *dst;
+	union bch_extent_entry *src;
+
 	EBUG_ON(ptr < &e.v->start->ptr ||
 		ptr >= &extent_entry_last(e)->ptr);
 	EBUG_ON(ptr->type != 1 << BCH_EXTENT_ENTRY_ptr);
-	memmove_u64s_down(ptr, ptr + 1,
-			  (u64 *) extent_entry_last(e) - (u64 *) (ptr + 1));
-	e.k->u64s -= sizeof(*ptr) / sizeof(u64);
-}
 
-void bch2_extent_drop_ptr(struct bkey_s_extent e, struct bch_extent_ptr *ptr)
-{
-	__bch2_extent_drop_ptr(e, ptr);
-	bch2_extent_drop_redundant_crcs(e);
+	src = to_entry(ptr + 1);
+
+	if (src != extent_entry_last(e) &&
+	    extent_entry_type(src) == BCH_EXTENT_ENTRY_ptr) {
+		dst = to_entry(ptr);
+	} else {
+		extent_for_each_entry(e, dst) {
+			if (dst == to_entry(ptr))
+				break;
+
+			if (extent_entry_next(dst) == to_entry(ptr) &&
+			    extent_entry_is_crc(dst))
+				break;
+		}
+	}
+
+	memmove_u64s_down(dst, src,
+			  (u64 *) extent_entry_last(e) - (u64 *) src);
+	e.k->u64s -= (u64 *) src - (u64 *) dst;
+
+	return dst;
 }
 
 static inline bool can_narrow_crc(struct bch_extent_crc_unpacked u,
@@ -323,38 +330,38 @@ bool bch2_extent_narrow_crcs(struct bkey_i_extent *e,
 			     struct bch_extent_crc_unpacked n)
 {
 	struct bch_extent_crc_unpacked u;
-	struct bch_extent_ptr *ptr;
+	struct extent_ptr_decoded p;
 	union bch_extent_entry *i;
+	bool ret = false;
 
 	/* Find a checksum entry that covers only live data: */
-	if (!n.csum_type)
+	if (!n.csum_type) {
 		extent_for_each_crc(extent_i_to_s(e), u, i)
 			if (!u.compression_type &&
 			    u.csum_type &&
 			    u.live_size == u.uncompressed_size) {
 				n = u;
-				break;
+				goto found;
 			}
-
-	if (!bch2_can_narrow_extent_crcs(extent_i_to_s_c(e), n))
 		return false;
-
+	}
+found:
 	BUG_ON(n.compression_type);
 	BUG_ON(n.offset);
 	BUG_ON(n.live_size != e->k.size);
 
-	bch2_extent_crc_append(e, n);
 restart_narrow_pointers:
-	extent_for_each_ptr_crc(extent_i_to_s(e), ptr, u)
-		if (can_narrow_crc(u, n)) {
-			ptr->offset += u.offset;
-			extent_ptr_append(e, *ptr);
-			__bch2_extent_drop_ptr(extent_i_to_s(e), ptr);
+	extent_for_each_ptr_decode(extent_i_to_s(e), p, i)
+		if (can_narrow_crc(p.crc, n)) {
+			bch2_extent_drop_ptr(extent_i_to_s(e), &i->ptr);
+			p.ptr.offset += p.crc.offset;
+			p.crc = n;
+			bch2_extent_ptr_decoded_append(e, &p);
+			ret = true;
 			goto restart_narrow_pointers;
 		}
 
-	bch2_extent_drop_redundant_crcs(extent_i_to_s(e));
-	return true;
+	return ret;
 }
 
 /* returns true if not equal */
@@ -371,87 +378,13 @@ static inline bool bch2_crc_unpacked_cmp(struct bch_extent_crc_unpacked l,
 		bch2_crc_cmp(l.csum, r.csum));
 }
 
-void bch2_extent_drop_redundant_crcs(struct bkey_s_extent e)
-{
-	union bch_extent_entry *entry = e.v->start;
-	union bch_extent_crc *crc, *prev = NULL;
-	struct bch_extent_crc_unpacked u, prev_u = { 0 };
-
-	while (entry != extent_entry_last(e)) {
-		union bch_extent_entry *next = extent_entry_next(entry);
-		size_t crc_u64s = extent_entry_u64s(entry);
-
-		if (!extent_entry_is_crc(entry))
-			goto next;
-
-		crc = entry_to_crc(entry);
-		u = bch2_extent_crc_unpack(e.k, crc);
-
-		if (next == extent_entry_last(e)) {
-			/* crc entry with no pointers after it: */
-			goto drop;
-		}
-
-		if (extent_entry_is_crc(next)) {
-			/* no pointers before next crc entry: */
-			goto drop;
-		}
-
-		if (prev && !bch2_crc_unpacked_cmp(u, prev_u)) {
-			/* identical to previous crc entry: */
-			goto drop;
-		}
-
-		if (!prev &&
-		    !u.csum_type &&
-		    !u.compression_type) {
-			/* null crc entry: */
-			union bch_extent_entry *e2;
-
-			extent_for_each_entry_from(e, e2, extent_entry_next(entry)) {
-				if (!extent_entry_is_ptr(e2))
-					break;
-
-				e2->ptr.offset += u.offset;
-			}
-			goto drop;
-		}
-
-		prev = crc;
-		prev_u = u;
-next:
-		entry = next;
-		continue;
-drop:
-		memmove_u64s_down(crc, next,
-				  (u64 *) extent_entry_last(e) - (u64 *) next);
-		e.k->u64s -= crc_u64s;
-	}
-
-	EBUG_ON(bkey_val_u64s(e.k) && !bch2_extent_nr_ptrs(e.c));
-}
-
-static bool should_drop_ptr(const struct bch_fs *c,
-			    struct bkey_s_c_extent e,
-			    const struct bch_extent_ptr *ptr)
-{
-	return ptr->cached && ptr_stale(bch_dev_bkey_exists(c, ptr->dev), ptr);
-}
-
 static void bch2_extent_drop_stale(struct bch_fs *c, struct bkey_s_extent e)
 {
-	struct bch_extent_ptr *ptr = &e.v->start->ptr;
-	bool dropped = false;
+	struct bch_extent_ptr *ptr;
 
-	while ((ptr = extent_ptr_next(e, ptr)))
-		if (should_drop_ptr(c, e.c, ptr)) {
-			__bch2_extent_drop_ptr(e, ptr);
-			dropped = true;
-		} else
-			ptr++;
-
-	if (dropped)
-		bch2_extent_drop_redundant_crcs(e);
+	bch2_extent_drop_ptrs(e, ptr,
+		ptr->cached &&
+		ptr_stale(bch_dev_bkey_exists(c, ptr->dev), ptr));
 }
 
 bool bch2_ptr_normalize(struct bch_fs *c, struct btree *b, struct bkey_s k)
@@ -475,6 +408,8 @@ void bch2_ptr_swab(const struct bkey_format *f, struct bkey_packed *k)
 		     entry < (union bch_extent_entry *) (d + bkeyp_val_u64s(f, k));
 		     entry = extent_entry_next(entry)) {
 			switch (extent_entry_type(entry)) {
+			case BCH_EXTENT_ENTRY_ptr:
+				break;
 			case BCH_EXTENT_ENTRY_crc32:
 				entry->crc32.csum = swab32(entry->crc32.csum);
 				break;
@@ -487,8 +422,6 @@ void bch2_ptr_swab(const struct bkey_format *f, struct bkey_packed *k)
 					swab64((__force u64) entry->crc128.csum.hi);
 				entry->crc128.csum.lo = (__force __le64)
 					swab64((__force u64) entry->crc128.csum.lo);
-				break;
-			case BCH_EXTENT_ENTRY_ptr:
 				break;
 			}
 		}
@@ -586,12 +519,45 @@ out:
 	return out - buf;
 }
 
-static inline bool dev_latency_better(struct bch_fs *c,
-			      const struct bch_extent_ptr *ptr1,
-			      const struct bch_extent_ptr *ptr2)
+static struct bch_dev_io_failures *dev_io_failures(struct bch_io_failures *f,
+						   unsigned dev)
 {
-	struct bch_dev *dev1 = bch_dev_bkey_exists(c, ptr1->dev);
-	struct bch_dev *dev2 = bch_dev_bkey_exists(c, ptr2->dev);
+	struct bch_dev_io_failures *i;
+
+	for (i = f->devs; i < f->devs + f->nr; i++)
+		if (i->dev == dev)
+			return i;
+
+	return NULL;
+}
+
+void bch2_mark_io_failure(struct bch_io_failures *failed,
+			  struct extent_ptr_decoded *p)
+{
+	struct bch_dev_io_failures *f = dev_io_failures(failed, p->ptr.dev);
+
+	if (!f) {
+		BUG_ON(failed->nr >= ARRAY_SIZE(failed->devs));
+
+		f = &failed->devs[failed->nr++];
+		f->dev		= p->ptr.dev;
+		f->nr_failed	= 1;
+		f->nr_retries	= 0;
+	} else {
+		f->nr_failed++;
+	}
+}
+
+/*
+ * returns true if p1 is better than p2:
+ */
+static inline bool ptr_better(struct bch_fs *c,
+			      const struct extent_ptr_decoded p1,
+			      const struct extent_ptr_decoded p2)
+{
+	struct bch_dev *dev1 = bch_dev_bkey_exists(c, p1.ptr.dev);
+	struct bch_dev *dev2 = bch_dev_bkey_exists(c, p2.ptr.dev);
+
 	u64 l1 = atomic64_read(&dev1->cur_latency[READ]);
 	u64 l2 = atomic64_read(&dev2->cur_latency[READ]);
 
@@ -602,31 +568,29 @@ static inline bool dev_latency_better(struct bch_fs *c,
 
 static int extent_pick_read_device(struct bch_fs *c,
 				   struct bkey_s_c_extent e,
-				   struct bch_devs_mask *avoid,
-				   struct extent_pick_ptr *pick)
+				   struct bch_io_failures *failed,
+				   struct extent_ptr_decoded *pick)
 {
-	const struct bch_extent_ptr *ptr;
-	struct bch_extent_crc_unpacked crc;
+	const union bch_extent_entry *entry;
+	struct extent_ptr_decoded p;
+	struct bch_dev_io_failures *f;
 	struct bch_dev *ca;
 	int ret = 0;
 
-	extent_for_each_ptr_crc(e, ptr, crc) {
-		ca = bch_dev_bkey_exists(c, ptr->dev);
+	extent_for_each_ptr_decode(e, p, entry) {
+		ca = bch_dev_bkey_exists(c, p.ptr.dev);
 
-		if (ptr->cached && ptr_stale(ca, ptr))
+		if (p.ptr.cached && ptr_stale(ca, &p.ptr))
 			continue;
 
-		if (avoid && test_bit(ptr->dev, avoid->d))
+		f = failed ? dev_io_failures(failed, p.ptr.dev) : NULL;
+		if (f && f->nr_failed >= f->nr_retries)
 			continue;
 
-		if (ret && !dev_latency_better(c, ptr, &pick->ptr))
+		if (ret && !ptr_better(c, p, *pick))
 			continue;
 
-		*pick = (struct extent_pick_ptr) {
-			.ptr	= *ptr,
-			.crc	= crc,
-		};
-
+		*pick = p;
 		ret = 1;
 	}
 
@@ -715,7 +679,7 @@ void bch2_btree_ptr_debugcheck(struct bch_fs *c, struct btree *b,
 			goto err;
 	}
 
-	if (!bch2_bkey_replicas_marked(c, BCH_DATA_BTREE, e.s_c)) {
+	if (!bch2_bkey_replicas_marked(c, btree_node_type(b), e.s_c)) {
 		bch2_bkey_val_to_text(c, btree_node_type(b),
 				     buf, sizeof(buf), k);
 		bch2_fs_bug(c,
@@ -752,11 +716,11 @@ int bch2_btree_ptr_to_text(struct bch_fs *c, char *buf,
 }
 
 int bch2_btree_pick_ptr(struct bch_fs *c, const struct btree *b,
-			struct bch_devs_mask *avoid,
-			struct extent_pick_ptr *pick)
+			struct bch_io_failures *failed,
+			struct extent_ptr_decoded *pick)
 {
 	return extent_pick_read_device(c, bkey_i_to_s_c_extent(&b->key),
-				       avoid, pick);
+				       failed, pick);
 }
 
 /* Extents */
@@ -908,7 +872,7 @@ static bool extent_i_save(struct btree *b, struct bkey_packed *dst,
 static inline void extent_sort_sift(struct btree_node_iter_large *iter,
 				    struct btree *b, size_t i)
 {
-	heap_sift_down(iter, i, extent_sort_cmp);
+	heap_sift_down(iter, i, extent_sort_cmp, NULL);
 }
 
 static inline void extent_sort_next(struct btree_node_iter_large *iter,
@@ -916,7 +880,7 @@ static inline void extent_sort_next(struct btree_node_iter_large *iter,
 				    struct btree_node_iter_set *i)
 {
 	sort_key_next(iter, b, i);
-	heap_sift_down(iter, i - iter->data, extent_sort_cmp);
+	heap_sift_down(iter, i - iter->data, extent_sort_cmp, NULL);
 }
 
 static void extent_sort_append(struct bch_fs *c,
@@ -964,7 +928,7 @@ struct btree_nr_keys bch2_extent_sort_fix_overlapping(struct bch_fs *c,
 
 	memset(&nr, 0, sizeof(nr));
 
-	heap_resort(iter, extent_sort_cmp);
+	heap_resort(iter, extent_sort_cmp, NULL);
 
 	while (!bch2_btree_node_iter_large_end(iter)) {
 		lk = __btree_node_offset_to_key(b, _l->k);
@@ -1076,8 +1040,9 @@ static void bch2_add_sectors(struct extent_insert_state *s,
 	if (!sectors)
 		return;
 
-	bch2_mark_key(c, k, sectors, BCH_DATA_USER, gc_pos_btree_node(b),
-		      &s->stats, s->trans->journal_res.seq, 0);
+	bch2_mark_key(c, BKEY_TYPE_EXTENTS, k, sectors > 0, sectors,
+		      gc_pos_btree_node(b), &s->stats,
+		      s->trans->journal_res.seq, 0);
 }
 
 static void bch2_subtract_sectors(struct extent_insert_state *s,
@@ -1748,8 +1713,7 @@ static void bch2_extent_debugcheck_extent(struct bch_fs *c, struct btree *b,
 		return;
 	}
 
-	if (!bkey_extent_is_cached(e.k) &&
-	    !bch2_bkey_replicas_marked(c, BCH_DATA_USER, e.s_c)) {
+	if (!bch2_bkey_replicas_marked(c, btree_node_type(b), e.s_c)) {
 		bch2_bkey_val_to_text(c, btree_node_type(b),
 				     buf, sizeof(buf), e.s_c);
 		bch2_fs_bug(c,
@@ -1853,25 +1817,25 @@ static void bch2_extent_crc_init(union bch_extent_crc *crc,
 void bch2_extent_crc_append(struct bkey_i_extent *e,
 			    struct bch_extent_crc_unpacked new)
 {
-	struct bch_extent_crc_unpacked crc;
-	const union bch_extent_entry *i;
-
-	BUG_ON(new.compressed_size > new.uncompressed_size);
-	BUG_ON(new.live_size != e->k.size);
-	BUG_ON(!new.compressed_size || !new.uncompressed_size);
-
-	/*
-	 * Look up the last crc entry, so we can check if we need to add
-	 * another:
-	 */
-	extent_for_each_crc(extent_i_to_s(e), crc, i)
-		;
-
-	if (!bch2_crc_unpacked_cmp(crc, new))
-		return;
-
 	bch2_extent_crc_init((void *) extent_entry_last(extent_i_to_s(e)), new);
 	__extent_entry_push(e);
+}
+
+void bch2_extent_ptr_decoded_append(struct bkey_i_extent *e,
+				    struct extent_ptr_decoded *p)
+{
+	struct bch_extent_crc_unpacked crc;
+	union bch_extent_entry *pos;
+
+	extent_for_each_crc(extent_i_to_s(e), crc, pos)
+		if (!bch2_crc_unpacked_cmp(crc, p->crc))
+			goto found;
+
+	bch2_extent_crc_append(e, p->crc);
+	pos = extent_entry_last(extent_i_to_s(e));
+found:
+	p->ptr.type = 1 << BCH_EXTENT_ENTRY_ptr;
+	__extent_entry_insert(e, pos, to_entry(&p->ptr));
 }
 
 /*
@@ -1957,8 +1921,8 @@ void bch2_extent_mark_replicas_cached(struct bch_fs *c,
  * other devices, it will still pick a pointer from avoid.
  */
 int bch2_extent_pick_ptr(struct bch_fs *c, struct bkey_s_c k,
-			 struct bch_devs_mask *avoid,
-			 struct extent_pick_ptr *pick)
+			 struct bch_io_failures *failed,
+			 struct extent_ptr_decoded *pick)
 {
 	int ret;
 
@@ -1969,7 +1933,7 @@ int bch2_extent_pick_ptr(struct bch_fs *c, struct bkey_s_c k,
 	case BCH_EXTENT:
 	case BCH_EXTENT_CACHED:
 		ret = extent_pick_read_device(c, bkey_s_c_to_extent(k),
-					      avoid, pick);
+					      failed, pick);
 
 		if (!ret && !bkey_extent_is_cached(k.k))
 			ret = -EIO;

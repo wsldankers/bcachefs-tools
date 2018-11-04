@@ -250,7 +250,6 @@ static void copy_xattrs(struct bch_fs *c, struct bch_inode_unpacked *dst,
 }
 
 static char buf[1 << 20] __aligned(PAGE_SIZE);
-static const size_t buf_pages = sizeof(buf) / PAGE_SIZE;
 
 static void write_data(struct bch_fs *c,
 		       struct bch_inode_unpacked *dst_inode,
@@ -258,7 +257,7 @@ static void write_data(struct bch_fs *c,
 {
 	struct {
 		struct bch_write_op op;
-		struct bio_vec bv[buf_pages];
+		struct bio_vec bv[sizeof(buf) / PAGE_SIZE];
 	} o;
 	struct closure cl;
 
@@ -267,7 +266,7 @@ static void write_data(struct bch_fs *c,
 
 	closure_init_stack(&cl);
 
-	bio_init(&o.op.wbio.bio, o.bv, buf_pages);
+	bio_init(&o.op.wbio.bio, o.bv, ARRAY_SIZE(o.bv));
 	o.op.wbio.bio.bi_iter.bi_size = len;
 	bch2_bio_map(&o.op.wbio.bio, buf);
 

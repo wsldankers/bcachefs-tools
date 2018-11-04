@@ -35,7 +35,7 @@ void __bch2_btree_verify(struct bch_fs *c, struct btree *b)
 	struct btree *v = c->verify_data;
 	struct btree_node *n_ondisk, *n_sorted, *n_inmemory;
 	struct bset *sorted, *inmemory;
-	struct extent_pick_ptr pick;
+	struct extent_ptr_decoded pick;
 	struct bch_dev *ca;
 	struct bio *bio;
 
@@ -62,7 +62,9 @@ void __bch2_btree_verify(struct bch_fs *c, struct btree *b)
 	if (!bch2_dev_get_ioref(ca, READ))
 		return;
 
-	bio = bio_alloc_bioset(GFP_NOIO, btree_pages(c), &c->btree_bio);
+	bio = bio_alloc_bioset(GFP_NOIO,
+			buf_pages(n_sorted, btree_bytes(c)),
+			&c->btree_bio);
 	bio_set_dev(bio, ca->disk_sb.bdev);
 	bio->bi_opf		= REQ_OP_READ|REQ_META;
 	bio->bi_iter.bi_sector	= pick.ptr.offset;

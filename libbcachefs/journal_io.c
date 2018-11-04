@@ -429,7 +429,6 @@ static int journal_read_bucket(struct bch_dev *ca,
 {
 	struct bch_fs *c = ca->fs;
 	struct journal_device *ja = &ca->journal;
-	struct bio *bio = ja->bio;
 	struct jset *j = NULL;
 	unsigned sectors, sectors_read = 0;
 	u64 offset = bucket_to_sector(ca, ja->buckets[bucket]),
@@ -441,10 +440,14 @@ static int journal_read_bucket(struct bch_dev *ca,
 
 	while (offset < end) {
 		if (!sectors_read) {
-reread:			sectors_read = min_t(unsigned,
+			struct bio *bio;
+reread:
+			sectors_read = min_t(unsigned,
 				end - offset, buf->size >> 9);
 
-			bio_reset(bio);
+			bio = bio_kmalloc(GFP_KERNEL,
+					  buf_pages(buf->data,
+						    sectors_read << 9));
 			bio_set_dev(bio, ca->disk_sb.bdev);
 			bio->bi_iter.bi_sector	= offset;
 			bio->bi_iter.bi_size	= sectors_read << 9;
@@ -452,6 +455,7 @@ reread:			sectors_read = min_t(unsigned,
 			bch2_bio_map(bio, buf->data);
 
 			ret = submit_bio_wait(bio);
+			bio_put(bio);
 
 			if (bch2_dev_io_err_on(ret, ca,
 					       "journal read from sector %llu",
@@ -849,28 +853,6 @@ fsck_err:
 
 /* journal replay: */
 
-int bch2_journal_mark(struct bch_fs *c, struct list_head *list)
-{
-	struct bkey_i *k, *n;
-	struct jset_entry *j;
-	struct journal_replay *r;
-	int ret;
-
-	list_for_each_entry(r, list, list)
-		for_each_jset_key(k, n, j, &r->j) {
-			enum bkey_type type = bkey_type(j->level, j->btree_id);
-			struct bkey_s_c k_s_c = bkey_i_to_s_c(k);
-
-			if (btree_type_has_ptrs(type)) {
-				ret = bch2_btree_mark_key_initial(c, type, k_s_c);
-				if (ret)
-					return ret;
-			}
-		}
-
-	return 0;
-}
-
 int bch2_journal_replay(struct bch_fs *c, struct list_head *list)
 {
 	struct journal *j = &c->journal;
@@ -1064,14 +1046,19 @@ static int journal_write_alloc(struct journal *j, struct journal_buf *w,
 	 * entry - that's why we drop pointers to devices <= current free space,
 	 * i.e. whichever device was limiting the current journal entry size.
 	 */
-	extent_for_each_ptr_backwards(e, ptr) {
-		   ca = bch_dev_bkey_exists(c, ptr->dev);
+	bch2_extent_drop_ptrs(e, ptr, ({
+		ca = bch_dev_bkey_exists(c, ptr->dev);
 
-		if (ca->mi.state != BCH_MEMBER_STATE_RW ||
-		    ca->journal.sectors_free <= sectors)
-			__bch2_extent_drop_ptr(e, ptr);
-		else
-			ca->journal.sectors_free -= sectors;
+		ca->mi.state != BCH_MEMBER_STATE_RW ||
+		ca->journal.sectors_free <= sectors;
+	}));
+
+	extent_for_each_ptr(e, ptr) {
+		ca = bch_dev_bkey_exists(c, ptr->dev);
+
+		BUG_ON(ca->mi.state != BCH_MEMBER_STATE_RW ||
+		       ca->journal.sectors_free <= sectors);
+		ca->journal.sectors_free -= sectors;
 	}
 
 	replicas = bch2_extent_nr_ptrs(e.c);
