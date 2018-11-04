@@ -69,8 +69,15 @@ static struct meminfo read_meminfo(void)
 void run_shrinkers(void)
 {
 	struct shrinker *shrinker;
-	struct meminfo info = read_meminfo();
-	s64 want_shrink = (info.total >> 2) - info.available;
+	struct meminfo info;
+	s64 want_shrink;
+
+	/* Fast out if there are no shrinkers to run. */
+	if (list_empty(&shrinker_list))
+		return;
+
+	info = read_meminfo();
+	want_shrink = (info.total >> 2) - info.available;
 
 	if (want_shrink <= 0)
 		return;
