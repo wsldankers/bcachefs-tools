@@ -351,6 +351,52 @@ static unsigned get_dev_has_data(struct bch_sb *sb, unsigned dev)
 	return data_has;
 }
 
+static int bch2_sb_get_target(struct bch_sb *sb, char *buf, size_t len, u64 v)
+{
+	struct target t = target_decode(v);
+	int ret;
+
+	switch (t.type) {
+	case TARGET_NULL:
+		return scnprintf(buf, len, "none");
+	case TARGET_DEV: {
+		struct bch_sb_field_members *mi = bch2_sb_get_members(sb);
+		struct bch_member *m = mi->members + t.dev;
+
+		if (bch2_dev_exists(sb, mi, t.dev)) {
+			char uuid_str[40];
+
+			uuid_unparse(m->uuid.b, uuid_str);
+
+			ret = scnprintf(buf, len, "Device %u (%s)", t.dev,
+				uuid_str);
+		} else {
+			ret = scnprintf(buf, len, "Bad device %u", t.dev);
+		}
+
+		break;
+	}
+	case TARGET_GROUP: {
+		struct bch_sb_field_disk_groups *gi;
+		gi = bch2_sb_get_disk_groups(sb);
+
+		struct bch_disk_group *g = gi->entries + t.group;
+
+		if (t.group < disk_groups_nr(gi) && !BCH_GROUP_DELETED(g)) {
+			ret = scnprintf(buf, len, "Group %u (%.*s)", t.group,
+				BCH_SB_LABEL_SIZE, g->label);
+		} else {
+			ret = scnprintf(buf, len, "Bad group %u", t.group);
+		}
+		break;
+	}
+	default:
+		BUG();
+	}
+
+	return ret;
+}
+
 /* superblock printing: */
 
 static void bch2_sb_print_layout(struct bch_sb *sb, enum units units)
@@ -402,7 +448,7 @@ static void bch2_sb_print_members(struct bch_sb *sb, struct bch_sb_field *f,
 		char member_uuid_str[40];
 		char data_allowed_str[100];
 		char data_has_str[100];
-		char group[64];
+		char group[BCH_SB_LABEL_SIZE+10];
 		char time_str[64];
 
 		if (!bch2_member_exists(m))
@@ -414,12 +460,14 @@ static void bch2_sb_print_members(struct bch_sb *sb, struct bch_sb_field *f,
 			unsigned idx = BCH_MEMBER_GROUP(m) - 1;
 
 			if (idx < disk_groups_nr(gi)) {
-				memcpy(group, gi->entries[idx].label,
-				       BCH_SB_LABEL_SIZE);
-				group[BCH_SB_LABEL_SIZE] = '\0';
+				snprintf(group, sizeof(group), "%.*s (%u)",
+					BCH_SB_LABEL_SIZE,
+					gi->entries[idx].label, idx);
 			} else {
-				strcpy(group, "(bad disk groups section");
+				strcpy(group, "(bad disk groups section)");
 			}
+		} else {
+			strcpy(group, "(none)");
 		}
 
 		bch2_scnprint_flag_list(data_allowed_str,
@@ -569,13 +617,17 @@ void bch2_sb_print(struct bch_sb *sb, bool print_layout,
 	char fields_have_str[200];
 	char label[BCH_SB_LABEL_SIZE + 1];
 	char time_str[64];
+	char foreground_str[64];
+	char background_str[64];
+	char promote_str[64];
 	struct bch_sb_field *f;
 	u64 fields_have = 0;
 	unsigned nr_devices = 0;
 	time_t time_base = le64_to_cpu(sb->time_base_lo) / NSEC_PER_SEC;
 
-	memset(label, 0, sizeof(label));
-	memcpy(label, sb->label, sizeof(sb->label));
+	memcpy(label, sb->label, BCH_SB_LABEL_SIZE);
+	label[BCH_SB_LABEL_SIZE] = '\0';
+
 	uuid_unparse(sb->user_uuid.b, user_uuid_str);
 	uuid_unparse(sb->uuid.b, internal_uuid_str);
 
@@ -597,6 +649,15 @@ void bch2_sb_print(struct bch_sb *sb, bool print_layout,
 		     m++)
 			nr_devices += bch2_member_exists(m);
 	}
+
+	bch2_sb_get_target(sb, foreground_str, sizeof(foreground_str),
+		BCH_SB_FOREGROUND_TARGET(sb));
+
+	bch2_sb_get_target(sb, background_str, sizeof(background_str),
+		BCH_SB_BACKGROUND_TARGET(sb));
+
+	bch2_sb_get_target(sb, promote_str, sizeof(promote_str),
+		BCH_SB_PROMOTE_TARGET(sb));
 
 	vstruct_for_each(sb, f)
 		fields_have |= 1 << le32_to_cpu(f->type);
@@ -620,9 +681,9 @@ void bch2_sb_print(struct bch_sb *sb, bool print_layout,
 	       "Data checksum type:		%s (%llu)\n"
 	       "Compression type:		%s (%llu)\n"
 
-	       "Foreground write target:	%llu\n"
-	       "Background write target:	%llu\n"
-	       "Promote target:			%llu\n"
+	       "Foreground write target:	%s\n"
+	       "Background write target:	%s\n"
+	       "Promote target:			%s\n"
 
 	       "String hash type:		%s (%llu)\n"
 	       "32 bit inodes:			%llu\n"
@@ -664,9 +725,9 @@ void bch2_sb_print(struct bch_sb *sb, bool print_layout,
 	       : "unknown",
 	       BCH_SB_COMPRESSION_TYPE(sb),
 
-	       BCH_SB_FOREGROUND_TARGET(sb),
-	       BCH_SB_BACKGROUND_TARGET(sb),
-	       BCH_SB_PROMOTE_TARGET(sb),
+	       foreground_str,
+	       background_str,
+	       promote_str,
 
 	       BCH_SB_STR_HASH_TYPE(sb) < BCH_STR_HASH_NR
 	       ? bch2_str_hash_types[BCH_SB_STR_HASH_TYPE(sb)]
