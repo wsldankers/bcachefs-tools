@@ -568,14 +568,25 @@ void bch2_sb_print(struct bch_sb *sb, bool print_layout,
 	char user_uuid_str[40], internal_uuid_str[40];
 	char fields_have_str[200];
 	char label[BCH_SB_LABEL_SIZE + 1];
+	char time_str[64];
 	struct bch_sb_field *f;
 	u64 fields_have = 0;
 	unsigned nr_devices = 0;
+	time_t time_base = le64_to_cpu(sb->time_base_lo) / NSEC_PER_SEC;
 
 	memset(label, 0, sizeof(label));
 	memcpy(label, sb->label, sizeof(sb->label));
 	uuid_unparse(sb->user_uuid.b, user_uuid_str);
 	uuid_unparse(sb->uuid.b, internal_uuid_str);
+
+	if (time_base) {
+		struct tm *tm = localtime(&time_base);
+		size_t err = strftime(time_str, sizeof(time_str), "%c", tm);
+		if (!err)
+			strcpy(time_str, "(formatting error)");
+	} else {
+		strcpy(time_str, "(not set)");
+	}
 
 	mi = bch2_sb_get_members(sb);
 	if (mi) {
@@ -596,6 +607,7 @@ void bch2_sb_print(struct bch_sb *sb, bool print_layout,
 	       "Internal UUID:			%s\n"
 	       "Label:				%s\n"
 	       "Version:			%llu\n"
+	       "Created:			%s\n"
 	       "Block_size:			%s\n"
 	       "Btree node size:		%s\n"
 	       "Error action:			%s\n"
@@ -624,6 +636,7 @@ void bch2_sb_print(struct bch_sb *sb, bool print_layout,
 	       internal_uuid_str,
 	       label,
 	       le64_to_cpu(sb->version),
+	       time_str,
 	       pr_units(le16_to_cpu(sb->block_size), units),
 	       pr_units(BCH_SB_BTREE_NODE_SIZE(sb), units),
 
