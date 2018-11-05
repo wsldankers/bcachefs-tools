@@ -403,6 +403,7 @@ static void bch2_sb_print_members(struct bch_sb *sb, struct bch_sb_field *f,
 		char data_allowed_str[100];
 		char data_has_str[100];
 		char group[64];
+		char time_str[64];
 
 		if (!bch2_member_exists(m))
 			continue;
@@ -435,6 +436,15 @@ static void bch2_sb_print_members(struct bch_sb *sb, struct bch_sb_field *f,
 		if (!data_has_str[0])
 			strcpy(data_has_str, "(none)");
 
+		if (last_mount) {
+			struct tm *tm = localtime(&last_mount);
+			size_t err = strftime(time_str, sizeof(time_str), "%c", tm);
+			if (!err)
+				strcpy(time_str, "(formatting error)");
+		} else {
+			strcpy(time_str, "(never)");
+		}
+
 		printf("  Device %u:\n"
 		       "    UUID:			%s\n"
 		       "    Size:			%s\n"
@@ -456,7 +466,7 @@ static void bch2_sb_print_members(struct bch_sb *sb, struct bch_sb_field *f,
 		       pr_units(le16_to_cpu(m->bucket_size), units),
 		       le16_to_cpu(m->first_bucket),
 		       le64_to_cpu(m->nbuckets),
-		       last_mount ? ctime(&last_mount) : "(never)",
+		       time_str,
 
 		       BCH_MEMBER_STATE(m) < BCH_MEMBER_STATE_NR
 		       ? bch2_dev_state[BCH_MEMBER_STATE(m)]
