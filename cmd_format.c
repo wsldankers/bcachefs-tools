@@ -87,7 +87,7 @@ static void usage(void)
 	     "      --replicas=#            Sets both data and metadata replicas\n"
 	     "      --encrypted             Enable whole filesystem encryption (chacha20/poly1305)\n"
 	     "      --no_passphrase         Don't encrypt master encryption key\n"
-	     "      --error_action=(continue|remount-ro|panic)\n"
+	     "  -e, --error_action=(continue|remount-ro|panic)\n"
 	     "                              Action to take on filesystem error\n"
 	     "  -L, --label=label\n"
 	     "  -U, --uuid=uuid\n"
@@ -153,7 +153,7 @@ int cmd_format(int argc, char *argv[])
 	darray_init(devices);
 
 	while ((opt = getopt_long(argc, argv,
-				  "-b:e:L:U:ft:qh",
+				  "-b:e:g:L:U:fqh",
 				  format_opts,
 				  NULL)) != -1)
 		switch (opt) {
@@ -208,13 +208,13 @@ int cmd_format(int argc, char *argv[])
 			opts.meta_replicas = opts.data_replicas;
 			break;
 		case O_foreground_target:
-			opts.foreground_target = strdup(optarg);
+			opts.foreground_target = optarg;
 			break;
 		case O_background_target:
-			opts.background_target = strdup(optarg);
+			opts.background_target = optarg;
 			break;
 		case O_promote_target:
-			opts.promote_target = strdup(optarg);
+			opts.promote_target = optarg;
 			break;
 		case O_encrypted:
 			opts.encrypted = true;
@@ -230,7 +230,7 @@ int cmd_format(int argc, char *argv[])
 			break;
 		case O_label:
 		case 'L':
-			opts.label = strdup(optarg);
+			opts.label = optarg;
 			break;
 		case O_uuid:
 		case 'U':
@@ -253,7 +253,7 @@ int cmd_format(int argc, char *argv[])
 			break;
 		case O_group:
 		case 'g':
-			dev_opts.group = strdup(optarg);
+			dev_opts.group = optarg;
 			break;
 		case O_discard:
 			dev_opts.discard = true;
@@ -269,7 +269,7 @@ int cmd_format(int argc, char *argv[])
 				die("invalid durability");
 			break;
 		case O_no_opt:
-			dev_opts.path = strdup(optarg);
+			dev_opts.path = optarg;
 			darray_append(devices, dev_opts);
 			dev_opts.size = 0;
 			break;
@@ -284,7 +284,7 @@ int cmd_format(int argc, char *argv[])
 			break;
 		}
 
-	if (!darray_size(devices))
+	if (darray_empty(devices))
 		die("Please supply a device");
 
 	if (opts.encrypted && !no_passphrase)
@@ -304,6 +304,8 @@ int cmd_format(int argc, char *argv[])
 		memzero_explicit(opts.passphrase, strlen(opts.passphrase));
 		free(opts.passphrase);
 	}
+
+	darray_free(devices);
 
 	return 0;
 }
