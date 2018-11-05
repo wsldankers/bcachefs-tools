@@ -26,8 +26,6 @@
 
 #define NSEC_PER_SEC	1000000000L
 
-#define BCH_MIN_NR_NBUCKETS	(1 << 10)
-
 /* minimum size filesystem we can create, given a bucket size: */
 static u64 min_size(unsigned bucket_size)
 {

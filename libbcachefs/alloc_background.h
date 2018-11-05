@@ -5,7 +5,7 @@
 #include "alloc_types.h"
 #include "debug.h"
 
-#define ALLOC_SCAN_BATCH(ca)		((ca)->mi.nbuckets >> 9)
+#define ALLOC_SCAN_BATCH(ca)		max_t(size_t, 1, (ca)->mi.nbuckets >> 9)
 
 const char *bch2_alloc_invalid(const struct bch_fs *, struct bkey_s_c);
 int bch2_alloc_to_text(struct bch_fs *, char *, size_t, struct bkey_s_c);
@@ -56,6 +56,6 @@ int bch2_dev_allocator_start(struct bch_dev *);
 
 int bch2_alloc_write(struct bch_fs *);
 int bch2_fs_allocator_start(struct bch_fs *);
-void bch2_fs_allocator_init(struct bch_fs *);
+void bch2_fs_allocator_background_init(struct bch_fs *);
 
 #endif /* _BCACHEFS_ALLOC_BACKGROUND_H */
