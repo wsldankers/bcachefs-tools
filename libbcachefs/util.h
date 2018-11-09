@@ -253,6 +253,32 @@ do {									\
 #define ANYSINT_MAX(t)							\
 	((((t) 1 << (sizeof(t) * 8 - 2)) - (t) 1) * (t) 2 + (t) 1)
 
+struct printbuf {
+	char		*pos;
+	char		*end;
+};
+
+static inline size_t printbuf_remaining(struct printbuf *buf)
+{
+	return buf->end - buf->pos;
+}
+
+#define _PBUF(_buf, _len)						\
+	((struct printbuf) {						\
+		.pos	= _buf,						\
+		.end	= _buf + _len,					\
+	})
+
+#define PBUF(_buf) _PBUF(_buf, sizeof(_buf))
+
+#define pr_buf(_out, ...)						\
+do {									\
+	(_out)->pos += scnprintf((_out)->pos, printbuf_remaining(_out),	\
+				 __VA_ARGS__);				\
+} while (0)
+
+void bch_scnmemcpy(struct printbuf *, const char *, size_t);
+
 int bch2_strtoint_h(const char *, int *);
 int bch2_strtouint_h(const char *, unsigned int *);
 int bch2_strtoll_h(const char *, long long *);
@@ -329,9 +355,10 @@ ssize_t bch2_hprint(char *buf, s64 v);
 
 bool bch2_is_zero(const void *, size_t);
 
-ssize_t bch2_scnprint_string_list(char *, size_t, const char * const[], size_t);
+void bch2_string_opt_to_text(struct printbuf *,
+			     const char * const [], size_t);
 
-ssize_t bch2_scnprint_flag_list(char *, size_t, const char * const[], u64);
+void bch2_flags_to_text(struct printbuf *, const char * const[], u64);
 u64 bch2_read_flag_list(char *, const char * const[]);
 
 #define NR_QUANTILES	15
@@ -469,95 +496,11 @@ do {									\
 			    (var)->p_term_inverse, 1, INT_MAX);		\
 } while (0)
 
-#define __DIV_SAFE(n, d, zero)						\
-({									\
-	typeof(n) _n = (n);						\
-	typeof(d) _d = (d);						\
-	_d ? _n / _d : zero;						\
-})
-
-#define DIV_SAFE(n, d)	__DIV_SAFE(n, d, 0)
-
 #define container_of_or_null(ptr, type, member)				\
 ({									\
 	typeof(ptr) _ptr = ptr;						\
 	_ptr ? container_of(_ptr, type, member) : NULL;			\
 })
-
-#define RB_INSERT(root, new, member, cmp)				\
-({									\
-	__label__ dup;							\
-	struct rb_node **n = &(root)->rb_node, *parent = NULL;		\
-	typeof(new) this;						\
-	int res, ret = -1;						\
-									\
-	while (*n) {							\
-		parent = *n;						\
-		this = container_of(*n, typeof(*(new)), member);	\
-		res = cmp(new, this);					\
-		if (!res)						\
-			goto dup;					\
-		n = res < 0						\
-			? &(*n)->rb_left				\
-			: &(*n)->rb_right;				\
-	}								\
-									\
-	rb_link_node(&(new)->member, parent, n);			\
-	rb_insert_color(&(new)->member, root);				\
-	ret = 0;							\
-dup:									\
-	ret;								\
-})
-
-#define RB_SEARCH(root, search, member, cmp)				\
-({									\
-	struct rb_node *n = (root)->rb_node;				\
-	typeof(&(search)) this, ret = NULL;				\
-	int res;							\
-									\
-	while (n) {							\
-		this = container_of(n, typeof(search), member);		\
-		res = cmp(&(search), this);				\
-		if (!res) {						\
-			ret = this;					\
-			break;						\
-		}							\
-		n = res < 0						\
-			? n->rb_left					\
-			: n->rb_right;					\
-	}								\
-	ret;								\
-})
-
-#define RB_GREATER(root, search, member, cmp)				\
-({									\
-	struct rb_node *n = (root)->rb_node;				\
-	typeof(&(search)) this, ret = NULL;				\
-	int res;							\
-									\
-	while (n) {							\
-		this = container_of(n, typeof(search), member);		\
-		res = cmp(&(search), this);				\
-		if (res < 0) {						\
-			ret = this;					\
-			n = n->rb_left;					\
-		} else							\
-			n = n->rb_right;				\
-	}								\
-	ret;								\
-})
-
-#define RB_FIRST(root, type, member)					\
-	container_of_or_null(rb_first(root), type, member)
-
-#define RB_LAST(root, type, member)					\
-	container_of_or_null(rb_last(root), type, member)
-
-#define RB_NEXT(ptr, member)						\
-	container_of_or_null(rb_next(&(ptr)->member), typeof(*ptr), member)
-
-#define RB_PREV(ptr, member)						\
-	container_of_or_null(rb_prev(&(ptr)->member), typeof(*ptr), member)
 
 /* Does linear interpolation between powers of two */
 static inline unsigned fract_exp_two(unsigned x, unsigned fract_bits)
@@ -716,8 +659,6 @@ static inline struct bio_vec next_contig_bvec(struct bio *bio,
 
 #define bio_for_each_contig_segment(bv, bio, iter)			\
 	__bio_for_each_contig_segment(bv, bio, iter, (bio)->bi_iter)
-
-size_t bch_scnmemcpy(char *, size_t, const char *, size_t);
 
 void sort_cmp_size(void *base, size_t num, size_t size,
 	  int (*cmp_func)(const void *, const void *, size_t),

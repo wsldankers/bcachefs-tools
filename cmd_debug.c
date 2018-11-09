@@ -160,8 +160,8 @@ static void list_keys(struct bch_fs *c, enum btree_id btree_id,
 		if (bkey_cmp(k.k->p, end) > 0)
 			break;
 
-		bch2_bkey_val_to_text(c, bkey_type(0, btree_id),
-				      buf, sizeof(buf), k);
+		bch2_bkey_val_to_text(&PBUF(buf), c,
+				bkey_type(0, btree_id), k);
 		puts(buf);
 	}
 	bch2_btree_iter_unlock(&iter);
@@ -178,7 +178,7 @@ static void list_btree_formats(struct bch_fs *c, enum btree_id btree_id,
 		if (bkey_cmp(b->key.k.p, end) > 0)
 			break;
 
-		bch2_print_btree_node(c, b, buf, sizeof(buf));
+		bch2_btree_node_to_text(&PBUF(buf), c, b);
 		puts(buf);
 	}
 	bch2_btree_iter_unlock(&iter);
@@ -198,14 +198,13 @@ static void list_nodes_keys(struct bch_fs *c, enum btree_id btree_id,
 		if (bkey_cmp(b->key.k.p, end) > 0)
 			break;
 
-		bch2_print_btree_node(c, b, buf, sizeof(buf));
+		bch2_btree_node_to_text(&PBUF(buf), c, b);
 		fputs(buf, stdout);
 
-		buf[0] = '\t';
-
 		for_each_btree_node_key_unpack(b, k, &node_iter, &unpacked) {
-			bch2_bkey_val_to_text(c, bkey_type(0, btree_id),
-					      buf + 1, sizeof(buf) - 1, k);
+			bch2_bkey_val_to_text(&PBUF(buf), c,
+					bkey_type(0, btree_id), k);
+			putchar('\t');
 			puts(buf);
 		}
 	}

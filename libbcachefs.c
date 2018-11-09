@@ -470,17 +470,15 @@ static void bch2_sb_print_members(struct bch_sb *sb, struct bch_sb_field *f,
 			strcpy(group, "(none)");
 		}
 
-		bch2_scnprint_flag_list(data_allowed_str,
-					sizeof(data_allowed_str),
-					bch2_data_types,
-					BCH_MEMBER_DATA_ALLOWED(m));
+		bch2_flags_to_text(&PBUF(data_allowed_str),
+				   bch2_data_types,
+				   BCH_MEMBER_DATA_ALLOWED(m));
 		if (!data_allowed_str[0])
 			strcpy(data_allowed_str, "(none)");
 
-		bch2_scnprint_flag_list(data_has_str,
-					sizeof(data_has_str),
-					bch2_data_types,
-					get_dev_has_data(sb, i));
+		bch2_flags_to_text(&PBUF(data_has_str),
+				   bch2_data_types,
+				   get_dev_has_data(sb, i));
 		if (!data_has_str[0])
 			strcpy(data_has_str, "(none)");
 
@@ -661,8 +659,8 @@ void bch2_sb_print(struct bch_sb *sb, bool print_layout,
 
 	vstruct_for_each(sb, f)
 		fields_have |= 1 << le32_to_cpu(f->type);
-	bch2_scnprint_flag_list(fields_have_str, sizeof(fields_have_str),
-				bch2_sb_fields, fields_have);
+	bch2_flags_to_text(&PBUF(fields_have_str),
+			   bch2_sb_fields, fields_have);
 
 	printf("External UUID:			%s\n"
 	       "Internal UUID:			%s\n"
