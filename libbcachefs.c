@@ -545,6 +545,26 @@ static void bch2_sb_print_crypt(struct bch_sb *sb, struct bch_sb_field *f,
 	       BCH_KDF_SCRYPT_P(crypt));
 }
 
+static void bch2_sb_print_replicas_v0(struct bch_sb *sb, struct bch_sb_field *f,
+				   enum units units)
+{
+	struct bch_sb_field_replicas_v0 *replicas = field_to_type(f, replicas_v0);
+	struct bch_replicas_entry_v0 *e;
+	unsigned i;
+
+	for_each_replicas_entry(replicas, e) {
+		printf_pad(32, "  %s:", bch2_data_types[e->data_type]);
+
+		putchar('[');
+		for (i = 0; i < e->nr_devs; i++) {
+			if (i)
+				putchar(' ');
+			printf("%u", e->devs[i]);
+		}
+		printf("]\n");
+	}
+}
+
 static void bch2_sb_print_replicas(struct bch_sb *sb, struct bch_sb_field *f,
 				   enum units units)
 {
@@ -553,7 +573,10 @@ static void bch2_sb_print_replicas(struct bch_sb *sb, struct bch_sb_field *f,
 	unsigned i;
 
 	for_each_replicas_entry(replicas, e) {
-		printf_pad(32, "  %s:", bch2_data_types[e->data_type]);
+		printf_pad(32, "  %s: %u/%u",
+			   bch2_data_types[e->data_type],
+			   e->nr_required,
+			   e->nr_devs);
 
 		putchar('[');
 		for (i = 0; i < e->nr_devs; i++) {
