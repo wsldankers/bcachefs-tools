@@ -21,6 +21,8 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 
+#include <raid/raid.h>
+
 #include "cmds.h"
 
 static void usage(void)
@@ -141,6 +143,8 @@ static int data_cmds(int argc, char *argv[])
 
 int main(int argc, char *argv[])
 {
+	raid_init();
+
 	full_cmd = argv[0];
 
 	setvbuf(stdout, NULL, _IOLBF, 0);
