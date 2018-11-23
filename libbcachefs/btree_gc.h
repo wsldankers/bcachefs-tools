@@ -6,7 +6,7 @@
 enum bkey_type;
 
 void bch2_coalesce(struct bch_fs *);
-void bch2_gc(struct bch_fs *);
+int bch2_gc(struct bch_fs *, struct list_head *, bool);
 void bch2_gc_thread_stop(struct bch_fs *);
 int bch2_gc_thread_start(struct bch_fs *);
 int bch2_initial_gc(struct bch_fs *, struct list_head *);
@@ -54,11 +54,22 @@ static inline int gc_pos_cmp(struct gc_pos l, struct gc_pos r)
 	return 0;
 }
 
+static inline enum gc_phase btree_id_to_gc_phase(enum btree_id id)
+{
+	switch (id) {
+#define DEF_BTREE_ID(n, v, s) case BTREE_ID_##n: return GC_PHASE_BTREE_##n;
+	DEFINE_BCH_BTREE_IDS()
+#undef DEF_BTREE_ID
+	default:
+		BUG();
+	}
+}
+
 static inline struct gc_pos gc_pos_btree(enum btree_id id,
 					 struct bpos pos, unsigned level)
 {
 	return (struct gc_pos) {
-		.phase	= GC_PHASE_BTREE_EXTENTS + id,
+		.phase	= btree_id_to_gc_phase(id),
 		.pos	= pos,
 		.level	= level,
 	};
@@ -93,14 +104,14 @@ static inline struct gc_pos gc_pos_alloc(struct bch_fs *c, struct open_bucket *o
 	};
 }
 
-static inline bool gc_will_visit(struct bch_fs *c, struct gc_pos pos)
+static inline bool gc_visited(struct bch_fs *c, struct gc_pos pos)
 {
 	unsigned seq;
 	bool ret;
 
 	do {
 		seq = read_seqcount_begin(&c->gc_pos_lock);
-		ret = gc_pos_cmp(c->gc_pos, pos) < 0;
+		ret = gc_pos_cmp(pos, c->gc_pos) <= 0;
 	} while (read_seqcount_retry(&c->gc_pos_lock, seq));
 
 	return ret;

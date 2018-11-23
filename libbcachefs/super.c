@@ -19,6 +19,7 @@
 #include "compress.h"
 #include "debug.h"
 #include "disk_groups.h"
+#include "ec.h"
 #include "error.h"
 #include "fs.h"
 #include "fs-io.h"
@@ -395,6 +396,7 @@ static void bch2_fs_free(struct bch_fs *c)
 
 	bch2_fs_quota_exit(c);
 	bch2_fs_fsio_exit(c);
+	bch2_fs_ec_exit(c);
 	bch2_fs_encryption_exit(c);
 	bch2_fs_io_exit(c);
 	bch2_fs_btree_cache_exit(c);
@@ -403,7 +405,7 @@ static void bch2_fs_free(struct bch_fs *c)
 	bch2_io_clock_exit(&c->io_clock[READ]);
 	bch2_fs_compress_exit(c);
 	percpu_free_rwsem(&c->usage_lock);
-	free_percpu(c->usage_percpu);
+	free_percpu(c->usage[0]);
 	mempool_exit(&c->btree_iters_pool);
 	mempool_exit(&c->btree_bounce_pool);
 	bioset_exit(&c->btree_bio);
@@ -576,6 +578,11 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 	INIT_LIST_HEAD(&c->fsck_errors);
 	mutex_init(&c->fsck_error_lock);
 
+	INIT_LIST_HEAD(&c->ec_new_stripe_list);
+	mutex_init(&c->ec_new_stripe_lock);
+	mutex_init(&c->ec_stripes_lock);
+	spin_lock_init(&c->ec_stripes_heap_lock);
+
 	seqcount_init(&c->gc_pos_lock);
 
 	c->copy_gc_enabled		= 1;
@@ -631,7 +638,7 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 			max(offsetof(struct btree_read_bio, bio),
 			    offsetof(struct btree_write_bio, wbio.bio)),
 			BIOSET_NEED_BVECS) ||
-	    !(c->usage_percpu = alloc_percpu(struct bch_fs_usage)) ||
+	    !(c->usage[0] = alloc_percpu(struct bch_fs_usage)) ||
 	    percpu_init_rwsem(&c->usage_lock) ||
 	    mempool_init_kvpmalloc_pool(&c->btree_bounce_pool, 1,
 					btree_bytes(c)) ||
@@ -644,6 +651,7 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 	    bch2_fs_io_init(c) ||
 	    bch2_fs_encryption_init(c) ||
 	    bch2_fs_compress_init(c) ||
+	    bch2_fs_ec_init(c) ||
 	    bch2_fs_fsio_init(c))
 		goto err;
 
@@ -712,6 +720,10 @@ const char *bch2_fs_start(struct bch_fs *c)
 	ret = BCH_SB_INITIALIZED(c->disk_sb.sb)
 		? bch2_fs_recovery(c)
 		: bch2_fs_initialize(c);
+	if (ret)
+		goto err;
+
+	ret = bch2_opts_check_may_set(c);
 	if (ret)
 		goto err;
 
@@ -1054,8 +1066,7 @@ static int bch2_dev_attach_bdev(struct bch_fs *c, struct bch_sb_handle *sb)
 		return ret;
 
 	mutex_lock(&c->sb_lock);
-	bch2_mark_dev_superblock(ca->fs, ca,
-			BCH_BUCKET_MARK_MAY_MAKE_UNAVAILABLE);
+	bch2_mark_dev_superblock(ca->fs, ca, 0);
 	mutex_unlock(&c->sb_lock);
 
 	bch2_dev_sysfs_online(c, ca);
@@ -1340,7 +1351,7 @@ static void dev_usage_clear(struct bch_dev *ca)
 
 	for_each_possible_cpu(cpu) {
 		struct bch_dev_usage *p =
-			per_cpu_ptr(ca->usage_percpu, cpu);
+			per_cpu_ptr(ca->usage[0], cpu);
 		memset(p, 0, sizeof(*p));
 	}
 
@@ -1401,8 +1412,7 @@ int bch2_dev_add(struct bch_fs *c, const char *path)
 	 * allocate the journal, reset all the marks, then remark after we
 	 * attach...
 	 */
-	bch2_mark_dev_superblock(ca->fs, ca,
-			BCH_BUCKET_MARK_MAY_MAKE_UNAVAILABLE);
+	bch2_mark_dev_superblock(ca->fs, ca, 0);
 
 	err = "journal alloc failed";
 	ret = bch2_dev_journal_alloc(ca);
@@ -1461,8 +1471,7 @@ have_slot:
 	ca->disk_sb.sb->dev_idx	= dev_idx;
 	bch2_dev_attach(c, ca, dev_idx);
 
-	bch2_mark_dev_superblock(c, ca,
-			BCH_BUCKET_MARK_MAY_MAKE_UNAVAILABLE);
+	bch2_mark_dev_superblock(c, ca, 0);
 
 	bch2_write_super(c);
 	mutex_unlock(&c->sb_lock);
