@@ -263,9 +263,12 @@ bool __bch2_btree_node_lock(struct btree *b, struct bpos pos,
 /* Btree iterator locking: */
 
 #ifdef CONFIG_BCACHEFS_DEBUG
-void bch2_btree_iter_verify_locks(struct btree_iter *iter)
+void __bch2_btree_iter_verify_locks(struct btree_iter *iter)
 {
 	unsigned l;
+
+	BUG_ON((iter->flags & BTREE_ITER_NOUNLOCK) &&
+	       !btree_node_locked(iter, 0));
 
 	for (l = 0; btree_iter_node(iter, l); l++) {
 		if (iter->uptodate >= BTREE_ITER_NEED_RELOCK &&
@@ -275,6 +278,15 @@ void bch2_btree_iter_verify_locks(struct btree_iter *iter)
 		BUG_ON(btree_lock_want(iter, l) !=
 		       btree_node_locked_type(iter, l));
 	}
+}
+
+void bch2_btree_iter_verify_locks(struct btree_iter *iter)
+{
+	struct btree_iter *linked;
+
+	for_each_btree_iter(iter, linked)
+		__bch2_btree_iter_verify_locks(linked);
+
 }
 #endif
 
@@ -381,9 +393,9 @@ void __bch2_btree_iter_downgrade(struct btree_iter *iter,
 				break;
 			}
 		}
-
-		bch2_btree_iter_verify_locks(linked);
 	}
+
+	bch2_btree_iter_verify_locks(iter);
 }
 
 int bch2_btree_iter_unlock(struct btree_iter *iter)
@@ -420,7 +432,7 @@ static void __bch2_btree_iter_verify(struct btree_iter *iter,
 	 * whiteouts)
 	 */
 	k = b->level || iter->flags & BTREE_ITER_IS_EXTENTS
-		? bch2_btree_node_iter_prev_filter(&tmp, b, KEY_TYPE_DISCARD)
+		? bch2_btree_node_iter_prev_filter(&tmp, b, KEY_TYPE_discard)
 		: bch2_btree_node_iter_prev_all(&tmp, b);
 	if (k && btree_iter_pos_cmp(iter, b, k) > 0) {
 		char buf[100];
@@ -609,7 +621,7 @@ static inline struct bkey_s_c __btree_iter_unpack(struct btree_iter *iter,
 		 * signal to bch2_btree_iter_peek_slot() that we're currently at
 		 * a hole
 		 */
-		u->type = KEY_TYPE_DELETED;
+		u->type = KEY_TYPE_deleted;
 		return bkey_s_c_null;
 	}
 
@@ -775,9 +787,17 @@ void bch2_btree_iter_node_drop(struct btree_iter *iter, struct btree *b)
 	struct btree_iter *linked;
 	unsigned level = b->level;
 
+	/* caller now responsible for unlocking @b */
+
+	BUG_ON(iter->l[level].b != b);
+	BUG_ON(!btree_node_intent_locked(iter, level));
+
+	iter->l[level].b = BTREE_ITER_NOT_END;
+	mark_btree_node_unlocked(iter, level);
+
 	for_each_btree_iter(iter, linked)
 		if (linked->l[level].b == b) {
-			btree_node_unlock(linked, level);
+			__btree_node_unlock(linked, level);
 			linked->l[level].b = BTREE_ITER_NOT_END;
 		}
 }

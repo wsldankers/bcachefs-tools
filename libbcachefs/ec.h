@@ -4,13 +4,13 @@
 #include "ec_types.h"
 #include "keylist_types.h"
 
-const char *bch2_ec_key_invalid(const struct bch_fs *, struct bkey_s_c);
-void bch2_ec_key_to_text(struct printbuf *, struct bch_fs *,
+const char *bch2_stripe_invalid(const struct bch_fs *, struct bkey_s_c);
+void bch2_stripe_to_text(struct printbuf *, struct bch_fs *,
 			 struct bkey_s_c);
 
-#define bch2_bkey_ec_ops (struct bkey_ops) {		\
-	.key_invalid	= bch2_ec_key_invalid,		\
-	.val_to_text	= bch2_ec_key_to_text,		\
+#define bch2_bkey_ops_stripe (struct bkey_ops) {	\
+	.key_invalid	= bch2_stripe_invalid,		\
+	.val_to_text	= bch2_stripe_to_text,		\
 }
 
 struct bch_read_bio;
@@ -92,13 +92,15 @@ void bch2_ec_stripe_head_put(struct ec_stripe_head *);
 struct ec_stripe_head *bch2_ec_stripe_head_get(struct bch_fs *, unsigned,
 					       unsigned, unsigned);
 
-void bch2_stripes_heap_update(struct bch_fs *, struct ec_stripe *, size_t);
-void bch2_stripes_heap_del(struct bch_fs *, struct ec_stripe *, size_t);
-void bch2_stripes_heap_insert(struct bch_fs *, struct ec_stripe *, size_t);
+void bch2_stripes_heap_update(struct bch_fs *, struct stripe *, size_t);
+void bch2_stripes_heap_del(struct bch_fs *, struct stripe *, size_t);
+void bch2_stripes_heap_insert(struct bch_fs *, struct stripe *, size_t);
 
 void bch2_ec_stop_dev(struct bch_fs *, struct bch_dev *);
 
 void bch2_ec_flush_new_stripes(struct bch_fs *);
+
+int bch2_ec_mem_alloc(struct bch_fs *, bool);
 
 int bch2_fs_ec_start(struct bch_fs *);
 

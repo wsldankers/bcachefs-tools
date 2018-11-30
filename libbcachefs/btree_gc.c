@@ -109,152 +109,11 @@ static void btree_node_range_checks(struct bch_fs *c, struct btree *b,
 
 /* marking of btree keys/nodes: */
 
-static bool bkey_type_needs_gc(enum bkey_type type)
+static int bch2_gc_mark_key(struct bch_fs *c, struct bkey_s_c k,
+			    u8 *max_stale, bool initial)
 {
-	switch (type) {
-	case BKEY_TYPE_BTREE:
-	case BKEY_TYPE_EXTENTS:
-	case BKEY_TYPE_EC:
-		return true;
-	default:
-		return false;
-	}
-}
-
-static void ptr_gen_recalc_oldest(struct bch_fs *c,
-				  const struct bch_extent_ptr *ptr,
-				  u8 *max_stale)
-{
-	struct bch_dev *ca = bch_dev_bkey_exists(c, ptr->dev);
-	size_t b = PTR_BUCKET_NR(ca, ptr);
-
-	if (gen_after(ca->oldest_gens[b], ptr->gen))
-		ca->oldest_gens[b] = ptr->gen;
-
-	*max_stale = max(*max_stale, ptr_stale(ca, ptr));
-}
-
-static u8 ptr_gens_recalc_oldest(struct bch_fs *c,
-				 enum bkey_type type,
-				 struct bkey_s_c k)
-{
+	struct bkey_ptrs_c ptrs = bch2_bkey_ptrs_c(k);
 	const struct bch_extent_ptr *ptr;
-	u8 max_stale = 0;
-
-	switch (type) {
-	case BKEY_TYPE_BTREE:
-	case BKEY_TYPE_EXTENTS:
-		switch (k.k->type) {
-		case BCH_EXTENT:
-		case BCH_EXTENT_CACHED: {
-			struct bkey_s_c_extent e = bkey_s_c_to_extent(k);
-
-			extent_for_each_ptr(e, ptr)
-				ptr_gen_recalc_oldest(c, ptr, &max_stale);
-			break;
-		}
-		}
-		break;
-	case BKEY_TYPE_EC:
-		switch (k.k->type) {
-		case BCH_STRIPE: {
-			struct bkey_s_c_stripe s = bkey_s_c_to_stripe(k);
-
-			for (ptr = s.v->ptrs;
-			     ptr < s.v->ptrs + s.v->nr_blocks;
-			     ptr++)
-				ptr_gen_recalc_oldest(c, ptr, &max_stale);
-		}
-		}
-	default:
-		break;
-	}
-
-	return max_stale;
-}
-
-static int ptr_gen_check(struct bch_fs *c,
-			 enum bkey_type type,
-			 const struct bch_extent_ptr *ptr)
-{
-	struct bch_dev *ca = bch_dev_bkey_exists(c, ptr->dev);
-	size_t b = PTR_BUCKET_NR(ca, ptr);
-	struct bucket *g = PTR_BUCKET(ca, ptr);
-	int ret = 0;
-
-	if (mustfix_fsck_err_on(!g->mark.gen_valid, c,
-				"found ptr with missing gen in alloc btree,\n"
-				"type %u gen %u",
-				type, ptr->gen)) {
-		g->_mark.gen = ptr->gen;
-		g->_mark.gen_valid = 1;
-		set_bit(b, ca->buckets_dirty);
-	}
-
-	if (mustfix_fsck_err_on(gen_cmp(ptr->gen, g->mark.gen) > 0, c,
-				"%u ptr gen in the future: %u > %u",
-				type, ptr->gen, g->mark.gen)) {
-		g->_mark.gen = ptr->gen;
-		g->_mark.gen_valid = 1;
-		set_bit(b, ca->buckets_dirty);
-		set_bit(BCH_FS_FIXED_GENS, &c->flags);
-	}
-fsck_err:
-	return ret;
-}
-
-static int ptr_gens_check(struct bch_fs *c, enum bkey_type type,
-			  struct bkey_s_c k)
-{
-	const struct bch_extent_ptr *ptr;
-	int ret = 0;
-
-	switch (type) {
-	case BKEY_TYPE_BTREE:
-	case BKEY_TYPE_EXTENTS:
-		switch (k.k->type) {
-		case BCH_EXTENT:
-		case BCH_EXTENT_CACHED: {
-			struct bkey_s_c_extent e = bkey_s_c_to_extent(k);
-
-			extent_for_each_ptr(e, ptr) {
-				ret = ptr_gen_check(c, type, ptr);
-				if (ret)
-					return ret;
-
-			}
-			break;
-		}
-		}
-		break;
-	case BKEY_TYPE_EC:
-		switch (k.k->type) {
-		case BCH_STRIPE: {
-			struct bkey_s_c_stripe s = bkey_s_c_to_stripe(k);
-
-			for (ptr = s.v->ptrs;
-			     ptr < s.v->ptrs + s.v->nr_blocks;
-			     ptr++) {
-				ret = ptr_gen_check(c, type, ptr);
-				if (ret)
-					return ret;
-			}
-		}
-		}
-		break;
-	default:
-		break;
-	}
-
-	return ret;
-}
-
-/*
- * For runtime mark and sweep:
- */
-static int bch2_gc_mark_key(struct bch_fs *c, enum bkey_type type,
-			    struct bkey_s_c k, bool initial)
-{
 	struct gc_pos pos = { 0 };
 	unsigned flags =
 		BCH_BUCKET_MARK_GC|
@@ -269,52 +128,77 @@ static int bch2_gc_mark_key(struct bch_fs *c, enum bkey_type type,
 			atomic64_set(&c->key_version, k.k->version.lo);
 
 		if (test_bit(BCH_FS_REBUILD_REPLICAS, &c->flags) ||
-		    fsck_err_on(!bch2_bkey_replicas_marked(c, type, k,
-							   false), c,
+		    fsck_err_on(!bch2_bkey_replicas_marked(c, k, false), c,
 				"superblock not marked as containing replicas (type %u)",
-				type)) {
-			ret = bch2_mark_bkey_replicas(c, type, k);
+				k.k->type)) {
+			ret = bch2_mark_bkey_replicas(c, k);
 			if (ret)
 				return ret;
 		}
 
-		ret = ptr_gens_check(c, type, k);
-		if (ret)
-			return ret;
+		bkey_for_each_ptr(ptrs, ptr) {
+			struct bch_dev *ca = bch_dev_bkey_exists(c, ptr->dev);
+			size_t b = PTR_BUCKET_NR(ca, ptr);
+			struct bucket *g = PTR_BUCKET(ca, ptr);
+
+			if (mustfix_fsck_err_on(!g->mark.gen_valid, c,
+					"found ptr with missing gen in alloc btree,\n"
+					"type %u gen %u",
+					k.k->type, ptr->gen)) {
+				g->_mark.gen = ptr->gen;
+				g->_mark.gen_valid = 1;
+				set_bit(b, ca->buckets_dirty);
+			}
+
+			if (mustfix_fsck_err_on(gen_cmp(ptr->gen, g->mark.gen) > 0, c,
+					"%u ptr gen in the future: %u > %u",
+					k.k->type, ptr->gen, g->mark.gen)) {
+				g->_mark.gen = ptr->gen;
+				g->_mark.gen_valid = 1;
+				set_bit(b, ca->buckets_dirty);
+				set_bit(BCH_FS_FIXED_GENS, &c->flags);
+			}
+		}
 	}
 
-	bch2_mark_key(c, type, k, true, k.k->size, pos, NULL, 0, flags);
+	bkey_for_each_ptr(ptrs, ptr) {
+		struct bch_dev *ca = bch_dev_bkey_exists(c, ptr->dev);
+		size_t b = PTR_BUCKET_NR(ca, ptr);
 
-	ret = ptr_gens_recalc_oldest(c, type, k);
+		if (gen_after(ca->oldest_gens[b], ptr->gen))
+			ca->oldest_gens[b] = ptr->gen;
+
+		*max_stale = max(*max_stale, ptr_stale(ca, ptr));
+	}
+
+	bch2_mark_key(c, k, true, k.k->size, pos, NULL, 0, flags);
 fsck_err:
 	return ret;
 }
 
 static int btree_gc_mark_node(struct bch_fs *c, struct btree *b,
-			      bool initial)
+			      u8 *max_stale, bool initial)
 {
-	enum bkey_type type = btree_node_type(b);
 	struct btree_node_iter iter;
 	struct bkey unpacked;
 	struct bkey_s_c k;
-	u8 stale = 0;
-	int ret;
+	int ret = 0;
 
-	if (!bkey_type_needs_gc(type))
+	*max_stale = 0;
+
+	if (!btree_node_type_needs_gc(btree_node_type(b)))
 		return 0;
 
 	for_each_btree_node_key_unpack(b, k, &iter,
 				       &unpacked) {
 		bch2_bkey_debugcheck(c, b, k);
 
-		ret = bch2_gc_mark_key(c, type, k, initial);
-		if (ret < 0)
-			return ret;
-
-		stale = max_t(u8, stale, ret);
+		ret = bch2_gc_mark_key(c, k, max_stale, initial);
+		if (ret)
+			break;
 	}
 
-	return stale;
+	return ret;
 }
 
 static int bch2_gc_btree(struct bch_fs *c, enum btree_id btree_id,
@@ -323,14 +207,11 @@ static int bch2_gc_btree(struct bch_fs *c, enum btree_id btree_id,
 	struct btree_iter iter;
 	struct btree *b;
 	struct range_checks r;
-	unsigned depth = bkey_type_needs_gc(btree_id) ? 0 : 1;
-	unsigned max_stale;
+	unsigned depth = btree_node_type_needs_gc(btree_id) ? 0 : 1;
+	u8 max_stale;
 	int ret = 0;
 
 	gc_pos_set(c, gc_pos_btree(btree_id, POS_MIN, 0));
-
-	if (!c->btree_roots[btree_id].b)
-		return 0;
 
 	/*
 	 * if expensive_debug_checks is on, run range_checks on all leaf nodes:
@@ -349,7 +230,9 @@ static int bch2_gc_btree(struct bch_fs *c, enum btree_id btree_id,
 
 		bch2_verify_btree_nr_keys(b);
 
-		max_stale = btree_gc_mark_node(c, b, initial);
+		ret = btree_gc_mark_node(c, b, &max_stale, initial);
+		if (ret)
+			break;
 
 		gc_pos_set(c, gc_pos_btree_node(b));
 
@@ -370,7 +253,7 @@ static int bch2_gc_btree(struct bch_fs *c, enum btree_id btree_id,
 
 		bch2_btree_iter_cond_resched(&iter);
 	}
-	ret = bch2_btree_iter_unlock(&iter);
+	ret = bch2_btree_iter_unlock(&iter) ?: ret;
 	if (ret)
 		return ret;
 
@@ -378,8 +261,8 @@ static int bch2_gc_btree(struct bch_fs *c, enum btree_id btree_id,
 
 	b = c->btree_roots[btree_id].b;
 	if (!btree_node_fake(b))
-		bch2_gc_mark_key(c, BKEY_TYPE_BTREE,
-				 bkey_i_to_s_c(&b->key), initial);
+		bch2_gc_mark_key(c, bkey_i_to_s_c(&b->key),
+				 &max_stale, initial);
 	gc_pos_set(c, gc_pos_btree_root(b->btree_id));
 
 	mutex_unlock(&c->btree_root_lock);
@@ -396,6 +279,7 @@ static int bch2_gc_btrees(struct bch_fs *c, struct list_head *journal,
 			  bool initial)
 {
 	enum btree_id ids[BTREE_ID_NR];
+	u8 max_stale;
 	unsigned i;
 
 	for (i = 0; i < BTREE_ID_NR; i++)
@@ -404,13 +288,13 @@ static int bch2_gc_btrees(struct bch_fs *c, struct list_head *journal,
 
 	for (i = 0; i < BTREE_ID_NR; i++) {
 		enum btree_id id = ids[i];
-		enum bkey_type type = bkey_type(0, id);
+		enum btree_node_type type = __btree_node_type(0, id);
 
 		int ret = bch2_gc_btree(c, id, initial);
 		if (ret)
 			return ret;
 
-		if (journal && bkey_type_needs_gc(type)) {
+		if (journal && btree_node_type_needs_gc(type)) {
 			struct bkey_i *k, *n;
 			struct jset_entry *j;
 			struct journal_replay *r;
@@ -418,10 +302,11 @@ static int bch2_gc_btrees(struct bch_fs *c, struct list_head *journal,
 
 			list_for_each_entry(r, journal, list)
 				for_each_jset_key(k, n, j, &r->j) {
-					if (type == bkey_type(j->level, j->btree_id)) {
-						ret = bch2_gc_mark_key(c, type,
-							bkey_i_to_s_c(k), initial);
-						if (ret < 0)
+					if (type == __btree_node_type(j->level, j->btree_id)) {
+						ret = bch2_gc_mark_key(c,
+							bkey_i_to_s_c(k),
+							&max_stale, initial);
+						if (ret)
 							return ret;
 					}
 				}
@@ -519,8 +404,7 @@ static void bch2_mark_pending_btree_node_frees(struct bch_fs *c)
 
 	for_each_pending_btree_node_free(c, as, d)
 		if (d->index_update_done)
-			bch2_mark_key(c, BKEY_TYPE_BTREE,
-				      bkey_i_to_s_c(&d->key),
+			bch2_mark_key(c, bkey_i_to_s_c(&d->key),
 				      true, 0,
 				      pos, NULL, 0,
 				      BCH_BUCKET_MARK_GC);
@@ -579,6 +463,8 @@ static void bch2_gc_free(struct bch_fs *c)
 	struct bch_dev *ca;
 	unsigned i;
 
+	genradix_free(&c->stripes[1]);
+
 	for_each_member_device(ca, c, i) {
 		kvpfree(rcu_dereference_protected(ca->buckets[1], 1),
 			sizeof(struct bucket_array) +
@@ -598,6 +484,25 @@ static void bch2_gc_done_nocheck(struct bch_fs *c)
 	struct bch_dev *ca;
 	unsigned i;
 	int cpu;
+
+	{
+		struct genradix_iter dst_iter = genradix_iter_init(&c->stripes[0], 0);
+		struct genradix_iter src_iter = genradix_iter_init(&c->stripes[1], 0);
+		struct stripe *dst, *src;
+
+		c->ec_stripes_heap.used = 0;
+
+		while ((dst = genradix_iter_peek(&dst_iter, &c->stripes[0])) &&
+		       (src = genradix_iter_peek(&src_iter, &c->stripes[1]))) {
+			*dst = *src;
+
+			if (dst->alive)
+				bch2_stripes_heap_insert(c, dst, dst_iter.pos);
+
+			genradix_iter_advance(&dst_iter, &c->stripes[0]);
+			genradix_iter_advance(&src_iter, &c->stripes[1]);
+		}
+	}
 
 	for_each_member_device(ca, c, i) {
 		struct bucket_array *src = __bucket_array(ca, 1);
@@ -646,13 +551,21 @@ static void bch2_gc_done(struct bch_fs *c, bool initial)
 
 #define copy_field(_f, _msg, ...)					\
 	if (dst._f != src._f) {						\
-		pr_info(_msg ": got %llu, should be %llu, fixing"	\
+		bch_err(c, _msg ": got %llu, should be %llu, fixing"\
 			, ##__VA_ARGS__, dst._f, src._f);		\
 		dst._f = src._f;					\
 	}
+#define copy_stripe_field(_f, _msg, ...)				\
+	if (dst->_f != src->_f) {					\
+		bch_err_ratelimited(c, "stripe %zu has wrong "_msg	\
+			": got %u, should be %u, fixing",		\
+			dst_iter.pos, ##__VA_ARGS__,			\
+			dst->_f, src->_f);				\
+		dst->_f = src->_f;					\
+	}
 #define copy_bucket_field(_f)						\
 	if (dst->b[b].mark._f != src->b[b].mark._f) {			\
-		pr_info("dev %u bucket %zu has wrong " #_f		\
+		bch_err_ratelimited(c, "dev %u bucket %zu has wrong " #_f\
 			": got %u, should be %u, fixing",		\
 			i, b, dst->b[b].mark._f, src->b[b].mark._f);	\
 		dst->b[b]._mark._f = src->b[b].mark._f;			\
@@ -667,6 +580,36 @@ static void bch2_gc_done(struct bch_fs *c, bool initial)
 	if (initial) {
 		bch2_gc_done_nocheck(c);
 		goto out;
+	}
+
+	{
+		struct genradix_iter dst_iter = genradix_iter_init(&c->stripes[0], 0);
+		struct genradix_iter src_iter = genradix_iter_init(&c->stripes[1], 0);
+		struct stripe *dst, *src;
+		unsigned i;
+
+		c->ec_stripes_heap.used = 0;
+
+		while ((dst = genradix_iter_peek(&dst_iter, &c->stripes[0])) &&
+		       (src = genradix_iter_peek(&src_iter, &c->stripes[1]))) {
+			copy_stripe_field(alive,	"alive");
+			copy_stripe_field(sectors,	"sectors");
+			copy_stripe_field(algorithm,	"algorithm");
+			copy_stripe_field(nr_blocks,	"nr_blocks");
+			copy_stripe_field(nr_redundant,	"nr_redundant");
+			copy_stripe_field(blocks_nonempty.counter,
+					  "blocks_nonempty");
+
+			for (i = 0; i < ARRAY_SIZE(dst->block_sectors); i++)
+				copy_stripe_field(block_sectors[i].counter,
+						  "block_sectors[%u]", i);
+
+			if (dst->alive)
+				bch2_stripes_heap_insert(c, dst, dst_iter.pos);
+
+			genradix_iter_advance(&dst_iter, &c->stripes[0]);
+			genradix_iter_advance(&src_iter, &c->stripes[1]);
+		}
 	}
 
 	for_each_member_device(ca, c, i) {
@@ -753,16 +696,23 @@ static void bch2_gc_done(struct bch_fs *c, bool initial)
 out:
 	percpu_up_write(&c->usage_lock);
 
-#undef copy_field
 #undef copy_fs_field
 #undef copy_dev_field
 #undef copy_bucket_field
+#undef copy_stripe_field
+#undef copy_field
 }
 
 static int bch2_gc_start(struct bch_fs *c)
 {
 	struct bch_dev *ca;
 	unsigned i;
+
+	/*
+	 * indicate to stripe code that we need to allocate for the gc stripes
+	 * radix tree, too
+	 */
+	gc_pos_set(c, gc_phase(GC_PHASE_START));
 
 	BUG_ON(c->usage[1]);
 
@@ -805,7 +755,7 @@ static int bch2_gc_start(struct bch_fs *c)
 
 	percpu_up_write(&c->usage_lock);
 
-	return 0;
+	return bch2_ec_mem_alloc(c, true);
 }
 
 /**
@@ -870,7 +820,7 @@ out:
 		bch2_gc_done(c, initial);
 
 	/* Indicates that gc is no longer in progress: */
-	__gc_pos_set(c, gc_phase(GC_PHASE_START));
+	__gc_pos_set(c, gc_phase(GC_PHASE_NOT_RUNNING));
 
 	bch2_gc_free(c);
 	up_write(&c->gc_lock);
@@ -1110,7 +1060,6 @@ next:
 	/* Free the old nodes and update our sliding window */
 	for (i = 0; i < nr_old_nodes; i++) {
 		bch2_btree_node_free_inmem(c, old_nodes[i], iter);
-		six_unlock_intent(&old_nodes[i]->lock);
 
 		/*
 		 * the index update might have triggered a split, in which case

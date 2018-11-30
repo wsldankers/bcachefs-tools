@@ -185,7 +185,8 @@ struct bch_sb *bch2_format(struct format_opts opts,
 	if (bch2_sb_realloc(&sb, 0))
 		die("insufficient memory");
 
-	sb.sb->version		= cpu_to_le64(BCH_SB_VERSION_MAX);
+	sb.sb->version		= le16_to_cpu(bcachefs_metadata_version_current);
+	sb.sb->version_min	= le16_to_cpu(bcachefs_metadata_version_current);
 	sb.sb->magic		= BCACHE_MAGIC;
 	sb.sb->block_size	= cpu_to_le16(opts.block_size);
 	sb.sb->user_uuid	= opts.uuid;

@@ -160,8 +160,7 @@ static void list_keys(struct bch_fs *c, enum btree_id btree_id,
 		if (bkey_cmp(k.k->p, end) > 0)
 			break;
 
-		bch2_bkey_val_to_text(&PBUF(buf), c,
-				bkey_type(0, btree_id), k);
+		bch2_bkey_val_to_text(&PBUF(buf), c, k);
 		puts(buf);
 	}
 	bch2_btree_iter_unlock(&iter);
@@ -202,8 +201,7 @@ static void list_nodes_keys(struct bch_fs *c, enum btree_id btree_id,
 		fputs(buf, stdout);
 
 		for_each_btree_node_key_unpack(b, k, &node_iter, &unpacked) {
-			bch2_bkey_val_to_text(&PBUF(buf), c,
-					bkey_type(0, btree_id), k);
+			bch2_bkey_val_to_text(&PBUF(buf), c, k);
 			putchar('\t');
 			puts(buf);
 		}

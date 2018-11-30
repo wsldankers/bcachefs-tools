@@ -121,7 +121,7 @@ static void bch2_quota_reservation_put(struct bch_fs *c,
 	BUG_ON(res->sectors > inode->ei_quota_reserved);
 
 	bch2_quota_acct(c, inode->ei_qid, Q_SPC,
-			-((s64) res->sectors), BCH_QUOTA_PREALLOC);
+			-((s64) res->sectors), KEY_TYPE_QUOTA_PREALLOC);
 	inode->ei_quota_reserved -= res->sectors;
 	mutex_unlock(&inode->ei_quota_lock);
 
@@ -138,7 +138,7 @@ static int bch2_quota_reservation_add(struct bch_fs *c,
 
 	mutex_lock(&inode->ei_quota_lock);
 	ret = bch2_quota_acct(c, inode->ei_qid, Q_SPC, sectors,
-			      check_enospc ? BCH_QUOTA_PREALLOC : BCH_QUOTA_NOCHECK);
+			      check_enospc ? KEY_TYPE_QUOTA_PREALLOC : KEY_TYPE_QUOTA_NOCHECK);
 	if (likely(!ret)) {
 		inode->ei_quota_reserved += sectors;
 		res->sectors += sectors;
@@ -220,7 +220,7 @@ static void i_sectors_acct(struct bch_fs *c, struct bch_inode_info *inode,
 		quota_res->sectors -= sectors;
 		inode->ei_quota_reserved -= sectors;
 	} else {
-		bch2_quota_acct(c, inode->ei_qid, Q_SPC, sectors, BCH_QUOTA_WARN);
+		bch2_quota_acct(c, inode->ei_qid, Q_SPC, sectors, KEY_TYPE_QUOTA_WARN);
 	}
 #endif
 	inode->v.i_blocks += sectors;
@@ -242,9 +242,15 @@ static s64 sum_sector_overwrites(struct bkey_i *new, struct btree_iter *_iter,
 	bch2_btree_iter_link(_iter, &iter);
 	bch2_btree_iter_copy(&iter, _iter);
 
-	for_each_btree_key_continue(&iter, BTREE_ITER_SLOTS, old) {
-		if (bkey_cmp(new->k.p, bkey_start_pos(old.k)) <= 0)
-			break;
+	old = bch2_btree_iter_peek_slot(&iter);
+
+	while (1) {
+		/*
+		 * should not be possible to get an error here, since we're
+		 * carefully not advancing past @new and thus whatever leaf node
+		 * @_iter currently points to:
+		 */
+		BUG_ON(btree_iter_err(old));
 
 		if (allocating &&
 		    !bch2_extent_is_fully_allocated(old))
@@ -256,6 +262,11 @@ static s64 sum_sector_overwrites(struct bkey_i *new, struct btree_iter *_iter,
 			      bkey_start_offset(old.k))) *
 			(bkey_extent_is_allocation(&new->k) -
 			 bkey_extent_is_allocation(old.k));
+
+		if (bkey_cmp(old.k->p, new->k.p) >= 0)
+			break;
+
+		old = bch2_btree_iter_next_slot(&iter);
 	}
 
 	bch2_btree_iter_unlink(&iter);
@@ -848,7 +859,7 @@ static void bch2_add_page_sectors(struct bio *bio, struct bkey_s_c k)
 	struct bvec_iter iter;
 	struct bio_vec bv;
 	unsigned nr_ptrs = !bch2_extent_is_compressed(k)
-		? bch2_extent_nr_dirty_ptrs(k)
+		? bch2_bkey_nr_dirty_ptrs(k)
 		: 0;
 
 	bio_for_each_segment(bv, bio, iter) {
@@ -2397,7 +2408,7 @@ static long bch2_fcollapse(struct bch_inode_info *inode,
 		BUG_ON(bkey_cmp(dst->pos, bkey_start_pos(&copy.k.k)));
 
 		ret = bch2_disk_reservation_get(c, &disk_res, copy.k.k.size,
-				bch2_extent_nr_dirty_ptrs(bkey_i_to_s_c(&copy.k)),
+				bch2_bkey_nr_dirty_ptrs(bkey_i_to_s_c(&copy.k)),
 				BCH_DISK_RESERVATION_NOFAIL);
 		BUG_ON(ret);
 
@@ -2504,7 +2515,7 @@ static long bch2_fallocate(struct bch_inode_info *inode, int mode,
 			goto btree_iter_err;
 
 		/* already reserved */
-		if (k.k->type == BCH_RESERVATION &&
+		if (k.k->type == KEY_TYPE_reservation &&
 		    bkey_s_c_to_reservation(k).v->nr_replicas >= replicas) {
 			bch2_btree_iter_next_slot(iter);
 			continue;
@@ -2517,7 +2528,7 @@ static long bch2_fallocate(struct bch_inode_info *inode, int mode,
 		}
 
 		bkey_reservation_init(&reservation.k_i);
-		reservation.k.type	= BCH_RESERVATION;
+		reservation.k.type	= KEY_TYPE_reservation;
 		reservation.k.p		= k.k->p;
 		reservation.k.size	= k.k->size;
 
@@ -2525,7 +2536,7 @@ static long bch2_fallocate(struct bch_inode_info *inode, int mode,
 		bch2_cut_back(end_pos, &reservation.k);
 
 		sectors = reservation.k.size;
-		reservation.v.nr_replicas = bch2_extent_nr_dirty_ptrs(k);
+		reservation.v.nr_replicas = bch2_bkey_nr_dirty_ptrs(k);
 
 		if (!bkey_extent_is_allocation(k.k)) {
 			ret = bch2_quota_reservation_add(c, inode,
