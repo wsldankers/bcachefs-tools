@@ -387,12 +387,12 @@ struct bch_dev {
 
 	/*
 	 * Buckets:
-	 * Per-bucket arrays are protected by c->usage_lock, bucket_lock and
+	 * Per-bucket arrays are protected by c->mark_lock, bucket_lock and
 	 * gc_lock, for device resize - holding any is sufficient for access:
 	 * Or rcu_read_lock(), but only for ptr_stale():
 	 */
 	struct bucket_array __rcu *buckets[2];
-	unsigned long		*buckets_dirty;
+	unsigned long		*buckets_nouse;
 	unsigned long		*buckets_written;
 	/* most out of date gen in the btree */
 	u8			*oldest_gens;
@@ -500,6 +500,10 @@ enum bch_fs_state {
 	BCH_FS_RW,
 };
 
+struct bch_fs_pcpu {
+	u64			sectors_available;
+};
+
 struct bch_fs {
 	struct closure		cl;
 
@@ -525,8 +529,8 @@ struct bch_fs {
 
 	struct bch_dev __rcu	*devs[BCH_SB_MEMBERS_MAX];
 
-	struct bch_replicas_cpu __rcu *replicas;
-	struct bch_replicas_cpu __rcu *replicas_gc;
+	struct bch_replicas_cpu replicas;
+	struct bch_replicas_cpu replicas_gc;
 	struct mutex		replicas_gc_lock;
 
 	struct bch_disk_groups_cpu __rcu *disk_groups;
@@ -612,11 +616,11 @@ struct bch_fs {
 
 	atomic64_t		sectors_available;
 
-	struct bch_fs_usage __percpu *usage[2];
+	struct bch_fs_pcpu __percpu	*pcpu;
 
-	struct percpu_rw_semaphore usage_lock;
+	struct bch_fs_usage __percpu	*usage[2];
 
-	struct closure_waitlist	freelist_wait;
+	struct percpu_rw_semaphore	mark_lock;
 
 	/*
 	 * When we invalidate buckets, we use both the priority and the amount
@@ -630,6 +634,7 @@ struct bch_fs {
 
 	/* ALLOCATOR */
 	spinlock_t		freelist_lock;
+	struct closure_waitlist	freelist_wait;
 	u8			open_buckets_freelist;
 	u8			open_buckets_nr_free;
 	struct closure_waitlist	open_buckets_wait;
@@ -717,9 +722,6 @@ struct bch_fs {
 	struct list_head	fsck_errors;
 	struct mutex		fsck_error_lock;
 	bool			fsck_alloc_err;
-
-	/* FILESYSTEM */
-	atomic_long_t		nr_inodes;
 
 	/* QUOTAS */
 	struct bch_memquota_type quotas[QTYP_NR];

@@ -33,7 +33,7 @@ static inline struct bucket_array *__bucket_array(struct bch_dev *ca,
 {
 	return rcu_dereference_check(ca->buckets[gc],
 				     !ca->fs ||
-				     percpu_rwsem_is_held(&ca->fs->usage_lock) ||
+				     percpu_rwsem_is_held(&ca->fs->mark_lock) ||
 				     lockdep_is_held(&ca->fs->gc_lock) ||
 				     lockdep_is_held(&ca->bucket_lock));
 }
@@ -54,6 +54,18 @@ static inline struct bucket *__bucket(struct bch_dev *ca, size_t b, bool gc)
 static inline struct bucket *bucket(struct bch_dev *ca, size_t b)
 {
 	return __bucket(ca, b, false);
+}
+
+static inline void bucket_set_dirty(struct bch_dev *ca, size_t b)
+{
+	struct bucket *g;
+	struct bucket_mark m;
+
+	rcu_read_lock();
+	g = bucket(ca, b);
+	bucket_cmpxchg(g, m, m.dirty = true);
+	rcu_read_unlock();
+
 }
 
 static inline void bucket_io_clock_reset(struct bch_fs *c, struct bch_dev *ca,
@@ -123,6 +135,20 @@ static inline u8 ptr_stale(struct bch_dev *ca,
 	return gen_after(ptr_bucket_mark(ca, ptr).gen, ptr->gen);
 }
 
+static inline unsigned __ptr_disk_sectors(struct extent_ptr_decoded p,
+					  unsigned live_size)
+{
+	return live_size && p.crc.compression_type
+		? max(1U, DIV_ROUND_UP(live_size * p.crc.compressed_size,
+				       p.crc.uncompressed_size))
+		: live_size;
+}
+
+static inline unsigned ptr_disk_sectors(struct extent_ptr_decoded p)
+{
+	return __ptr_disk_sectors(p, p.crc.live_size);
+}
+
 /* bucket gc marks */
 
 static inline unsigned bucket_sectors_used(struct bucket_mark mark)
@@ -135,6 +161,20 @@ static inline bool bucket_unused(struct bucket_mark mark)
 	return !mark.owned_by_allocator &&
 		!mark.data_type &&
 		!bucket_sectors_used(mark);
+}
+
+static inline bool is_available_bucket(struct bucket_mark mark)
+{
+	return (!mark.owned_by_allocator &&
+		!mark.dirty_sectors &&
+		!mark.stripe);
+}
+
+static inline bool bucket_needs_journal_commit(struct bucket_mark m,
+					       u16 last_seq_ondisk)
+{
+	return m.journal_seq_valid &&
+		((s16) m.journal_seq - (s16) last_seq_ondisk > 0);
 }
 
 /* Device usage: */
@@ -180,31 +220,20 @@ static inline u64 dev_buckets_free(struct bch_fs *c, struct bch_dev *ca)
 
 struct bch_fs_usage __bch2_fs_usage_read(struct bch_fs *, bool);
 struct bch_fs_usage bch2_fs_usage_read(struct bch_fs *);
-void bch2_fs_usage_apply(struct bch_fs *, struct bch_fs_usage *,
-			 struct disk_reservation *, struct gc_pos);
 
 u64 bch2_fs_sectors_used(struct bch_fs *, struct bch_fs_usage);
 
-static inline u64 bch2_fs_sectors_free(struct bch_fs *c,
-				       struct bch_fs_usage stats)
+struct bch_fs_usage_short
+bch2_fs_usage_read_short(struct bch_fs *);
+
+static inline u64 bch2_fs_sectors_free(struct bch_fs *c)
 {
-	return c->capacity - bch2_fs_sectors_used(c, stats);
+	struct bch_fs_usage_short usage = bch2_fs_usage_read_short(c);
+
+	return usage.capacity - usage.used;
 }
 
-static inline bool is_available_bucket(struct bucket_mark mark)
-{
-	return (!mark.owned_by_allocator &&
-		!mark.dirty_sectors &&
-		!mark.stripe &&
-		!mark.nouse);
-}
-
-static inline bool bucket_needs_journal_commit(struct bucket_mark m,
-					       u16 last_seq_ondisk)
-{
-	return m.journal_seq_valid &&
-		((s16) m.journal_seq - (s16) last_seq_ondisk > 0);
-}
+/* key/bucket marking: */
 
 void bch2_bucket_seq_cleanup(struct bch_fs *);
 
@@ -226,6 +255,10 @@ int bch2_mark_key(struct bch_fs *, struct bkey_s_c,
 		  bool, s64, struct gc_pos,
 		  struct bch_fs_usage *, u64, unsigned);
 void bch2_mark_update(struct btree_insert *, struct btree_insert_entry *);
+void bch2_fs_usage_apply(struct bch_fs *, struct bch_fs_usage *,
+			 struct disk_reservation *, struct gc_pos);
+
+/* disk reservations: */
 
 void __bch2_disk_reservation_put(struct bch_fs *, struct disk_reservation *);
 

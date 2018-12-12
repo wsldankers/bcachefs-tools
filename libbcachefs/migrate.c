@@ -118,8 +118,8 @@ static int bch2_dev_metadata_drop(struct bch_fs *c, unsigned dev_idx, int flags)
 			__BKEY_PADDED(k, BKEY_BTREE_PTR_VAL_U64s_MAX) tmp;
 			struct bkey_i_btree_ptr *new_key;
 retry:
-			if (!bch2_extent_has_device(bkey_i_to_s_c_extent(&b->key),
-						    dev_idx)) {
+			if (!bch2_bkey_has_device(bkey_i_to_s_c(&b->key),
+						  dev_idx)) {
 				/*
 				 * we might have found a btree node key we
 				 * needed to update, and then tried to update it

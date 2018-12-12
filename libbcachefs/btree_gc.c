@@ -141,21 +141,21 @@ static int bch2_gc_mark_key(struct bch_fs *c, struct bkey_s_c k,
 			size_t b = PTR_BUCKET_NR(ca, ptr);
 			struct bucket *g = PTR_BUCKET(ca, ptr);
 
-			if (mustfix_fsck_err_on(!g->mark.gen_valid, c,
+			if (mustfix_fsck_err_on(!g->gen_valid, c,
 					"found ptr with missing gen in alloc btree,\n"
 					"type %u gen %u",
 					k.k->type, ptr->gen)) {
 				g->_mark.gen = ptr->gen;
-				g->_mark.gen_valid = 1;
-				set_bit(b, ca->buckets_dirty);
+				g->gen_valid = 1;
+				bucket_set_dirty(ca, b);
 			}
 
 			if (mustfix_fsck_err_on(gen_cmp(ptr->gen, g->mark.gen) > 0, c,
 					"%u ptr gen in the future: %u > %u",
 					k.k->type, ptr->gen, g->mark.gen)) {
 				g->_mark.gen = ptr->gen;
-				g->_mark.gen_valid = 1;
-				set_bit(b, ca->buckets_dirty);
+				g->gen_valid = 1;
+				bucket_set_dirty(ca, b);
 				set_bit(BCH_FS_FIXED_GENS, &c->flags);
 			}
 		}
@@ -348,7 +348,7 @@ void bch2_mark_dev_superblock(struct bch_fs *c, struct bch_dev *ca,
 	 */
 	if (c) {
 		lockdep_assert_held(&c->sb_lock);
-		percpu_down_read_preempt_disable(&c->usage_lock);
+		percpu_down_read_preempt_disable(&c->mark_lock);
 	} else {
 		preempt_disable();
 	}
@@ -373,7 +373,7 @@ void bch2_mark_dev_superblock(struct bch_fs *c, struct bch_dev *ca,
 	}
 
 	if (c) {
-		percpu_up_read_preempt_enable(&c->usage_lock);
+		percpu_up_read_preempt_enable(&c->mark_lock);
 	} else {
 		preempt_enable();
 	}
@@ -419,7 +419,7 @@ static void bch2_mark_allocator_buckets(struct bch_fs *c)
 	size_t i, j, iter;
 	unsigned ci;
 
-	percpu_down_read_preempt_disable(&c->usage_lock);
+	percpu_down_read_preempt_disable(&c->mark_lock);
 
 	spin_lock(&c->freelist_lock);
 	gc_pos_set(c, gc_pos_alloc(c, NULL));
@@ -455,7 +455,7 @@ static void bch2_mark_allocator_buckets(struct bch_fs *c)
 		spin_unlock(&ob->lock);
 	}
 
-	percpu_up_read_preempt_enable(&c->usage_lock);
+	percpu_up_read_preempt_enable(&c->mark_lock);
 }
 
 static void bch2_gc_free(struct bch_fs *c)
@@ -477,6 +477,20 @@ static void bch2_gc_free(struct bch_fs *c)
 
 	free_percpu(c->usage[1]);
 	c->usage[1] = NULL;
+}
+
+static void fs_usage_reset(struct bch_fs_usage *fs_usage)
+{
+	memset(&fs_usage->s.gc_start[0], 0,
+	       sizeof(*fs_usage) - offsetof(typeof(*fs_usage), s.gc_start));
+}
+
+static void fs_usage_cpy(struct bch_fs_usage *dst,
+			 struct bch_fs_usage *src)
+{
+	memcpy(&dst->s.gc_start[0],
+	       &src->s.gc_start[0],
+	       sizeof(*dst) - offsetof(typeof(*dst), s.gc_start));
 }
 
 static void bch2_gc_done_nocheck(struct bch_fs *c)
@@ -527,17 +541,12 @@ static void bch2_gc_done_nocheck(struct bch_fs *c)
 
 	{
 		struct bch_fs_usage src = __bch2_fs_usage_read(c, 1);
-		struct bch_fs_usage *p;
 
-		for_each_possible_cpu(cpu) {
-			p = per_cpu_ptr(c->usage[0], cpu);
-			memset(p, 0, offsetof(typeof(*p), online_reserved));
-		}
+		for_each_possible_cpu(cpu)
+			fs_usage_reset(per_cpu_ptr(c->usage[0], cpu));
 
 		preempt_disable();
-		memcpy(this_cpu_ptr(c->usage[0]),
-		       &src,
-		       offsetof(typeof(*p), online_reserved));
+		fs_usage_cpy(this_cpu_ptr(c->usage[0]), &src);
 		preempt_enable();
 	}
 
@@ -575,7 +584,7 @@ static void bch2_gc_done(struct bch_fs *c, bool initial)
 #define copy_fs_field(_f, _msg, ...)					\
 	copy_field(_f, "fs has wrong " _msg, ##__VA_ARGS__)
 
-	percpu_down_write(&c->usage_lock);
+	percpu_down_write(&c->mark_lock);
 
 	if (initial) {
 		bch2_gc_done_nocheck(c);
@@ -665,8 +674,13 @@ static void bch2_gc_done(struct bch_fs *c, bool initial)
 	{
 		struct bch_fs_usage dst = __bch2_fs_usage_read(c, 0);
 		struct bch_fs_usage src = __bch2_fs_usage_read(c, 1);
-		struct bch_fs_usage *p;
 		unsigned r, b;
+
+		copy_fs_field(s.hidden,		"hidden");
+		copy_fs_field(s.data,		"data");
+		copy_fs_field(s.cached,		"cached");
+		copy_fs_field(s.reserved,	"reserved");
+		copy_fs_field(s.nr_inodes,	"nr_inodes");
 
 		for (r = 0; r < BCH_REPLICAS_MAX; r++) {
 			for (b = 0; b < BCH_DATA_NR; b++)
@@ -683,18 +697,15 @@ static void bch2_gc_done(struct bch_fs *c, bool initial)
 			copy_fs_field(buckets[b],
 				      "buckets[%s]", bch2_data_types[b]);
 
-		for_each_possible_cpu(cpu) {
-			p = per_cpu_ptr(c->usage[0], cpu);
-			memset(p, 0, offsetof(typeof(*p), online_reserved));
-		}
+		for_each_possible_cpu(cpu)
+			fs_usage_reset(per_cpu_ptr(c->usage[0], cpu));
 
 		preempt_disable();
-		p = this_cpu_ptr(c->usage[0]);
-		memcpy(p, &dst, offsetof(typeof(*p), online_reserved));
+		fs_usage_cpy(this_cpu_ptr(c->usage[0]), &dst);
 		preempt_enable();
 	}
 out:
-	percpu_up_write(&c->usage_lock);
+	percpu_up_write(&c->mark_lock);
 
 #undef copy_fs_field
 #undef copy_dev_field
@@ -739,7 +750,7 @@ static int bch2_gc_start(struct bch_fs *c)
 		}
 	}
 
-	percpu_down_write(&c->usage_lock);
+	percpu_down_write(&c->mark_lock);
 
 	for_each_member_device(ca, c, i) {
 		struct bucket_array *dst = __bucket_array(ca, 1);
@@ -753,7 +764,7 @@ static int bch2_gc_start(struct bch_fs *c)
 			dst->b[b]._mark.gen = src->b[b].mark.gen;
 	};
 
-	percpu_up_write(&c->usage_lock);
+	percpu_up_write(&c->mark_lock);
 
 	return bch2_ec_mem_alloc(c, true);
 }

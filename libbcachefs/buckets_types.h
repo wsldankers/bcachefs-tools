@@ -8,28 +8,25 @@
 
 struct bucket_mark {
 	union {
-	struct {
-		atomic64_t	v;
-	};
+	atomic64_t	v;
 
 	struct {
-		u8		gen;
-		u8		data_type:3,
-				gen_valid:1,
-				owned_by_allocator:1,
-				nouse:1,
-				journal_seq_valid:1,
-				stripe:1;
-		u16		dirty_sectors;
-		u16		cached_sectors;
+	u8		gen;
+	u8		data_type:3,
+			owned_by_allocator:1,
+			dirty:1,
+			journal_seq_valid:1,
+			stripe:1;
+	u16		dirty_sectors;
+	u16		cached_sectors;
 
-		/*
-		 * low bits of journal sequence number when this bucket was most
-		 * recently modified: if journal_seq_valid is set, this bucket
-		 * can't be reused until the journal sequence number written to
-		 * disk is >= the bucket's journal sequence number:
-		 */
-		u16		journal_seq;
+	/*
+	 * low bits of journal sequence number when this bucket was most
+	 * recently modified: if journal_seq_valid is set, this bucket can't be
+	 * reused until the journal sequence number written to disk is >= the
+	 * bucket's journal sequence number:
+	 */
+	u16		journal_seq;
 	};
 	};
 };
@@ -41,6 +38,7 @@ struct bucket {
 	};
 
 	u16				io_time[2];
+	unsigned			gen_valid:1;
 };
 
 struct bucket_array {
@@ -64,6 +62,21 @@ struct bch_dev_usage {
 struct bch_fs_usage {
 	/* all fields are in units of 512 byte sectors: */
 
+	/* summarized: */
+	struct bch_fs_usage_summarized {
+		u64		online_reserved;
+
+		/* fields after online_reserved are cleared/recalculated by gc: */
+		u64		gc_start[0];
+
+		u64		hidden;
+		u64		data;
+		u64		cached;
+		u64		reserved;
+		u64		nr_inodes;
+	} s;
+
+	/* broken out: */
 	struct {
 		u64		data[BCH_DATA_NR];
 		u64		ec_data;
@@ -71,19 +84,21 @@ struct bch_fs_usage {
 	}			replicas[BCH_REPLICAS_MAX];
 
 	u64			buckets[BCH_DATA_NR];
+};
 
-	/* fields starting here aren't touched by gc: */
-	u64			online_reserved;
-	u64			available_cache;
+struct bch_fs_usage_short {
+	u64			capacity;
+	u64			used;
+	u64			nr_inodes;
 };
 
 /*
  * A reservation for space on disk:
  */
 struct disk_reservation {
-	u64		sectors;
-	u32		gen;
-	unsigned	nr_replicas;
+	u64			sectors;
+	u32			gen;
+	unsigned		nr_replicas;
 };
 
 struct copygc_heap_entry {

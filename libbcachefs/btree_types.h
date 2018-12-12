@@ -244,9 +244,28 @@ struct btree_iter {
 
 #define BTREE_ITER_MAX		8
 
+struct deferred_update {
+	struct journal_entry_pin journal;
+
+	spinlock_t		lock;
+	unsigned		gen;
+
+	u8			allocated_u64s;
+	enum btree_id		btree_id;
+
+	/* must be last: */
+	struct bkey_i		k;
+};
+
 struct btree_insert_entry {
-	struct btree_iter *iter;
-	struct bkey_i	*k;
+	struct bkey_i		*k;
+
+	union {
+	struct btree_iter	*iter;
+	struct deferred_update	*d;
+	};
+
+	bool			deferred;
 };
 
 struct btree_trans {
@@ -438,6 +457,7 @@ static inline bool btree_node_type_needs_gc(enum btree_node_type type)
 	switch (type) {
 	case BKEY_TYPE_BTREE:
 	case BKEY_TYPE_EXTENTS:
+	case BKEY_TYPE_INODES:
 	case BKEY_TYPE_EC:
 		return true;
 	default:

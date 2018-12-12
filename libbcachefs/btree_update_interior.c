@@ -561,7 +561,6 @@ static void bch2_btree_update_free(struct btree_update *as)
 
 	closure_debug_destroy(&as->cl);
 	mempool_free(as, &c->btree_interior_update_pool);
-	percpu_ref_put(&c->writes);
 
 	closure_wake_up(&c->btree_interior_update_wait);
 	mutex_unlock(&c->btree_interior_update_lock);
@@ -1011,14 +1010,9 @@ bch2_btree_update_start(struct bch_fs *c, enum btree_id id,
 	struct btree_reserve *reserve;
 	struct btree_update *as;
 
-	if (unlikely(!percpu_ref_tryget(&c->writes)))
-		return ERR_PTR(-EROFS);
-
 	reserve = bch2_btree_reserve_get(c, nr_nodes, flags, cl);
-	if (IS_ERR(reserve)) {
-		percpu_ref_put(&c->writes);
+	if (IS_ERR(reserve))
 		return ERR_CAST(reserve);
-	}
 
 	as = mempool_alloc(&c->btree_interior_update_pool, GFP_NOIO);
 	memset(as, 0, sizeof(*as));
@@ -1067,7 +1061,7 @@ static void bch2_btree_set_root_inmem(struct btree_update *as, struct btree *b)
 	__bch2_btree_set_root_inmem(c, b);
 
 	mutex_lock(&c->btree_interior_update_lock);
-	percpu_down_read_preempt_disable(&c->usage_lock);
+	percpu_down_read_preempt_disable(&c->mark_lock);
 
 	bch2_mark_key_locked(c, bkey_i_to_s_c(&b->key),
 		      true, 0,
@@ -1081,7 +1075,7 @@ static void bch2_btree_set_root_inmem(struct btree_update *as, struct btree *b)
 	bch2_fs_usage_apply(c, &stats, &as->reserve->disk_res,
 			    gc_pos_btree_root(b->btree_id));
 
-	percpu_up_read_preempt_enable(&c->usage_lock);
+	percpu_up_read_preempt_enable(&c->mark_lock);
 	mutex_unlock(&c->btree_interior_update_lock);
 }
 
@@ -1160,7 +1154,7 @@ static void bch2_insert_fixup_btree_ptr(struct btree_update *as, struct btree *b
 	BUG_ON(insert->k.u64s > bch_btree_keys_u64s_remaining(c, b));
 
 	mutex_lock(&c->btree_interior_update_lock);
-	percpu_down_read_preempt_disable(&c->usage_lock);
+	percpu_down_read_preempt_disable(&c->mark_lock);
 
 	bch2_mark_key_locked(c, bkey_i_to_s_c(insert),
 			     true, 0,
@@ -1182,7 +1176,7 @@ static void bch2_insert_fixup_btree_ptr(struct btree_update *as, struct btree *b
 	bch2_fs_usage_apply(c, &stats, &as->reserve->disk_res,
 			    gc_pos_btree_node(b));
 
-	percpu_up_read_preempt_enable(&c->usage_lock);
+	percpu_up_read_preempt_enable(&c->mark_lock);
 	mutex_unlock(&c->btree_interior_update_lock);
 
 	bch2_btree_bset_insert_key(iter, b, node_iter, insert);
@@ -1918,6 +1912,25 @@ static void __bch2_btree_node_update_key(struct bch_fs *c,
 
 	btree_interior_update_add_node_reference(as, b);
 
+	/*
+	 * XXX: the rest of the update path treats this like we're actually
+	 * inserting a new node and deleting the existing node, so the
+	 * reservation needs to include enough space for @b
+	 *
+	 * that is actually sketch as fuck though and I am surprised the code
+	 * seems to work like that, definitely need to go back and rework it
+	 * into something saner.
+	 *
+	 * (I think @b is just getting double counted until the btree update
+	 * finishes and "deletes" @b on disk)
+	 */
+	ret = bch2_disk_reservation_add(c, &as->reserve->disk_res,
+			c->opts.btree_node_size *
+			bch2_bkey_nr_ptrs(bkey_i_to_s_c(&new_key->k_i)),
+			BCH_DISK_RESERVATION_NOFAIL|
+			BCH_DISK_RESERVATION_GC_LOCK_HELD);
+	BUG_ON(ret);
+
 	parent = btree_node_parent(iter, b);
 	if (parent) {
 		if (new_hash) {
@@ -1951,7 +1964,7 @@ static void __bch2_btree_node_update_key(struct bch_fs *c,
 		bch2_btree_node_lock_write(b, iter);
 
 		mutex_lock(&c->btree_interior_update_lock);
-		percpu_down_read_preempt_disable(&c->usage_lock);
+		percpu_down_read_preempt_disable(&c->mark_lock);
 
 		bch2_mark_key_locked(c, bkey_i_to_s_c(&new_key->k_i),
 			      true, 0,
@@ -1963,7 +1976,7 @@ static void __bch2_btree_node_update_key(struct bch_fs *c,
 		bch2_fs_usage_apply(c, &stats, &as->reserve->disk_res,
 				    gc_pos_btree_root(b->btree_id));
 
-		percpu_up_read_preempt_enable(&c->usage_lock);
+		percpu_up_read_preempt_enable(&c->mark_lock);
 		mutex_unlock(&c->btree_interior_update_lock);
 
 		if (PTR_HASH(&new_key->k_i) != PTR_HASH(&b->key)) {

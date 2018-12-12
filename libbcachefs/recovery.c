@@ -130,8 +130,7 @@ int bch2_fs_recovery(struct bch_fs *c)
 	int ret;
 
 	mutex_lock(&c->sb_lock);
-	if (!rcu_dereference_protected(c->replicas,
-			lockdep_is_held(&c->sb_lock))->nr) {
+	if (!c->replicas.entries) {
 		bch_info(c, "building replicas info");
 		set_bit(BCH_FS_REBUILD_REPLICAS, &c->flags);
 	}
@@ -373,8 +372,6 @@ int bch2_fs_initialize(struct bch_fs *c)
 				 BTREE_INSERT_NOFAIL);
 	if (ret)
 		goto err;
-
-	atomic_long_set(&c->nr_inodes, 2);
 
 	if (enabled_qtypes(c)) {
 		ret = bch2_fs_quota_read(c);
