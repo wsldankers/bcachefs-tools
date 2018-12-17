@@ -184,7 +184,10 @@ enum opt_type {
 		NO_SB_OPT,			false)			\
 	BCH_OPT(version_upgrade,	u8,	OPT_MOUNT,		\
 		OPT_BOOL(),						\
-		NO_SB_OPT,			false)
+		NO_SB_OPT,			false)			\
+	BCH_OPT(project,		u8,	OPT_INTERNAL,		\
+		OPT_BOOL(),						\
+		NO_SB_OPT,			false)			\
 
 struct bch_opts {
 #define BCH_OPT(_name, _bits, ...)	unsigned _name##_defined:1;
@@ -277,24 +280,14 @@ int bch2_parse_mount_opts(struct bch_opts *, char *);
 
 /* inode opts: */
 
-#define BCH_INODE_OPTS()					\
-	BCH_INODE_OPT(data_checksum,			8)	\
-	BCH_INODE_OPT(compression,			8)	\
-	BCH_INODE_OPT(background_compression,		8)	\
-	BCH_INODE_OPT(data_replicas,			8)	\
-	BCH_INODE_OPT(promote_target,			16)	\
-	BCH_INODE_OPT(foreground_target,		16)	\
-	BCH_INODE_OPT(background_target,		16)	\
-	BCH_INODE_OPT(erasure_code,			16)
-
 struct bch_io_opts {
-#define BCH_INODE_OPT(_name, _bits)	unsigned _name##_defined:1;
+#define x(_name, _bits)	unsigned _name##_defined:1;
 	BCH_INODE_OPTS()
-#undef BCH_INODE_OPT
+#undef x
 
-#define BCH_INODE_OPT(_name, _bits)	u##_bits _name;
+#define x(_name, _bits)	u##_bits _name;
 	BCH_INODE_OPTS()
-#undef BCH_INODE_OPT
+#undef x
 };
 
 struct bch_io_opts bch2_opts_to_inode_opts(struct bch_opts);
