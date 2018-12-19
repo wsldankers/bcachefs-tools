@@ -69,6 +69,8 @@ static void usage(void)
 	     "  migrate              Migrate an existing filesystem to bcachefs, in place\n"
 	     "  migrate-superblock   Add default superblock, after bcachefs migrate\n"
 	     "\n"
+	     "Commands for operating on files in a bcachefs filesystem:\n"
+	     "  setattr              Set various per file attributes\n"
 	     "Debug:\n"
 	     "These commands work on offline, unmounted filesystems\n"
 	     "  dump                 Dump filesystem metadata to a qcow2 image\n"
@@ -197,6 +199,9 @@ int main(int argc, char *argv[])
 		return cmd_dump(argc, argv);
 	if (!strcmp(cmd, "list"))
 		return cmd_list(argc, argv);
+
+	if (!strcmp(cmd, "setattr"))
+		return cmd_setattr(argc, argv);
 
 	if (!strcmp(cmd, "--help")) {
 		usage();
