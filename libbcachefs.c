@@ -927,7 +927,9 @@ int bchu_data(struct bchfs_handle fs, struct bch_ioctl_data cmd)
 		printf("\33[2K\r");
 
 		printf("%llu%% complete: current position %s",
-		       e.p.sectors_done * 100 / e.p.sectors_total,
+		       e.p.sectors_total
+		       ? e.p.sectors_done * 100 / e.p.sectors_total
+		       : 0,
 		       bch2_data_types[e.p.data_type]);
 
 		switch (e.p.data_type) {
