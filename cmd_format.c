@@ -5,6 +5,7 @@
  *
  * GPLv2
  */
+#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
@@ -28,109 +29,72 @@
 #include "libbcachefs/super-io.h"
 #include "libbcachefs/util.h"
 
-#define OPTS									\
-t("bcachefs format - create a new bcachefs filesystem on one or more devices")	\
-t("Usage: bcachefs format [OPTION]... <devices>")				\
-t("")										\
-x('b',	block_size,		"size",			NULL)			\
-x(0,	btree_node_size,	"size",			"Default 256k")		\
-x(0,	metadata_checksum_type,	"(none|crc32c|crc64)",	NULL)			\
-x(0,	data_checksum_type,	"(none|crc32c|crc64)",	NULL)			\
-x(0,	compression_type,	"(none|lz4|gzip)",	NULL)			\
-x(0,	background_compression_type,	"(none|lz4|gzip)",	NULL)		\
-x(0,	replicas,		"#",			NULL)			\
-x(0,	data_replicas,		"#",			NULL)			\
-x(0,	metadata_replicas,	"#",			NULL)			\
-x(0,	foreground_target,	"target",		NULL)			\
-x(0,	background_target,	"target",		NULL)			\
-x(0,	promote_target,		"target",		NULL)			\
-x(0,	encrypted,		NULL,			"Enable whole filesystem encryption (chacha20/poly1305)")\
-x(0,	no_passphrase,		NULL,			"Don't encrypt master encryption key")\
-x('e',	error_action,		"(continue|remount-ro|panic)", NULL)		\
-x('L',	label,			"label",		NULL)			\
-x('U',	uuid,			"uuid",			NULL)			\
-x('f',	force,			NULL,			NULL)			\
-t("")										\
-t("Device specific options:")							\
-x(0,	fs_size,		"size",			"Size of filesystem on device")\
-x(0,	bucket_size,		"size",			"Bucket size")		\
-x('g',	group,			"label",		"Disk group")\
-x(0,	discard,		NULL,			NULL)			\
-x(0,	data_allowed,		"journal,btree,data",	"Allowed types of data on this device")\
-x(0,	durability,		"#",			"Number of times data written to this device will have been considered replicated")\
-t("Device specific options must come before corresponding devices, e.g.")	\
-t("  bcachefs format --group cache /dev/sdb --tier 1 /dev/sdc")			\
-t("")										\
-x('q',	quiet,			NULL,			"Only print errors")	\
-x('h',	help,			NULL,			"Display this help and exit")
+#define OPTS						\
+x(0,	replicas,		required_argument)	\
+x(0,	encrypted,		no_argument)		\
+x(0,	no_passphrase,		no_argument)		\
+x('L',	label,			required_argument)	\
+x('U',	uuid,			required_argument)	\
+x(0,	fs_size,		required_argument)	\
+x(0,	bucket_size,		required_argument)	\
+x('g',	group,			required_argument)	\
+x(0,	discard,		no_argument)		\
+x(0,	data_allowed,		required_argument)	\
+x(0,	durability,		required_argument)	\
+x('f',	force,			no_argument)		\
+x('q',	quiet,			no_argument)		\
+x('h',	help,			no_argument)
 
 static void usage(void)
 {
-#define t(text)				puts(text "\n")
-#define x(shortopt, longopt, arg, help) do {				\
-	OPTS
-#undef x
-#undef t
-
 	puts("bcachefs format - create a new bcachefs filesystem on one or more devices\n"
 	     "Usage: bcachefs format [OPTION]... <devices>\n"
 	     "\n"
-	     "Options:\n"
-	     "  -b, --block=size\n"
-	     "      --btree_node=size       Btree node size, default 256k\n"
-	     "      --metadata_checksum_type=(none|crc32c|crc64)\n"
-	     "      --data_checksum_type=(none|crc32c|crc64)\n"
-	     "      --compression_type=(none|lz4|gzip|zstd)\n"
-	     "      --background_compression_type=(none|lz4|gzip|zstd)\n"
-	     "      --data_replicas=#       Number of data replicas\n"
-	     "      --metadata_replicas=#   Number of metadata replicas\n"
+	     "Options:");
+
+	bch2_opts_usage(OPT_FORMAT);
+
+	puts(
 	     "      --replicas=#            Sets both data and metadata replicas\n"
 	     "      --encrypted             Enable whole filesystem encryption (chacha20/poly1305)\n"
 	     "      --no_passphrase         Don't encrypt master encryption key\n"
-	     "  -e, --error_action=(continue|remount-ro|panic)\n"
-	     "                              Action to take on filesystem error\n"
 	     "  -L, --label=label\n"
 	     "  -U, --uuid=uuid\n"
+	     "\n"
+	     "Device specific options:");
+
+	bch2_opts_usage(OPT_DEVICE);
+
+	puts("  -g, --group=label           Disk group\n"
+	     "\n"
 	     "  -f, --force\n"
-	     "\n"
-	     "Device specific options:\n"
-	     "      --fs_size=size          Size of filesystem on device\n"
-	     "      --bucket=size           Bucket size\n"
-	     "      --discard               Enable discards\n"
-	     "      --durability=#          Device durability (0-4)\n"
-	     "  -g, --group=label           Disk group\n"
-	     "\n"
 	     "  -q, --quiet                 Only print errors\n"
 	     "  -h, --help                  Display this help and exit\n"
 	     "\n"
 	     "Device specific options must come before corresponding devices, e.g.\n"
-	     "  bcachefs format --group cache /dev/sdb --tier 1 /dev/sdc\n"
+	     "  bcachefs format --group cache /dev/sdb /dev/sdc\n"
 	     "\n"
 	     "Report bugs to <linux-bcache@vger.kernel.org>");
 }
 
 enum {
 	O_no_opt = 1,
-#define t(text)
-#define x(shortopt, longopt, arg, help)	O_##longopt,
+#define x(shortopt, longopt, arg)	O_##longopt,
 	OPTS
 #undef x
-#undef t
 };
 
-static const struct option format_opts[] = {
-#define t(text)
-#define x(shortopt, longopt, arg, help)	{				\
-	.name		= #longopt,					\
-	.has_arg	= arg ? required_argument : no_argument,	\
-	.flag		= NULL,						\
-	.val		= O_##longopt,					\
+#define x(shortopt, longopt, arg) {			\
+	.name		= #longopt,			\
+	.has_arg	= arg,				\
+	.flag		= NULL,				\
+	.val		= O_##longopt,			\
 },
+static const struct option format_opts[] = {
 	OPTS
-#undef x
-#undef t
 	{ NULL }
 };
+#undef x
 
 u64 read_flag_list_or_die(char *opt, const char * const list[],
 			  const char *msg)
@@ -148,85 +112,34 @@ int cmd_format(int argc, char *argv[])
 	struct format_opts opts	= format_opts_default();
 	struct dev_opts dev_opts = dev_opts_default(), *dev;
 	bool force = false, no_passphrase = false, quiet = false;
+	unsigned v;
 	int opt;
 
 	darray_init(devices);
 
+	struct bch_opt_strs fs_opt_strs =
+		bch2_cmdline_opts_get(&argc, argv, OPT_FORMAT);
+	struct bch_opts fs_opts = bch2_parse_opts(fs_opt_strs);
+
 	while ((opt = getopt_long(argc, argv,
-				  "-b:e:g:L:U:fqh",
+				  "-L:U:fh",
 				  format_opts,
 				  NULL)) != -1)
 		switch (opt) {
-		case O_block_size:
-		case 'b':
-			opts.block_size =
-				hatoi_validate(optarg, "block size");
-			break;
-		case O_btree_node_size:
-			opts.btree_node_size =
-				hatoi_validate(optarg, "btree node size");
-			break;
-		case O_metadata_checksum_type:
-			opts.meta_csum_type =
-				read_string_list_or_die(optarg,
-						bch2_csum_types, "checksum type");
-			break;
-		case O_data_checksum_type:
-			opts.data_csum_type =
-				read_string_list_or_die(optarg,
-						bch2_csum_types, "checksum type");
-			break;
-		case O_compression_type:
-			opts.compression_type =
-				read_string_list_or_die(optarg,
-						bch2_compression_types,
-						"compression type");
-			break;
-		case O_background_compression_type:
-			opts.background_compression_type =
-				read_string_list_or_die(optarg,
-						bch2_compression_types,
-						"compression type");
-			break;
-		case O_data_replicas:
-			if (kstrtouint(optarg, 10, &opts.data_replicas) ||
-			    !opts.data_replicas ||
-			    opts.data_replicas > BCH_REPLICAS_MAX)
-				die("invalid replicas");
-			break;
-		case O_metadata_replicas:
-			if (kstrtouint(optarg, 10, &opts.meta_replicas) ||
-			    !opts.meta_replicas ||
-			    opts.meta_replicas > BCH_REPLICAS_MAX)
-				die("invalid replicas");
-			break;
 		case O_replicas:
-			if (kstrtouint(optarg, 10, &opts.data_replicas) ||
-			    !opts.data_replicas ||
-			    opts.data_replicas > BCH_REPLICAS_MAX)
+			if (kstrtouint(optarg, 10, &v) ||
+			    !v ||
+			    v > BCH_REPLICAS_MAX)
 				die("invalid replicas");
-			opts.meta_replicas = opts.data_replicas;
-			break;
-		case O_foreground_target:
-			opts.foreground_target = optarg;
-			break;
-		case O_background_target:
-			opts.background_target = optarg;
-			break;
-		case O_promote_target:
-			opts.promote_target = optarg;
+
+			opt_set(fs_opts, metadata_replicas, v);
+			opt_set(fs_opts, data_replicas, v);
 			break;
 		case O_encrypted:
 			opts.encrypted = true;
 			break;
 		case O_no_passphrase:
 			no_passphrase = true;
-			break;
-		case O_error_action:
-		case 'e':
-			opts.on_error_action =
-				read_string_list_or_die(optarg,
-						bch2_error_actions, "error action");
 			break;
 		case O_label:
 		case 'L':
@@ -282,6 +195,9 @@ int cmd_format(int argc, char *argv[])
 			usage();
 			exit(EXIT_SUCCESS);
 			break;
+		case '?':
+			die("unrecognized option %s", optarg);
+			break;
 		}
 
 	if (darray_empty(devices))
@@ -294,7 +210,10 @@ int cmd_format(int argc, char *argv[])
 		dev->fd = open_for_format(dev->path, force);
 
 	struct bch_sb *sb =
-		bch2_format(opts, devices.item, darray_size(devices));
+		bch2_format(fs_opt_strs,
+			    fs_opts,
+			    opts,
+			    devices.item, darray_size(devices));
 
 	if (!quiet)
 		bch2_sb_print(sb, false, 1 << BCH_SB_FIELD_members, HUMAN_READABLE);

@@ -386,7 +386,7 @@ struct fiemap_extent fiemap_iter_next(struct fiemap_iter *iter)
 	return e;
 }
 
-const char *strcmp_prefix(const char *a, const char *a_prefix)
+char *strcmp_prefix(char *a, const char *a_prefix)
 {
 	while (*a_prefix && *a == *a_prefix) {
 		a++;

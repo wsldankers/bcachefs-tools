@@ -23,6 +23,7 @@
 #include "libbcachefs/opts.h"
 #include "libbcachefs/replicas.h"
 #include "libbcachefs/super-io.h"
+#include "tools-util.h"
 
 #define NSEC_PER_SEC	1000000000L
 
@@ -71,7 +72,7 @@ static void init_layout(struct bch_sb_layout *l, unsigned block_size,
 	l->sb_offset[1]		= cpu_to_le64(backup);
 }
 
-void bch2_pick_bucket_size(struct format_opts opts, struct dev_opts *dev)
+void bch2_pick_bucket_size(struct bch_opts opts, struct dev_opts *dev)
 {
 	if (!dev->sb_offset) {
 		dev->sb_offset	= BCH_SB_SECTOR;
@@ -90,7 +91,9 @@ void bch2_pick_bucket_size(struct format_opts opts, struct dev_opts *dev)
 		dev->bucket_size = opts.block_size;
 
 		/* Bucket size must be >= btree node size: */
-		dev->bucket_size = max(dev->bucket_size, opts.btree_node_size);
+		if (opt_defined(opts, btree_node_size))
+			dev->bucket_size = max_t(unsigned, dev->bucket_size,
+						 opts.btree_node_size);
 
 		/* Want a bucket size of at least 128k, if possible: */
 		dev->bucket_size = max(dev->bucket_size, 256U);
@@ -115,7 +118,8 @@ void bch2_pick_bucket_size(struct format_opts opts, struct dev_opts *dev)
 	if (dev->bucket_size < opts.block_size)
 		die("Bucket size cannot be smaller than block size");
 
-	if (dev->bucket_size < opts.btree_node_size)
+	if (opt_defined(opts, btree_node_size) &&
+	    dev->bucket_size < opts.btree_node_size)
 		die("Bucket size cannot be smaller than btree node size");
 
 	if (dev->nbuckets < BCH_MIN_NR_NBUCKETS)
@@ -146,37 +150,48 @@ static unsigned parse_target(struct bch_sb_handle *sb,
 	return 0;
 }
 
-struct bch_sb *bch2_format(struct format_opts opts,
-			   struct dev_opts *devs, size_t nr_devs)
+struct bch_sb *bch2_format(struct bch_opt_strs	fs_opt_strs,
+			   struct bch_opts	fs_opts,
+			   struct format_opts	opts,
+			   struct dev_opts	*devs,
+			   size_t		nr_devs)
 {
 	struct bch_sb_handle sb = { NULL };
 	struct dev_opts *i;
 	struct bch_sb_field_members *mi;
+	unsigned max_dev_block_size = 0;
+	unsigned opt_id;
+
+	for (i = devs; i < devs + nr_devs; i++)
+		max_dev_block_size = max(max_dev_block_size,
+					 get_blocksize(i->path, i->fd));
 
 	/* calculate block size: */
-	if (!opts.block_size)
-		for (i = devs; i < devs + nr_devs; i++)
-			opts.block_size = max(opts.block_size,
-					      get_blocksize(i->path, i->fd));
+	if (!opt_defined(fs_opts, block_size)) {
+		opt_set(fs_opts, block_size, max_dev_block_size);
+	} else if (fs_opts.block_size < max_dev_block_size)
+		die("blocksize too small: %u, must be greater than device blocksize %u",
+		    fs_opts.block_size, max_dev_block_size);
 
 	/* calculate bucket sizes: */
 	for (i = devs; i < devs + nr_devs; i++)
-		bch2_pick_bucket_size(opts, i);
+		bch2_pick_bucket_size(fs_opts, i);
 
 	/* calculate btree node size: */
-	if (!opts.btree_node_size) {
+	if (!opt_defined(fs_opts, btree_node_size)) {
 		/* 256k default btree node size */
-		opts.btree_node_size = 512;
+		opt_set(fs_opts, btree_node_size, 512);
 
 		for (i = devs; i < devs + nr_devs; i++)
-			opts.btree_node_size =
-				min(opts.btree_node_size, i->bucket_size);
+			fs_opts.btree_node_size =
+				min_t(unsigned, fs_opts.btree_node_size,
+				      i->bucket_size);
 	}
 
-	if (!is_power_of_2(opts.block_size))
+	if (!is_power_of_2(fs_opts.block_size))
 		die("block size must be power of 2");
 
-	if (!is_power_of_2(opts.btree_node_size))
+	if (!is_power_of_2(fs_opts.btree_node_size))
 		die("btree node size must be power of 2");
 
 	if (uuid_is_null(opts.uuid.b))
@@ -188,7 +203,7 @@ struct bch_sb *bch2_format(struct format_opts opts,
 	sb.sb->version		= le16_to_cpu(bcachefs_metadata_version_current);
 	sb.sb->version_min	= le16_to_cpu(bcachefs_metadata_version_current);
 	sb.sb->magic		= BCACHE_MAGIC;
-	sb.sb->block_size	= cpu_to_le16(opts.block_size);
+	sb.sb->block_size	= cpu_to_le16(fs_opts.block_size);
 	sb.sb->user_uuid	= opts.uuid;
 	sb.sb->nr_devices	= nr_devs;
 
@@ -199,24 +214,24 @@ struct bch_sb *bch2_format(struct format_opts opts,
 		       opts.label,
 		       min(strlen(opts.label), sizeof(sb.sb->label)));
 
-	SET_BCH_SB_CSUM_TYPE(sb.sb,		opts.meta_csum_type);
-	SET_BCH_SB_META_CSUM_TYPE(sb.sb,	opts.meta_csum_type);
-	SET_BCH_SB_DATA_CSUM_TYPE(sb.sb,	opts.data_csum_type);
-	SET_BCH_SB_COMPRESSION_TYPE(sb.sb,	opts.compression_type);
-	SET_BCH_SB_BACKGROUND_COMPRESSION_TYPE(sb.sb,
-						opts.background_compression_type);
+	for (opt_id = 0;
+	     opt_id < bch2_opts_nr;
+	     opt_id++) {
+		const struct bch_option *opt = &bch2_opt_table[opt_id];
+		u64 v;
 
-	SET_BCH_SB_BTREE_NODE_SIZE(sb.sb,	opts.btree_node_size);
-	SET_BCH_SB_GC_RESERVE(sb.sb,		8);
-	SET_BCH_SB_META_REPLICAS_WANT(sb.sb,	opts.meta_replicas);
-	SET_BCH_SB_META_REPLICAS_REQ(sb.sb,	opts.meta_replicas_required);
-	SET_BCH_SB_DATA_REPLICAS_WANT(sb.sb,	opts.data_replicas);
-	SET_BCH_SB_DATA_REPLICAS_REQ(sb.sb,	opts.data_replicas_required);
-	SET_BCH_SB_ERROR_ACTION(sb.sb,		opts.on_error_action);
-	SET_BCH_SB_STR_HASH_TYPE(sb.sb,		BCH_STR_HASH_SIPHASH);
-	SET_BCH_SB_ENCODED_EXTENT_MAX_BITS(sb.sb,ilog2(opts.encoded_extent_max));
+		if (opt->set_sb == SET_NO_SB_OPT)
+			continue;
 
-	SET_BCH_SB_POSIX_ACL(sb.sb,		1);
+		v = bch2_opt_defined_by_id(&fs_opts, opt_id)
+			? bch2_opt_get_by_id(&fs_opts, opt_id)
+			: bch2_opt_get_by_id(&bch2_opts_default, opt_id);
+
+		opt->set_sb(sb.sb, v);
+	}
+
+	SET_BCH_SB_ENCODED_EXTENT_MAX_BITS(sb.sb,
+				ilog2(opts.encoded_extent_max));
 
 	struct timespec now;
 	if (clock_gettime(CLOCK_REALTIME, &now))
@@ -260,11 +275,11 @@ struct bch_sb *bch2_format(struct format_opts opts,
 	}
 
 	SET_BCH_SB_FOREGROUND_TARGET(sb.sb,
-		parse_target(&sb, devs, nr_devs, opts.foreground_target));
+		parse_target(&sb, devs, nr_devs, fs_opt_strs.foreground_target));
 	SET_BCH_SB_BACKGROUND_TARGET(sb.sb,
-		parse_target(&sb, devs, nr_devs, opts.background_target));
+		parse_target(&sb, devs, nr_devs, fs_opt_strs.background_target));
 	SET_BCH_SB_PROMOTE_TARGET(sb.sb,
-		parse_target(&sb, devs, nr_devs, opts.promote_target));
+		parse_target(&sb, devs, nr_devs, fs_opt_strs.promote_target));
 
 	/* Crypt: */
 	if (opts.encrypted) {
@@ -278,7 +293,7 @@ struct bch_sb *bch2_format(struct format_opts opts,
 	for (i = devs; i < devs + nr_devs; i++) {
 		sb.sb->dev_idx = i - devs;
 
-		init_layout(&sb.sb->layout, opts.block_size,
+		init_layout(&sb.sb->layout, fs_opts.block_size,
 			    i->sb_offset, i->sb_end);
 
 		if (i->sb_offset == BCH_SB_SECTOR) {
@@ -930,4 +945,152 @@ int bchu_data(struct bchfs_handle fs, struct bch_ioctl_data cmd)
 
 	close(progress_fd);
 	return 0;
+}
+
+/* option parsing */
+
+struct bch_opt_strs bch2_cmdline_opts_get(int *argc, char *argv[],
+					  unsigned opt_types)
+{
+	struct bch_opt_strs opts;
+	unsigned i = 1;
+
+	memset(&opts, 0, sizeof(opts));
+
+	while (i < *argc) {
+		char *optstr = strcmp_prefix(argv[i], "--");
+		char *valstr = NULL, *p;
+		int optid, nr_args = 1;
+
+		if (!optstr) {
+			i++;
+			continue;
+		}
+
+		optstr = strdup(optstr);
+
+		p = optstr;
+		while (isalpha(*p) || *p == '_')
+			p++;
+
+		if (*p == '=') {
+			*p = '\0';
+			valstr = p + 1;
+		}
+
+		optid = bch2_opt_lookup(optstr);
+		if (optid < 0 ||
+		    !(bch2_opt_table[optid].mode & opt_types)) {
+			free(optstr);
+			i++;
+			continue;
+		}
+
+		if (!valstr &&
+		    bch2_opt_table[optid].type != BCH_OPT_BOOL) {
+			nr_args = 2;
+			valstr = argv[i + 1];
+		}
+
+		if (!valstr)
+			valstr = "1";
+
+		opts.by_id[optid] = valstr;
+
+		*argc -= nr_args;
+		memmove(&argv[i],
+			&argv[i + nr_args],
+			sizeof(char *) * (*argc - i));
+		argv[*argc] = NULL;
+	}
+
+	return opts;
+}
+
+struct bch_opts bch2_parse_opts(struct bch_opt_strs strs)
+{
+	struct bch_opts opts = bch2_opts_empty();
+	unsigned i;
+	int ret;
+	u64 v;
+
+	for (i = 0; i < bch2_opts_nr; i++) {
+		if (!strs.by_id[i] ||
+		    bch2_opt_table[i].type == BCH_OPT_FN)
+			continue;
+
+		ret = bch2_opt_parse(NULL, &bch2_opt_table[i],
+				     strs.by_id[i], &v);
+		if (ret < 0)
+			die("Invalid %s: %s", strs.by_id[i], strerror(-ret));
+
+		bch2_opt_set_by_id(&opts, i, v);
+	}
+
+	return opts;
+}
+
+void bch2_opts_usage(unsigned opt_types)
+{
+	const struct bch_option *opt;
+	unsigned i, c = 0, helpcol = 30;
+
+	void tabalign() {
+		while (c < helpcol) {
+			putchar(' ');
+			c++;
+		}
+	}
+
+	void newline() {
+		printf("\n");
+		c = 0;
+	}
+
+	for (opt = bch2_opt_table;
+	     opt < bch2_opt_table + bch2_opts_nr;
+	     opt++) {
+		if (!(opt->mode & opt_types))
+			continue;
+
+		c += printf("      --%s", opt->attr.name);
+
+		switch (opt->type) {
+		case BCH_OPT_BOOL:
+			break;
+		case BCH_OPT_STR:
+			c += printf("=(");
+			for (i = 0; opt->choices[i]; i++) {
+				if (i)
+					c += printf("|");
+				c += printf("%s", opt->choices[i]);
+			}
+			c += printf(")");
+			break;
+		default:
+			c += printf("=%s", opt->hint);
+			break;
+		}
+
+		if (opt->help) {
+			const char *l = opt->help;
+
+			if (c >= helpcol)
+				newline();
+
+			while (1) {
+				const char *n = strchrnul(l, '\n');
+
+				tabalign();
+				printf("%.*s", (int) (n - l), l);
+				newline();
+
+				if (!*n)
+					break;
+				l = n + 1;
+			}
+		} else {
+			newline();
+		}
+	}
 }

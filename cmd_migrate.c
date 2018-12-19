@@ -185,13 +185,13 @@ static struct bch_inode_unpacked create_file(struct bch_fs *c,
 			(handler) != NULL;			\
 			(handler) = *(handlers)++)
 
-static const struct xattr_handler *xattr_resolve_name(const char **name)
+static const struct xattr_handler *xattr_resolve_name(char **name)
 {
 	const struct xattr_handler **handlers = bch2_xattr_handlers;
 	const struct xattr_handler *handler;
 
 	for_each_xattr_handler(handlers, handler) {
-		const char *n;
+		char *n;
 
 		n = strcmp_prefix(*name, xattr_prefix(handler));
 		if (n) {
@@ -225,7 +225,7 @@ static void copy_xattrs(struct bch_fs *c, struct bch_inode_unpacked *dst,
 	if (attrs_size < 0)
 		die("listxattr error: %m");
 
-	const char *next, *attr;
+	char *next, *attr;
 	for (attr = attrs;
 	     attr < attrs + attrs_size;
 	     attr = next) {
@@ -657,8 +657,10 @@ static const struct option migrate_opts[] = {
 	{ NULL }
 };
 
-static int migrate_fs(const char *fs_path,
-		      struct format_opts format_opts,
+static int migrate_fs(const char		*fs_path,
+		      struct bch_opt_strs	fs_opt_strs,
+		      struct bch_opts		fs_opts,
+		      struct format_opts	format_opts,
 		      bool force)
 {
 	if (!path_is_fs_root(fs_path))
@@ -675,25 +677,24 @@ static int migrate_fs(const char *fs_path,
 	dev.path = dev_t_to_path(stat.st_dev);
 	dev.fd = xopen(dev.path, O_RDWR);
 
-	unsigned block_size = get_blocksize(dev.path, dev.fd) << 9;
-	BUG_ON(!is_power_of_2(block_size) || block_size < 512);
-	format_opts.block_size = block_size >> 9;
+	opt_set(fs_opts, block_size, get_blocksize(dev.path, dev.fd));
 
 	char *file_path = mprintf("%s/bcachefs", fs_path);
 	printf("Creating new filesystem on %s in space reserved at %s\n",
 	       dev.path, file_path);
 
-	bch2_pick_bucket_size(format_opts, &dev);
+	bch2_pick_bucket_size(fs_opts, &dev);
 
 	u64 bcachefs_inum;
 	ranges extents = reserve_new_fs_space(file_path,
-				format_opts.block_size << 9,
+				fs_opts.block_size << 9,
 				get_size(dev.path, dev.fd) / 5,
 				&bcachefs_inum, stat.st_dev, force);
 
 	find_superblock_space(extents, &dev);
 
-	struct bch_sb *sb = bch2_format(format_opts, &dev, 1);
+	struct bch_sb *sb = bch2_format(fs_opt_strs,
+					fs_opts,format_opts, &dev, 1);
 	u64 sb_offset = le64_to_cpu(sb->layout.sb_offset[0]);
 
 	if (format_opts.passphrase)
@@ -757,6 +758,10 @@ int cmd_migrate(int argc, char *argv[])
 	bool no_passphrase = false, force = false;
 	int opt;
 
+	struct bch_opt_strs fs_opt_strs =
+		bch2_cmdline_opts_get(&argc, argv, OPT_FORMAT);
+	struct bch_opts fs_opts = bch2_parse_opts(fs_opt_strs);
+
 	while ((opt = getopt_long(argc, argv, "f:Fh",
 				  migrate_opts, NULL)) != -1)
 		switch (opt) {
@@ -783,7 +788,10 @@ int cmd_migrate(int argc, char *argv[])
 	if (format_opts.encrypted && !no_passphrase)
 		format_opts.passphrase = read_passphrase_twice("Enter passphrase: ");
 
-	return migrate_fs(fs_path, format_opts, force);
+	return migrate_fs(fs_path,
+			  fs_opt_strs,
+			  fs_opts,
+			  format_opts, force);
 }
 
 static void migrate_superblock_usage(void)

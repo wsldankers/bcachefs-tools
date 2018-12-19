@@ -95,12 +95,20 @@ int cmd_device_add(int argc, char *argv[])
 	dev_opts.path = dev_path;
 	dev_opts.fd = open_for_format(dev_opts.path, force);
 
-	format_opts.block_size	=
-		read_file_u64(fs.sysfs_fd, "block_size") >> 9;
-	format_opts.btree_node_size =
-		read_file_u64(fs.sysfs_fd, "btree_node_size") >> 9;
+	struct bch_opt_strs fs_opt_strs;
+	memset(&fs_opt_strs, 0, sizeof(fs_opt_strs));
 
-	struct bch_sb *sb = bch2_format(format_opts, &dev_opts, 1);
+	struct bch_opts fs_opts = bch2_parse_opts(fs_opt_strs);
+
+	opt_set(fs_opts, block_size,
+		read_file_u64(fs.sysfs_fd, "block_size") >> 9);
+	opt_set(fs_opts, btree_node_size,
+		read_file_u64(fs.sysfs_fd, "btree_node_size") >> 9);
+
+	struct bch_sb *sb = bch2_format(fs_opt_strs,
+					fs_opts,
+					format_opts,
+					&dev_opts, 1);
 	free(sb);
 	fsync(dev_opts.fd);
 	close(dev_opts.fd);

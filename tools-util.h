@@ -145,7 +145,7 @@ struct fiemap_extent fiemap_iter_next(struct fiemap_iter *);
 	for (fiemap_iter_init(&iter, fd);				\
 	     (extent = fiemap_iter_next(&iter)).fe_length;)
 
-const char *strcmp_prefix(const char *, const char *);
+char *strcmp_prefix(char *, const char *);
 
 unsigned hatoi_validate(const char *, const char *);
 

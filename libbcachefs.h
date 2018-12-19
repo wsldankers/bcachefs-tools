@@ -6,33 +6,32 @@
 
 #include "libbcachefs/bcachefs_format.h"
 #include "libbcachefs/bcachefs_ioctl.h"
-#include "tools-util.h"
+#include "libbcachefs/opts.h"
 #include "libbcachefs/vstructs.h"
+#include "tools-util.h"
+
+/* option parsing */
+
+struct bch_opt_strs {
+union {
+	char			*by_id[bch2_opts_nr];
+};
+struct {
+#define x(_name, ...)	char	*_name;
+	BCH_OPTS()
+#undef x
+};
+};
+
+struct bch_opt_strs bch2_cmdline_opts_get(int *, char *[], unsigned);
+struct bch_opts bch2_parse_opts(struct bch_opt_strs);
+void bch2_opts_usage(unsigned);
 
 struct format_opts {
 	char		*label;
 	uuid_le		uuid;
 
-	unsigned	on_error_action;
-
-	unsigned	block_size;
-	unsigned	btree_node_size;
 	unsigned	encoded_extent_max;
-
-	unsigned	meta_replicas;
-	unsigned	data_replicas;
-
-	unsigned	meta_replicas_required;
-	unsigned	data_replicas_required;
-
-	const char	*foreground_target;
-	const char	*background_target;
-	const char	*promote_target;
-
-	unsigned	meta_csum_type;
-	unsigned	data_csum_type;
-	unsigned	compression_type;
-	unsigned	background_compression_type;
 
 	bool		encrypted;
 	char		*passphrase;
@@ -41,14 +40,7 @@ struct format_opts {
 static inline struct format_opts format_opts_default()
 {
 	return (struct format_opts) {
-		.on_error_action	= BCH_ON_ERROR_RO,
 		.encoded_extent_max	= 128,
-		.meta_csum_type		= BCH_CSUM_OPT_CRC32C,
-		.data_csum_type		= BCH_CSUM_OPT_CRC32C,
-		.meta_replicas		= 1,
-		.data_replicas		= 1,
-		.meta_replicas_required	= 1,
-		.data_replicas_required	= 1,
 	};
 }
 
@@ -76,8 +68,10 @@ static inline struct dev_opts dev_opts_default()
 	};
 }
 
-void bch2_pick_bucket_size(struct format_opts, struct dev_opts *);
-struct bch_sb *bch2_format(struct format_opts, struct dev_opts *, size_t);
+void bch2_pick_bucket_size(struct bch_opts, struct dev_opts *);
+struct bch_sb *bch2_format(struct bch_opt_strs,
+			   struct bch_opts,
+			   struct format_opts, struct dev_opts *, size_t);
 
 void bch2_super_write(int, struct bch_sb *);
 struct bch_sb *__bch2_super_read(int, u64);
