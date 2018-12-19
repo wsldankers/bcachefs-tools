@@ -45,7 +45,7 @@ int cmd_fsck(int argc, char *argv[])
 			/* force check, even if filesystem marked clean: */
 			break;
 		case 'v':
-			opt_set(opts, verbose_recovery, true);
+			opt_set(opts, verbose, true);
 			break;
 		case 'h':
 			usage();

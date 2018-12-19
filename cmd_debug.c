@@ -292,7 +292,7 @@ int cmd_list(int argc, char *argv[])
 			opt_set(opts, norecovery, false);
 			break;
 		case 'v':
-			opt_set(opts, verbose_recovery, true);
+			opt_set(opts, verbose, true);
 			break;
 		case 'h':
 			list_keys_usage();
