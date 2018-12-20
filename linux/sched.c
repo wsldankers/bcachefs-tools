@@ -1,17 +1,15 @@
 
-#include <linux/futex.h>
+#include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <linux/futex.h>
 
 /* hack for mips: */
 #define CONFIG_RCU_HAVE_FUTEX 1
 #include <urcu/futex.h>
 
-#include <linux/math64.h>
-#include <linux/printk.h>
 #include <linux/rcupdate.h>
 #include <linux/sched.h>
-#include <linux/slab.h>
 #include <linux/timer.h>
 
 __thread struct task_struct *current;
@@ -83,7 +81,7 @@ long schedule_timeout(long timeout)
 		 * that will tell you if something is gone wrong and where.
 		 */
 		if (timeout < 0) {
-			printk(KERN_ERR "schedule_timeout: wrong timeout "
+			fprintf(stderr, "schedule_timeout: wrong timeout "
 				"value %lx\n", timeout);
 			current->state = TASK_RUNNING;
 			goto out;

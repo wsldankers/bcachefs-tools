@@ -20,11 +20,9 @@
 #include <linux/atomic.h>
 #include <linux/cache.h>
 #include <linux/compiler.h>
-#include <linux/cpumask.h>
 #include <linux/err.h>
 #include <linux/errno.h>
 #include <linux/jhash.h>
-#include <linux/list_nulls.h>
 #include <linux/workqueue.h>
 #include <linux/mutex.h>
 #include <linux/spinlock.h>
@@ -96,6 +94,8 @@ struct rhashtable_walker {
 	struct bucket_table *tbl;
 };
 
+#define NULLS_MARKER(value) (1UL | (((long)value) << 1))
+
 static inline unsigned long rht_marker(const struct rhashtable *ht, u32 hash)
 {
 	return NULLS_MARKER(ht->p.nulls_base + hash);
@@ -107,11 +107,6 @@ static inline unsigned long rht_marker(const struct rhashtable *ht, u32 hash)
 static inline bool rht_is_a_nulls(const struct rhash_head *ptr)
 {
 	return ((unsigned long) ptr & 1);
-}
-
-static inline unsigned long rht_get_nulls_value(const struct rhash_head *ptr)
-{
-	return ((unsigned long) ptr) >> 1;
 }
 
 static inline void *rht_obj(const struct rhashtable *ht,

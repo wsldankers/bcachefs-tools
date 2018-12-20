@@ -20,10 +20,8 @@
 #include <linux/bug.h>
 #include <linux/compiler.h>
 #include <linux/kernel.h>
-#include <linux/kref.h>
 #include <linux/sysfs.h>
 #include <linux/types.h>
-#include <linux/wait.h>
 #include <linux/workqueue.h>
 
 struct kset;
@@ -52,7 +50,7 @@ struct kobject {
 	struct kset		*kset;
 	struct kobj_type	*ktype;
 	struct kernfs_node	*sd; /* sysfs directory entry */
-	struct kref		kref;
+	atomic_t		ref;
 	unsigned int state_initialized:1;
 	unsigned int state_in_sysfs:1;
 	unsigned int state_add_uevent_sent:1;
@@ -64,18 +62,13 @@ struct kset {
 	struct kobject		kobj;
 };
 
-static inline struct kobj_type *get_ktype(struct kobject *kobj)
-{
-	return kobj->ktype;
-}
-
 #define kobject_add(...)	0
 
 static inline void kobject_init(struct kobject *kobj, struct kobj_type *ktype)
 {
 	memset(kobj, 0, sizeof(*kobj));
 
-	kref_init(&kobj->kref);
+	atomic_set(&kobj->ref, 1);
 	kobj->ktype = ktype;
 	kobj->state_initialized = 1;
 }
@@ -84,7 +77,7 @@ static inline void kobject_del(struct kobject *kobj);
 
 static inline void kobject_cleanup(struct kobject *kobj)
 {
-	struct kobj_type *t = get_ktype(kobj);
+	struct kobj_type *t = kobj->ktype;
 
 	/* remove from sysfs if the caller did not do it */
 	if (kobj->state_in_sysfs)
@@ -94,19 +87,13 @@ static inline void kobject_cleanup(struct kobject *kobj)
 		t->release(kobj);
 }
 
-static inline void kobject_release(struct kref *kref)
-{
-	struct kobject *kobj = container_of(kref, struct kobject, kref);
-
-	kobject_cleanup(kobj);
-}
-
 static inline void kobject_put(struct kobject *kobj)
 {
 	BUG_ON(!kobj);
 	BUG_ON(!kobj->state_initialized);
 
-	kref_put(&kobj->kref, kobject_release);
+	if (atomic_dec_and_test(&kobj->ref))
+		kobject_cleanup(kobj);
 }
 
 static inline void kobject_del(struct kobject *kobj)
@@ -130,7 +117,7 @@ static inline struct kobject *kobject_get(struct kobject *kobj)
 	BUG_ON(!kobj);
 	BUG_ON(!kobj->state_initialized);
 
-	kref_get(&kobj->kref);
+	atomic_inc(&kobj->ref);
 	return kobj;
 }
 

@@ -4,9 +4,6 @@
 #include <linux/types.h>
 #include <linux/fs.h>
 
-struct seq_operations;
-struct path;
-
 struct seq_file {
 	char *buf;
 	size_t size;
@@ -16,7 +13,6 @@ struct seq_file {
 	loff_t index;
 	loff_t read_pos;
 	u64 version;
-	const struct seq_operations *op;
 	int poll_event;
 	const struct file *file;
 	void *private;

@@ -1,6 +1,8 @@
 #ifndef __TOOLS_LINUX_PERCPU_H
 #define __TOOLS_LINUX_PERCPU_H
 
+#include <linux/cpumask.h>
+
 #define __percpu
 
 #define free_percpu(percpu)				free(percpu)

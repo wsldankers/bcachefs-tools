@@ -12,10 +12,8 @@
  * If -E is returned, result is not touched.
  */
 #include <errno.h>
-#include <linux/ctype.h>
+#include <ctype.h>
 #include <linux/kernel.h>
-#include <linux/math64.h>
-#include <linux/export.h>
 #include <linux/types.h>
 #include "kstrtox.h"
 
@@ -71,7 +69,7 @@ unsigned int _parse_integer(const char *s, unsigned int base, unsigned long long
 		 * it in the max base we support (16)
 		 */
 		if (unlikely(res & (~0ull << 60))) {
-			if (res > div_u64(ULLONG_MAX - val, base))
+			if (res > ULLONG_MAX - val / base)
 				overflow = 1;
 		}
 		res = res * base + val;
@@ -126,7 +124,6 @@ int kstrtoull(const char *s, unsigned int base, unsigned long long *res)
 		s++;
 	return _kstrtoull(s, base, res);
 }
-EXPORT_SYMBOL(kstrtoull);
 
 /**
  * kstrtoll - convert a string to a long long
@@ -166,7 +163,6 @@ int kstrtoll(const char *s, unsigned int base, long long *res)
 	}
 	return 0;
 }
-EXPORT_SYMBOL(kstrtoll);
 
 /* Internal, do not use. */
 int _kstrtoul(const char *s, unsigned int base, unsigned long *res)
@@ -182,7 +178,6 @@ int _kstrtoul(const char *s, unsigned int base, unsigned long *res)
 	*res = tmp;
 	return 0;
 }
-EXPORT_SYMBOL(_kstrtoul);
 
 /* Internal, do not use. */
 int _kstrtol(const char *s, unsigned int base, long *res)
@@ -198,7 +193,6 @@ int _kstrtol(const char *s, unsigned int base, long *res)
 	*res = tmp;
 	return 0;
 }
-EXPORT_SYMBOL(_kstrtol);
 
 /**
  * kstrtouint - convert a string to an unsigned int
@@ -229,7 +223,6 @@ int kstrtouint(const char *s, unsigned int base, unsigned int *res)
 	*res = tmp;
 	return 0;
 }
-EXPORT_SYMBOL(kstrtouint);
 
 /**
  * kstrtoint - convert a string to an int
@@ -260,7 +253,6 @@ int kstrtoint(const char *s, unsigned int base, int *res)
 	*res = tmp;
 	return 0;
 }
-EXPORT_SYMBOL(kstrtoint);
 
 int kstrtou16(const char *s, unsigned int base, u16 *res)
 {
@@ -275,7 +267,6 @@ int kstrtou16(const char *s, unsigned int base, u16 *res)
 	*res = tmp;
 	return 0;
 }
-EXPORT_SYMBOL(kstrtou16);
 
 int kstrtos16(const char *s, unsigned int base, s16 *res)
 {
@@ -290,7 +281,6 @@ int kstrtos16(const char *s, unsigned int base, s16 *res)
 	*res = tmp;
 	return 0;
 }
-EXPORT_SYMBOL(kstrtos16);
 
 int kstrtou8(const char *s, unsigned int base, u8 *res)
 {
@@ -305,7 +295,6 @@ int kstrtou8(const char *s, unsigned int base, u8 *res)
 	*res = tmp;
 	return 0;
 }
-EXPORT_SYMBOL(kstrtou8);
 
 int kstrtos8(const char *s, unsigned int base, s8 *res)
 {
@@ -320,7 +309,6 @@ int kstrtos8(const char *s, unsigned int base, s8 *res)
 	*res = tmp;
 	return 0;
 }
-EXPORT_SYMBOL(kstrtos8);
 
 /**
  * kstrtobool - convert common user inputs into boolean values
@@ -367,4 +355,3 @@ int kstrtobool(const char *s, bool *res)
 
 	return -EINVAL;
 }
-EXPORT_SYMBOL(kstrtobool);

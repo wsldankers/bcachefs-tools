@@ -3,7 +3,6 @@
 
 #include <linux/stat.h>
 #include <linux/compiler.h>
-#include <linux/moduleparam.h>
 #include <linux/export.h>
 
 struct module;
@@ -42,5 +41,8 @@ static inline int try_module_get(struct module *module)
 static inline void module_put(struct module *module)
 {
 }
+
+#define module_param_named(name, value, type, perm)
+#define MODULE_PARM_DESC(_parm, desc)
 
 #endif /* _LINUX_MODULE_H */

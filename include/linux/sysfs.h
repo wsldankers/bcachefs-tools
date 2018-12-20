@@ -2,7 +2,6 @@
 #define _SYSFS_H_
 
 #include <linux/compiler.h>
-#include <linux/stringify.h>
 
 struct kobject;
 
@@ -10,12 +9,6 @@ struct attribute {
 	const char		*name;
 	umode_t			mode;
 };
-
-#define __ATTR(_name, _mode, _show, _store) {				\
-	.attr = {.name = __stringify(_name), .mode = _mode },		\
-	.show	= _show,						\
-	.store	= _store,						\
-}
 
 struct sysfs_ops {
 	ssize_t	(*show)(struct kobject *, struct attribute *, char *);

@@ -1,10 +1,8 @@
 #ifndef _LINUX_SCATTERLIST_H
 #define _LINUX_SCATTERLIST_H
 
-#include <linux/string.h>
-#include <linux/types.h>
 #include <linux/bug.h>
-#include <linux/mm.h>
+#include <linux/slab.h>
 
 struct scatterlist {
 	unsigned long	page_link;
