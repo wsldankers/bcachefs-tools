@@ -122,7 +122,7 @@ int cmd_format(int argc, char *argv[])
 	struct bch_opts fs_opts = bch2_parse_opts(fs_opt_strs);
 
 	while ((opt = getopt_long(argc, argv,
-				  "-L:U:fh",
+				  "-L:U:fqh",
 				  format_opts,
 				  NULL)) != -1)
 		switch (opt) {
