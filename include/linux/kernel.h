@@ -39,14 +39,6 @@
 
 #define DIV_ROUND_UP(n,d) (((n) + (d) - 1) / (d))
 
-#define mult_frac(x, numer, denom)(			\
-{							\
-	typeof(x) quot = (x) / (denom);			\
-	typeof(x) rem  = (x) % (denom);			\
-	(quot * (numer)) + ((rem * (numer)) / (denom));	\
-}							\
-)
-
 #ifndef offsetof
 #define offsetof(TYPE, MEMBER) ((size_t) &((TYPE *)0)->MEMBER)
 #endif
@@ -110,8 +102,6 @@
 
 #define might_sleep()
 
-#define NR_CPUS			32
-
 #define cpu_relax()		do {} while (0)
 #define cpu_relax_lowlatency()	do {} while (0)
 
@@ -120,11 +110,6 @@ do {							\
 	printf(fmt, ##__VA_ARGS__);			\
 	BUG();						\
 } while (0)
-
-unsigned long simple_strtoul(const char *,char **,unsigned int);
-long simple_strtol(const char *,char **,unsigned int);
-unsigned long long simple_strtoull(const char *,char **,unsigned int);
-long long simple_strtoll(const char *,char **,unsigned int);
 
 int __must_check _kstrtoul(const char *s, unsigned int base, unsigned long *res);
 int __must_check _kstrtol(const char *s, unsigned int base, long *res);
@@ -212,19 +197,6 @@ static inline int __must_check kstrtos32(const char *s, unsigned int base, s32 *
 {
 	return kstrtoint(s, base, res);
 }
-
-/* Permissions on a sysfs file: you didn't miss the 0 prefix did you? */
-#define VERIFY_OCTAL_PERMISSIONS(perms)						\
-	(BUILD_BUG_ON_ZERO((perms) < 0) +					\
-	 BUILD_BUG_ON_ZERO((perms) > 0777) +					\
-	 /* USER_READABLE >= GROUP_READABLE >= OTHER_READABLE */		\
-	 BUILD_BUG_ON_ZERO((((perms) >> 6) & 4) < (((perms) >> 3) & 4)) +	\
-	 BUILD_BUG_ON_ZERO((((perms) >> 3) & 4) < ((perms) & 4)) +		\
-	 /* USER_WRITABLE >= GROUP_WRITABLE */					\
-	 BUILD_BUG_ON_ZERO((((perms) >> 6) & 2) < (((perms) >> 3) & 2)) +	\
-	 /* OTHER_WRITABLE?  Generally considered a bad idea. */		\
-	 BUILD_BUG_ON_ZERO((perms) & 2) +					\
-	 (perms))
 
 /* The hash is always the low bits of hash_len */
 #if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
