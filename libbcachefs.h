@@ -15,11 +15,11 @@
 struct bch_opt_strs {
 union {
 	char			*by_id[bch2_opts_nr];
-};
 struct {
 #define x(_name, ...)	char	*_name;
 	BCH_OPTS()
 #undef x
+};
 };
 };
 

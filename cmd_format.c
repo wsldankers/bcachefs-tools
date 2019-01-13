@@ -196,7 +196,7 @@ int cmd_format(int argc, char *argv[])
 			exit(EXIT_SUCCESS);
 			break;
 		case '?':
-			die("unrecognized option %s", optarg);
+			exit(EXIT_FAILURE);
 			break;
 		}
 
