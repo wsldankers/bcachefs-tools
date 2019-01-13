@@ -21,23 +21,27 @@
 
 static inline int vscnprintf(char *buf, size_t size, const char *fmt, va_list args)
 {
-       int i = vsnprintf(buf, size, fmt, args);
-       ssize_t ssize = size;
+	int i;
 
-       return (i >= ssize) ? (ssize - 1) : i;
+	i = vsnprintf(buf, size, fmt, args);
+
+	if (likely(i < size))
+		return i;
+	if (size != 0)
+		return size - 1;
+	return 0;
 }
 
 static inline int scnprintf(char * buf, size_t size, const char * fmt, ...)
 {
-       ssize_t ssize = size;
-       va_list args;
-       int i;
+	va_list args;
+	int i;
 
-       va_start(args, fmt);
-       i = vsnprintf(buf, size, fmt, args);
-       va_end(args);
+	va_start(args, fmt);
+	i = vscnprintf(buf, size, fmt, args);
+	va_end(args);
 
-       return (i >= ssize) ? (ssize - 1) : i;
+	return i;
 }
 
 #define printk(...)	printf(__VA_ARGS__)

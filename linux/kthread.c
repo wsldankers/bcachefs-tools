@@ -57,6 +57,7 @@ struct task_struct *kthread_create(int (*thread_fn)(void *data),
 {
 	va_list args;
 	struct task_struct *p = malloc(sizeof(*p));
+	int ret;
 
 	memset(p, 0, sizeof(*p));
 
@@ -71,7 +72,9 @@ struct task_struct *kthread_create(int (*thread_fn)(void *data),
 	atomic_set(&p->usage, 1);
 	init_completion(&p->exited);
 
-	pthread_create(&p->thread, NULL, kthread_start_fn, p);
+	ret = pthread_create(&p->thread, NULL, kthread_start_fn, p);
+	if (ret)
+		die("pthread_create error %s", strerror(ret));
 	pthread_setname_np(p->thread, p->comm);
 	return p;
 }
