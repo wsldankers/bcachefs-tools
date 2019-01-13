@@ -7,6 +7,8 @@
 #include <linux/rcupdate.h>
 #include <linux/sched.h>
 
+#include "tools-util.h"
+
 enum KTHREAD_BITS {
 	KTHREAD_IS_PER_CPU = 0,
 	KTHREAD_SHOULD_STOP,
@@ -72,7 +74,11 @@ struct task_struct *kthread_create(int (*thread_fn)(void *data),
 	atomic_set(&p->usage, 1);
 	init_completion(&p->exited);
 
-	ret = pthread_create(&p->thread, NULL, kthread_start_fn, p);
+	pthread_attr_t attr;
+	pthread_attr_init(&attr);
+	pthread_attr_setstacksize(&attr, 16 << 10);
+
+	ret = pthread_create(&p->thread, &attr, kthread_start_fn, p);
 	if (ret)
 		die("pthread_create error %s", strerror(ret));
 	pthread_setname_np(p->thread, p->comm);
