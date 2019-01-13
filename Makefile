@@ -15,9 +15,9 @@ CFLAGS+=-std=gnu89 -O2 -g -MMD -Wall				\
 	-DNO_BCACHEFS_SYSFS					\
 	-DVERSION_STRING='"$(VERSION)"'				\
 	$(EXTRA_CFLAGS)
-LDFLAGS+=$(CFLAGS)
+LDFLAGS+=$(CFLAGS) $(EXTRA_LDFLAGS)
 
-VERSION?=$(shell git describe --dirty 2>/dev/null || echo 0.1-nogit)
+VERSION?=$(shell git describe --dirty=+ 2>/dev/null || echo v0.1-nogit)
 
 CC_VERSION=$(shell $(CC) -v 2>&1|grep -E '(gcc|clang) version')
 
@@ -36,10 +36,14 @@ endif
 
 PKGCONFIG_LIBS="blkid uuid liburcu libsodium zlib liblz4 libzstd"
 
-CFLAGS+=`pkg-config --cflags	${PKGCONFIG_LIBS}`
-LDLIBS+=`pkg-config --libs	${PKGCONFIG_LIBS}`
+PKGCONFIG_CFLAGS:=$(shell pkg-config --cflags $(PKGCONFIG_LIBS))
+PKGCONFIG_LDLIBS:=$(shell pkg-config --libs   $(PKGCONFIG_LIBS))
+
+CFLAGS+=$(PKGCONFIG_CFLAGS)
+LDLIBS+=$(PKGCONFIG_LDLIBS)
 
 LDLIBS+=-lm -lpthread -lrt -lscrypt -lkeyutils -laio
+LDLIBS+=$(EXTRA_LDLIBS)
 
 ifeq ($(PREFIX),/usr)
 	ROOT_SBINDIR=/sbin
@@ -73,17 +77,17 @@ cmd_version.o : .version
 install: bcachefs
 	mkdir -p $(DESTDIR)$(ROOT_SBINDIR)
 	mkdir -p $(DESTDIR)$(PREFIX)/share/man/man8/
-	$(INSTALL) -m0755 bcachefs	$(DESTDIR)$(ROOT_SBINDIR)
-	$(INSTALL) -m0755 fsck.bcachefs	$(DESTDIR)$(ROOT_SBINDIR)
-	$(INSTALL) -m0755 mkfs.bcachefs	$(DESTDIR)$(ROOT_SBINDIR)
+	$(INSTALL) -m0755 bcachefs $(DESTDIR)$(ROOT_SBINDIR)
+	$(INSTALL) -m0755 fsck.bcachefs $(DESTDIR)$(ROOT_SBINDIR)
+	$(INSTALL) -m0755 mkfs.bcachefs $(DESTDIR)$(ROOT_SBINDIR)
 	$(INSTALL) -m0755 -D initramfs/hook $(DESTDIR)$(INITRAMFS_DIR)/hooks/bcachefs
 	echo "copy_exec $(ROOT_SBINDIR)/bcachefs /sbin/bcachefs" >> $(DESTDIR)$(INITRAMFS_DIR)/hooks/bcachefs
 	$(INSTALL) -m0755 -D initramfs/script $(DESTDIR)$(INITRAMFS_DIR)/scripts/local-premount/bcachefs
-	$(INSTALL) -m0644 bcachefs.8	$(DESTDIR)$(PREFIX)/share/man/man8/
+	$(INSTALL) -m0644 bcachefs.8 $(DESTDIR)$(PREFIX)/share/man/man8/
 
 .PHONY: clean
 clean:
-	$(RM) bcachefs $(OBJS) $(DEPS)
+	$(RM) bcachefs .version $(OBJS) $(DEPS)
 
 .PHONY: deb
 deb: all
@@ -94,11 +98,13 @@ deb: all
 .PHONE: update-bcachefs-sources
 update-bcachefs-sources:
 	git rm -rf --ignore-unmatch libbcachefs
+	test -d libbcachefs || mkdir libbcachefs
 	cp $(LINUX_DIR)/fs/bcachefs/*.[ch] libbcachefs/
 	cp $(LINUX_DIR)/include/trace/events/bcachefs.h include/trace/events/
-	echo `cd $(LINUX_DIR); git rev-parse HEAD` > .bcachefs_revision
+	$(RM) libbcachefs/*.mod.c
+	git -C $(LINUX_DIR) rev-parse HEAD | tee .bcachefs_revision
 	git add libbcachefs/*.[ch] include/trace/events/bcachefs.h .bcachefs_revision
 
 .PHONE: update-commit-bcachefs-sources
 update-commit-bcachefs-sources: update-bcachefs-sources
-	git commit -m "Update bcachefs sources to `cd $(LINUX_DIR); git show --oneline --no-patch`"
+	git commit -m "Update bcachefs sources to $(shell git -C $(LINUX_DIR) show --oneline --no-patch)"
