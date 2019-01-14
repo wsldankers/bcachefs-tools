@@ -37,7 +37,7 @@ void schedule(void)
 
 	rcu_quiescent_state();
 
-	while ((v = current->state) != TASK_RUNNING)
+	while ((v = READ_ONCE(current->state)) != TASK_RUNNING)
 		futex(&current->state, FUTEX_WAIT|FUTEX_PRIVATE_FLAG,
 		      v, NULL, NULL, 0);
 }
