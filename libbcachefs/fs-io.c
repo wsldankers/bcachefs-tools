@@ -899,11 +899,8 @@ static void readpage_bio_extend(struct readpages_iter *iter,
 			if (!get_more)
 				break;
 
-			rcu_read_lock();
-			page = radix_tree_lookup(&iter->mapping->i_pages, page_offset);
-			rcu_read_unlock();
-
-			if (page && !radix_tree_exceptional_entry(page))
+			page = xa_load(&iter->mapping->i_pages, page_offset);
+			if (page && !xa_is_value(page))
 				break;
 
 			page = __page_cache_alloc(readahead_gfp_mask(iter->mapping));
@@ -2705,7 +2702,7 @@ static bool page_slot_is_data(struct address_space *mapping, pgoff_t index)
 	bool ret;
 
 	page = find_lock_entry(mapping, index);
-	if (!page || radix_tree_exception(page))
+	if (!page || xa_is_value(page))
 		return false;
 
 	ret = page_is_data(page);

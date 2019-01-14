@@ -36,12 +36,27 @@ struct crypto_skcipher {
 	struct crypto_tfm	base;
 };
 
+struct crypto_sync_skcipher {
+	struct crypto_skcipher base;
+};
+
 struct crypto_skcipher *crypto_alloc_skcipher(const char *alg_name,
 					      u32 type, u32 mask);
+
+static inline struct crypto_sync_skcipher *
+crypto_alloc_sync_skcipher(const char *alg_name, u32 type, u32 mask)
+{
+	return (void *) crypto_alloc_skcipher(alg_name, type, mask);
+}
 
 static inline void crypto_free_skcipher(struct crypto_skcipher *tfm)
 {
 	kfree(tfm);
+}
+
+static inline void crypto_free_sync_skcipher(struct crypto_sync_skcipher *tfm)
+{
+	crypto_free_skcipher(&tfm->base);
 }
 
 struct skcipher_request {
@@ -54,9 +69,14 @@ struct skcipher_request {
 	struct crypto_tfm	*tfm;
 };
 
-#define SKCIPHER_REQUEST_ON_STACK(name, tfm)			\
-	struct skcipher_request __##name##_desc;		\
-	struct skcipher_request *name = &__##name##_desc
+#define MAX_SYNC_SKCIPHER_REQSIZE      384
+#define SYNC_SKCIPHER_REQUEST_ON_STACK(name, tfm) \
+	char __##name##_desc[sizeof(struct skcipher_request) + \
+			     MAX_SYNC_SKCIPHER_REQSIZE + \
+			     (!(sizeof((struct crypto_sync_skcipher *)1 == \
+				       (typeof(tfm))1))) \
+			    ] CRYPTO_MINALIGN_ATTR; \
+	struct skcipher_request *name = (void *)__##name##_desc
 
 static inline int crypto_skcipher_setkey(struct crypto_skcipher *tfm,
 					 const u8 *key, unsigned int keylen)
@@ -84,6 +104,12 @@ static inline void skcipher_request_set_tfm(struct skcipher_request *req,
 					    struct crypto_skcipher *tfm)
 {
 	req->tfm = &tfm->base;
+}
+
+static inline void skcipher_request_set_sync_tfm(struct skcipher_request *req,
+					    struct crypto_sync_skcipher *tfm)
+{
+	skcipher_request_set_tfm(req, &tfm->base);
 }
 
 static inline void skcipher_request_set_crypt(

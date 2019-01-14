@@ -1,8 +1,11 @@
 #ifndef _BCACHEFS_REPLICAS_H
 #define _BCACHEFS_REPLICAS_H
 
+#include "eytzinger.h"
 #include "replicas_types.h"
 
+int bch2_replicas_entry_idx(struct bch_fs *,
+			    struct bch_replicas_entry *);
 bool bch2_replicas_marked(struct bch_fs *, enum bch_data_type,
 			  struct bch_devs_list, bool);
 bool bch2_bkey_replicas_marked(struct bch_fs *,

@@ -475,29 +475,43 @@ static void bch2_gc_free(struct bch_fs *c)
 		ca->usage[1] = NULL;
 	}
 
+	percpu_down_write(&c->mark_lock);
+
 	free_percpu(c->usage[1]);
 	c->usage[1] = NULL;
+
+	percpu_up_write(&c->mark_lock);
 }
 
-static void fs_usage_reset(struct bch_fs_usage *fs_usage)
+/*
+ * Accumulate percpu counters onto one cpu's copy - only valid when access
+ * against any percpu counter is guarded against
+ */
+static u64 *acc_percpu_u64s(u64 __percpu *p, unsigned nr)
 {
-	memset(&fs_usage->s.gc_start[0], 0,
-	       sizeof(*fs_usage) - offsetof(typeof(*fs_usage), s.gc_start));
-}
+	u64 *ret;
+	int cpu;
 
-static void fs_usage_cpy(struct bch_fs_usage *dst,
-			 struct bch_fs_usage *src)
-{
-	memcpy(&dst->s.gc_start[0],
-	       &src->s.gc_start[0],
-	       sizeof(*dst) - offsetof(typeof(*dst), s.gc_start));
+	preempt_disable();
+	ret = this_cpu_ptr(p);
+	preempt_enable();
+
+	for_each_possible_cpu(cpu) {
+		u64 *i = per_cpu_ptr(p, cpu);
+
+		if (i != ret) {
+			acc_u64s(ret, i, nr);
+			memset(i, 0, nr * sizeof(u64));
+		}
+	}
+
+	return ret;
 }
 
 static void bch2_gc_done_nocheck(struct bch_fs *c)
 {
 	struct bch_dev *ca;
 	unsigned i;
-	int cpu;
 
 	{
 		struct genradix_iter dst_iter = genradix_iter_init(&c->stripes[0], 0);
@@ -527,42 +541,39 @@ static void bch2_gc_done_nocheck(struct bch_fs *c)
 	};
 
 	for_each_member_device(ca, c, i) {
-		struct bch_dev_usage *p;
+		unsigned nr = sizeof(struct bch_dev_usage) / sizeof(u64);
+		struct bch_dev_usage *dst = (void *)
+			acc_percpu_u64s((void *) ca->usage[0], nr);
+		struct bch_dev_usage *src = (void *)
+			acc_percpu_u64s((void *) ca->usage[1], nr);
 
-		for_each_possible_cpu(cpu) {
-			p = per_cpu_ptr(ca->usage[0], cpu);
-			memset(p, 0, sizeof(*p));
-		}
-
-		preempt_disable();
-		*this_cpu_ptr(ca->usage[0]) = __bch2_dev_usage_read(ca, 1);
-		preempt_enable();
+		*dst = *src;
 	}
 
 	{
-		struct bch_fs_usage src = __bch2_fs_usage_read(c, 1);
+		unsigned nr = sizeof(struct bch_fs_usage) / sizeof(u64) +
+			c->replicas.nr;
+		struct bch_fs_usage *dst = (void *)
+			acc_percpu_u64s((void *) c->usage[0], nr);
+		struct bch_fs_usage *src = (void *)
+			acc_percpu_u64s((void *) c->usage[1], nr);
 
-		for_each_possible_cpu(cpu)
-			fs_usage_reset(per_cpu_ptr(c->usage[0], cpu));
-
-		preempt_disable();
-		fs_usage_cpy(this_cpu_ptr(c->usage[0]), &src);
-		preempt_enable();
+		memcpy(&dst->s.gc_start[0],
+		       &src->s.gc_start[0],
+		       nr * sizeof(u64) - offsetof(typeof(*dst), s.gc_start));
 	}
-
 }
 
 static void bch2_gc_done(struct bch_fs *c, bool initial)
 {
 	struct bch_dev *ca;
 	unsigned i;
-	int cpu;
 
 #define copy_field(_f, _msg, ...)					\
-	if (dst._f != src._f) {						\
-		bch_err(c, _msg ": got %llu, should be %llu, fixing"\
-			, ##__VA_ARGS__, dst._f, src._f);		\
-		dst._f = src._f;					\
+	if (dst->_f != src->_f) {					\
+		bch_err(c, _msg ": got %llu, should be %llu, fixing"	\
+			, ##__VA_ARGS__, dst->_f, src->_f);		\
+		dst->_f = src->_f;					\
 	}
 #define copy_stripe_field(_f, _msg, ...)				\
 	if (dst->_f != src->_f) {					\
@@ -643,9 +654,11 @@ static void bch2_gc_done(struct bch_fs *c, bool initial)
 	};
 
 	for_each_member_device(ca, c, i) {
-		struct bch_dev_usage dst = __bch2_dev_usage_read(ca, 0);
-		struct bch_dev_usage src = __bch2_dev_usage_read(ca, 1);
-		struct bch_dev_usage *p;
+		unsigned nr = sizeof(struct bch_dev_usage) / sizeof(u64);
+		struct bch_dev_usage *dst = (void *)
+			acc_percpu_u64s((void *) ca->usage[0], nr);
+		struct bch_dev_usage *src = (void *)
+			acc_percpu_u64s((void *) ca->usage[1], nr);
 		unsigned b;
 
 		for (b = 0; b < BCH_DATA_NR; b++)
@@ -659,22 +672,15 @@ static void bch2_gc_done(struct bch_fs *c, bool initial)
 				       "sectors[%s]", bch2_data_types[b]);
 		copy_dev_field(sectors_fragmented,
 			       "sectors_fragmented");
-
-		for_each_possible_cpu(cpu) {
-			p = per_cpu_ptr(ca->usage[0], cpu);
-			memset(p, 0, sizeof(*p));
-		}
-
-		preempt_disable();
-		p = this_cpu_ptr(ca->usage[0]);
-		*p = dst;
-		preempt_enable();
 	}
 
 	{
-		struct bch_fs_usage dst = __bch2_fs_usage_read(c, 0);
-		struct bch_fs_usage src = __bch2_fs_usage_read(c, 1);
-		unsigned r, b;
+		unsigned nr = sizeof(struct bch_fs_usage) / sizeof(u64) +
+			c->replicas.nr;
+		struct bch_fs_usage *dst = (void *)
+			acc_percpu_u64s((void *) c->usage[0], nr);
+		struct bch_fs_usage *src = (void *)
+			acc_percpu_u64s((void *) c->usage[1], nr);
 
 		copy_fs_field(s.hidden,		"hidden");
 		copy_fs_field(s.data,		"data");
@@ -682,27 +688,16 @@ static void bch2_gc_done(struct bch_fs *c, bool initial)
 		copy_fs_field(s.reserved,	"reserved");
 		copy_fs_field(s.nr_inodes,	"nr_inodes");
 
-		for (r = 0; r < BCH_REPLICAS_MAX; r++) {
-			for (b = 0; b < BCH_DATA_NR; b++)
-				copy_fs_field(replicas[r].data[b],
-					      "replicas[%i].data[%s]",
-					      r, bch2_data_types[b]);
-			copy_fs_field(replicas[r].ec_data,
-				      "replicas[%i].ec_data", r);
-			copy_fs_field(replicas[r].persistent_reserved,
-				      "replicas[%i].persistent_reserved", r);
+		for (i = 0; i < BCH_REPLICAS_MAX; i++)
+			copy_fs_field(persistent_reserved[i],
+				      "persistent_reserved[%i]", i);
+
+		for (i = 0; i < c->replicas.nr; i++) {
+			/*
+			 * XXX: print out replicas entry
+			 */
+			copy_fs_field(data[i], "data[%i]", i);
 		}
-
-		for (b = 0; b < BCH_DATA_NR; b++)
-			copy_fs_field(buckets[b],
-				      "buckets[%s]", bch2_data_types[b]);
-
-		for_each_possible_cpu(cpu)
-			fs_usage_reset(per_cpu_ptr(c->usage[0], cpu));
-
-		preempt_disable();
-		fs_usage_cpy(this_cpu_ptr(c->usage[0]), &dst);
-		preempt_enable();
 	}
 out:
 	percpu_up_write(&c->mark_lock);
@@ -725,9 +720,15 @@ static int bch2_gc_start(struct bch_fs *c)
 	 */
 	gc_pos_set(c, gc_phase(GC_PHASE_START));
 
+	percpu_down_write(&c->mark_lock);
 	BUG_ON(c->usage[1]);
 
-	c->usage[1] = alloc_percpu(struct bch_fs_usage);
+	c->usage[1] = __alloc_percpu_gfp(sizeof(struct bch_fs_usage) +
+					 sizeof(u64) * c->replicas.nr,
+					 sizeof(u64),
+					 GFP_KERNEL);
+	percpu_up_write(&c->mark_lock);
+
 	if (!c->usage[1])
 		return -ENOMEM;
 

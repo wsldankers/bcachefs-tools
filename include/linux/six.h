@@ -1,5 +1,7 @@
-#ifndef _BCACHEFS_SIX_H
-#define _BCACHEFS_SIX_H
+// SPDX-License-Identifier: GPL-2.0
+
+#ifndef _LINUX_SIX_H
+#define _LINUX_SIX_H
 
 /*
  * Shared/intent/exclusive locks: sleepable read/write locks, much like rw
@@ -60,8 +62,6 @@
 #include <linux/osq_lock.h>
 #include <linux/sched.h>
 #include <linux/types.h>
-
-#include "util.h"
 
 #define SIX_LOCK_SEPARATE_LOCKFNS
 
@@ -227,4 +227,4 @@ bool six_trylock_convert(struct six_lock *, enum six_lock_type,
 
 void six_lock_increment(struct six_lock *, enum six_lock_type);
 
-#endif /* _BCACHEFS_SIX_H */
+#endif /* _LINUX_SIX_H */

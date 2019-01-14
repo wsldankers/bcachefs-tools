@@ -3,11 +3,6 @@
 #include "replicas.h"
 #include "super-io.h"
 
-struct bch_replicas_entry_padded {
-	struct bch_replicas_entry	e;
-	u8				pad[BCH_SB_MEMBERS_MAX];
-};
-
 static int bch2_cpu_replicas_to_sb_replicas(struct bch_fs *,
 					    struct bch_replicas_cpu *);
 
@@ -124,8 +119,6 @@ static void bkey_to_replicas(struct bkey_s_c k,
 		stripe_to_replicas(k, e);
 		break;
 	}
-
-	replicas_entry_sort(e);
 }
 
 static inline void devlist_to_replicas(struct bch_devs_list devs,
@@ -144,8 +137,6 @@ static inline void devlist_to_replicas(struct bch_devs_list devs,
 
 	for (i = 0; i < devs.nr; i++)
 		e->devs[e->nr_devs++] = devs.devs[i];
-
-	replicas_entry_sort(e);
 }
 
 static struct bch_replicas_cpu
@@ -176,13 +167,35 @@ cpu_replicas_add_entry(struct bch_replicas_cpu *old,
 	return new;
 }
 
+static inline int __replicas_entry_idx(struct bch_replicas_cpu *r,
+				       struct bch_replicas_entry *search)
+{
+	int idx, entry_size = replicas_entry_bytes(search);
+
+	if (unlikely(entry_size > r->entry_size))
+		return -1;
+
+	replicas_entry_sort(search);
+
+	while (entry_size < r->entry_size)
+		((char *) search)[entry_size++] = 0;
+
+	idx = eytzinger0_find(r->entries, r->nr, r->entry_size,
+			      memcmp, search);
+
+	return idx < r->nr ? idx : -1;
+}
+
+int bch2_replicas_entry_idx(struct bch_fs *c,
+			    struct bch_replicas_entry *search)
+{
+	return __replicas_entry_idx(&c->replicas, search);
+}
+
 static bool __replicas_has_entry(struct bch_replicas_cpu *r,
 				 struct bch_replicas_entry *search)
 {
-	return replicas_entry_bytes(search) <= r->entry_size &&
-		eytzinger0_find(r->entries, r->nr,
-				r->entry_size,
-				memcmp, search) < r->nr;
+	return __replicas_entry_idx(r, search) >= 0;
 }
 
 static bool replicas_has_entry(struct bch_fs *c,
@@ -199,6 +212,80 @@ static bool replicas_has_entry(struct bch_fs *c,
 	percpu_up_read_preempt_enable(&c->mark_lock);
 
 	return marked;
+}
+
+static void __replicas_table_update(struct bch_fs_usage __percpu *dst,
+				    struct bch_replicas_cpu *dst_r,
+				    struct bch_fs_usage __percpu *src,
+				    struct bch_replicas_cpu *src_r)
+{
+	int src_idx, dst_idx, cpu;
+
+	for (src_idx = 0; src_idx < src_r->nr; src_idx++) {
+		u64 *dst_v, src_v = 0;
+
+		for_each_possible_cpu(cpu)
+			src_v += *per_cpu_ptr(&src->data[src_idx], cpu);
+
+		dst_idx = __replicas_entry_idx(dst_r,
+				cpu_replicas_entry(src_r, src_idx));
+
+		if (dst_idx < 0) {
+			BUG_ON(src_v);
+			continue;
+		}
+
+		preempt_disable();
+
+		dst_v = this_cpu_ptr(&dst->data[dst_idx]);
+		BUG_ON(*dst_v);
+
+		*dst_v = src_v;
+
+		preempt_enable();
+	}
+}
+
+/*
+ * Resize filesystem accounting:
+ */
+static int replicas_table_update(struct bch_fs *c,
+				 struct bch_replicas_cpu *new_r)
+{
+	struct bch_fs_usage __percpu *new_usage[3] = { NULL, NULL, NULL };
+	unsigned bytes = sizeof(struct bch_fs_usage) +
+		sizeof(u64) * new_r->nr;
+	unsigned i;
+	int ret = -ENOMEM;
+
+	for (i = 0; i < 3; i++) {
+		if (i < 2 && !c->usage[i])
+			continue;
+
+		new_usage[i] = __alloc_percpu_gfp(bytes, sizeof(u64),
+						  GFP_NOIO);
+		if (!new_usage[i])
+			goto err;
+	}
+
+	for (i = 0; i < 2; i++) {
+		if (!c->usage[i])
+			continue;
+
+		__replicas_table_update(new_usage[i],	new_r,
+					c->usage[i],	&c->replicas);
+
+		swap(c->usage[i], new_usage[i]);
+	}
+
+	swap(c->usage_scratch, new_usage[2]);
+
+	swap(c->replicas, *new_r);
+	ret = 0;
+err:
+	for (i = 0; i < 3; i++)
+		free_percpu(new_usage[i]);
+	return ret;
 }
 
 noinline
@@ -242,7 +329,7 @@ static int bch2_mark_replicas_slowpath(struct bch_fs *c,
 	/* don't update in memory replicas until changes are persistent */
 	percpu_down_write(&c->mark_lock);
 	if (new_r.entries)
-		swap(new_r, c->replicas);
+		ret = replicas_table_update(c, &new_r);
 	if (new_gc.entries)
 		swap(new_gc, c->replicas_gc);
 	percpu_up_write(&c->mark_lock);
@@ -269,7 +356,7 @@ int bch2_mark_replicas(struct bch_fs *c,
 		       enum bch_data_type data_type,
 		       struct bch_devs_list devs)
 {
-	struct bch_replicas_entry_padded search;
+	struct bch_replicas_padded search;
 
 	if (!devs.nr)
 		return 0;
@@ -285,7 +372,7 @@ int bch2_mark_replicas(struct bch_fs *c,
 
 int bch2_mark_bkey_replicas(struct bch_fs *c, struct bkey_s_c k)
 {
-	struct bch_replicas_entry_padded search;
+	struct bch_replicas_padded search;
 	struct bch_devs_list cached = bch2_bkey_cached_devs(k);
 	unsigned i;
 	int ret;
@@ -306,12 +393,47 @@ int bch2_mark_bkey_replicas(struct bch_fs *c, struct bkey_s_c k)
 
 int bch2_replicas_gc_end(struct bch_fs *c, int ret)
 {
+	unsigned i;
+
 	lockdep_assert_held(&c->replicas_gc_lock);
 
 	mutex_lock(&c->sb_lock);
 
 	if (ret)
 		goto err;
+
+	/*
+	 * this is kind of crappy; the replicas gc mechanism needs to be ripped
+	 * out
+	 */
+
+	for (i = 0; i < c->replicas.nr; i++) {
+		struct bch_replicas_entry *e =
+			cpu_replicas_entry(&c->replicas, i);
+		struct bch_replicas_cpu n;
+		u64 v = 0;
+		int cpu;
+
+		if (__replicas_has_entry(&c->replicas_gc, e))
+			continue;
+
+		for_each_possible_cpu(cpu)
+			v += *per_cpu_ptr(&c->usage[0]->data[i], cpu);
+		if (!v)
+			continue;
+
+		n = cpu_replicas_add_entry(&c->replicas_gc, e);
+		if (!n.entries) {
+			ret = -ENOSPC;
+			goto err;
+		}
+
+		percpu_down_write(&c->mark_lock);
+		swap(n, c->replicas_gc);
+		percpu_up_write(&c->mark_lock);
+
+		kfree(n.entries);
+	}
 
 	if (bch2_cpu_replicas_to_sb_replicas(c, &c->replicas_gc)) {
 		ret = -ENOSPC;
@@ -324,7 +446,7 @@ int bch2_replicas_gc_end(struct bch_fs *c, int ret)
 err:
 	percpu_down_write(&c->mark_lock);
 	if (!ret)
-		swap(c->replicas, c->replicas_gc);
+		ret = replicas_table_update(c, &c->replicas_gc);
 
 	kfree(c->replicas_gc.entries);
 	c->replicas_gc.entries = NULL;
@@ -460,7 +582,7 @@ int bch2_sb_replicas_to_cpu_replicas(struct bch_fs *c)
 	bch2_cpu_replicas_sort(&new_r);
 
 	percpu_down_write(&c->mark_lock);
-	swap(c->replicas, new_r);
+	ret = replicas_table_update(c, &new_r);
 	percpu_up_write(&c->mark_lock);
 
 	kfree(new_r.entries);
@@ -681,7 +803,7 @@ bool bch2_replicas_marked(struct bch_fs *c,
 			  struct bch_devs_list devs,
 			  bool check_gc_replicas)
 {
-	struct bch_replicas_entry_padded search;
+	struct bch_replicas_padded search;
 
 	if (!devs.nr)
 		return true;
@@ -697,7 +819,7 @@ bool bch2_bkey_replicas_marked(struct bch_fs *c,
 			       struct bkey_s_c k,
 			       bool check_gc_replicas)
 {
-	struct bch_replicas_entry_padded search;
+	struct bch_replicas_padded search;
 	struct bch_devs_list cached = bch2_bkey_cached_devs(k);
 	unsigned i;
 

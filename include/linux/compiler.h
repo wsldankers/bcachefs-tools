@@ -34,6 +34,7 @@
 #define __maybe_unused		__attribute__((unused))
 #define __always_unused		__attribute__((unused))
 #define __packed		__attribute__((__packed__))
+#define __flatten		__attribute__((flatten))
 #define __force
 #define __nocast
 #define __iomem

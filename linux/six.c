@@ -1,11 +1,18 @@
+// SPDX-License-Identifier: GPL-2.0
 
+#include <linux/export.h>
 #include <linux/log2.h>
 #include <linux/preempt.h>
 #include <linux/rcupdate.h>
 #include <linux/sched.h>
 #include <linux/sched/rt.h>
+#include <linux/six.h>
 
-#include "six.h"
+#ifdef DEBUG
+#define EBUG_ON(cond)		BUG_ON(cond)
+#else
+#define EBUG_ON(cond)		do {} while (0)
+#endif
 
 #define six_acquire(l, t)	lock_acquire(l, 0, t, 0, 0, NULL, _RET_IP_)
 #define six_release(l)		lock_release(l, 0, _RET_IP_)
@@ -401,21 +408,25 @@ bool six_trylock_##type(struct six_lock *lock)				\
 {									\
 	return __six_trylock_type(lock, SIX_LOCK_##type);		\
 }									\
+EXPORT_SYMBOL_GPL(six_trylock_##type);					\
 									\
 bool six_relock_##type(struct six_lock *lock, u32 seq)			\
 {									\
 	return __six_relock_type(lock, SIX_LOCK_##type, seq);		\
 }									\
+EXPORT_SYMBOL_GPL(six_relock_##type);					\
 									\
 void six_lock_##type(struct six_lock *lock)				\
 {									\
 	__six_lock_type(lock, SIX_LOCK_##type);				\
 }									\
+EXPORT_SYMBOL_GPL(six_lock_##type);					\
 									\
 void six_unlock_##type(struct six_lock *lock)				\
 {									\
 	__six_unlock_type(lock, SIX_LOCK_##type);			\
-}
+}									\
+EXPORT_SYMBOL_GPL(six_unlock_##type);
 
 __SIX_LOCK(read)
 __SIX_LOCK(intent)
@@ -429,6 +440,7 @@ bool six_trylock_type(struct six_lock *lock, enum six_lock_type type)
 {
 	return __six_trylock_type(lock, type);
 }
+EXPORT_SYMBOL_GPL(six_trylock_type);
 
 bool six_relock_type(struct six_lock *lock, enum six_lock_type type,
 		     unsigned seq)
@@ -436,16 +448,19 @@ bool six_relock_type(struct six_lock *lock, enum six_lock_type type,
 	return __six_relock_type(lock, type, seq);
 
 }
+EXPORT_SYMBOL_GPL(six_relock_type);
 
 void six_lock_type(struct six_lock *lock, enum six_lock_type type)
 {
 	__six_lock_type(lock, type);
 }
+EXPORT_SYMBOL_GPL(six_lock_type);
 
 void six_unlock_type(struct six_lock *lock, enum six_lock_type type)
 {
 	__six_unlock_type(lock, type);
 }
+EXPORT_SYMBOL_GPL(six_unlock_type);
 
 #endif
 
@@ -455,6 +470,7 @@ void six_lock_downgrade(struct six_lock *lock)
 	six_lock_increment(lock, SIX_LOCK_read);
 	six_unlock_intent(lock);
 }
+EXPORT_SYMBOL_GPL(six_lock_downgrade);
 
 bool six_lock_tryupgrade(struct six_lock *lock)
 {
@@ -481,6 +497,7 @@ bool six_lock_tryupgrade(struct six_lock *lock)
 
 	return true;
 }
+EXPORT_SYMBOL_GPL(six_lock_tryupgrade);
 
 bool six_trylock_convert(struct six_lock *lock,
 			 enum six_lock_type from,
@@ -498,6 +515,7 @@ bool six_trylock_convert(struct six_lock *lock,
 		return six_lock_tryupgrade(lock);
 	}
 }
+EXPORT_SYMBOL_GPL(six_trylock_convert);
 
 /*
  * Increment read/intent lock count, assuming we already have it read or intent
@@ -514,3 +532,4 @@ void six_lock_increment(struct six_lock *lock, enum six_lock_type type)
 
 	atomic64_add(l[type].lock_val, &lock->state.counter);
 }
+EXPORT_SYMBOL_GPL(six_lock_increment);

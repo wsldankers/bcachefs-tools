@@ -11,6 +11,7 @@
 
 #include <linux/crc32c.h>
 #include <crypto/hash.h>
+#include <crypto/sha.h>
 
 struct bch_hash_info {
 	u8			type;
@@ -37,7 +38,7 @@ bch2_hash_info_init(struct bch_fs *c,
 		break;
 	case BCH_STR_HASH_SIPHASH: {
 		SHASH_DESC_ON_STACK(desc, c->sha256);
-		u8 digest[crypto_shash_digestsize(c->sha256)];
+		u8 digest[SHA256_DIGEST_SIZE];
 
 		desc->tfm = c->sha256;
 		desc->flags = 0;
