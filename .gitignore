@@ -7,3 +7,6 @@ bcachefs
 tags
 cscope*
 bcachefs-tools
+
+# dot-files that we don't want to ignore
+!.gitignore
