@@ -1,19 +1,21 @@
 
 Dependencies:
 
- * libattr1
+ * libaio
  * libblkid
- * libuuid
+ * libkeyutils
+ * liblz4
  * libscrypt
  * libsodium
- * libkeyutils
  * liburcu
+ * libuuid
+ * libzstd
  * pkg-config
  * zlib1g
 
 On debian, you can install these with
-    apt install -y pkg-config libblkid-dev uuid-dev libscrypt-dev libsodium-dev
-	libkeyutils-dev liburcu-dev zlib1g-dev libzstd-dev libattr1-dev
-	libaio-dev liblz4-dev
+    apt install -y pkg-config libaio-dev libblkid-dev libkeyutils-dev \
+        liblz4-dev libscrypt-dev libsodium-dev liburcu-dev libzstd-dev \
+        uuid-dev zlib1g-dev
 
 Then, just make && make install
