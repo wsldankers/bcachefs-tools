@@ -1,7 +1,7 @@
 Format: http://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Contact: kmo@daterainc.com
                   linux-bcache@vger.kernel.org
-Source: http://evilpiepirate.org/git/bcache-tools.git
+Source: https://evilpiepirate.org/git/bcachefs-tools.git
 
 Files: *
 Copyright: 2013 Kent Overstreet <kmo@daterainc.com>
