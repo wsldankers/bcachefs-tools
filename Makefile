@@ -37,7 +37,13 @@ endif
 PKGCONFIG_LIBS="blkid uuid liburcu libsodium zlib liblz4 libzstd"
 
 PKGCONFIG_CFLAGS:=$(shell pkg-config --cflags $(PKGCONFIG_LIBS))
+ifeq (,$(PKGCONFIG_CFLAGS))
+    $(error pkg-config error)
+endif
 PKGCONFIG_LDLIBS:=$(shell pkg-config --libs   $(PKGCONFIG_LIBS))
+ifeq (,$(PKGCONFIG_LDLIBS))
+    $(error pkg-config error (libs))
+endif
 
 CFLAGS+=$(PKGCONFIG_CFLAGS)
 LDLIBS+=$(PKGCONFIG_LDLIBS)
