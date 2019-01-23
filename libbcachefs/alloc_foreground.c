@@ -106,6 +106,7 @@ void __bch2_open_bucket_put(struct bch_fs *c, struct open_bucket *ob)
 	bch2_mark_alloc_bucket(c, ca, PTR_BUCKET_NR(ca, &ob->ptr),
 			       false, gc_pos_alloc(c, ob), 0);
 	ob->valid = false;
+	ob->type = 0;
 
 	spin_unlock(&ob->lock);
 	percpu_up_read_preempt_enable(&c->mark_lock);
@@ -141,6 +142,7 @@ static struct open_bucket *bch2_open_bucket_alloc(struct bch_fs *c)
 	ob = c->open_buckets + c->open_buckets_freelist;
 	c->open_buckets_freelist = ob->freelist;
 	atomic_set(&ob->pin, 1);
+	ob->type = 0;
 
 	c->open_buckets_nr_free--;
 	return ob;
@@ -209,9 +211,9 @@ static inline unsigned open_buckets_reserved(enum alloc_reserve reserve)
 	case RESERVE_ALLOC:
 		return 0;
 	case RESERVE_BTREE:
-		return BTREE_NODE_RESERVE / 2;
+		return BTREE_NODE_OPEN_BUCKET_RESERVE;
 	default:
-		return BTREE_NODE_RESERVE;
+		return BTREE_NODE_OPEN_BUCKET_RESERVE * 2;
 	}
 }
 
@@ -837,15 +839,17 @@ struct write_point *bch2_alloc_sectors_start(struct bch_fs *c,
 {
 	struct write_point *wp;
 	struct open_bucket *ob;
-	unsigned nr_effective = 0;
-	struct open_buckets ptrs = { .nr = 0 };
-	bool have_cache = false;
-	unsigned write_points_nr;
-	int ret = 0, i;
+	struct open_buckets ptrs;
+	unsigned nr_effective, write_points_nr;
+	bool have_cache;
+	int ret, i;
 
 	BUG_ON(!nr_replicas || !nr_replicas_required);
 retry:
+	ptrs.nr		= 0;
+	nr_effective	= 0;
 	write_points_nr = c->write_points_nr;
+	have_cache	= false;
 
 	wp = writepoint_find(c, write_point.v);
 

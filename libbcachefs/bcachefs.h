@@ -330,6 +330,8 @@ enum bch_time_stats {
 /* Size of the freelist we allocate btree nodes from: */
 #define BTREE_NODE_RESERVE	BTREE_RESERVE_MAX
 
+#define BTREE_NODE_OPEN_BUCKET_RESERVE	(BTREE_RESERVE_MAX * BCH_REPLICAS_MAX)
+
 struct btree;
 
 enum gc_phase {
@@ -426,7 +428,13 @@ struct bch_dev {
 
 	size_t			inc_gen_needs_gc;
 	size_t			inc_gen_really_needs_gc;
+
+	/*
+	 * XXX: this should be an enum for allocator state, so as to include
+	 * error state
+	 */
 	bool			allocator_blocked;
+	bool			allocator_blocked_full;
 
 	alloc_heap		alloc_heap;
 
@@ -597,6 +605,7 @@ struct bch_fs {
 	struct workqueue_struct	*wq;
 	/* copygc needs its own workqueue for index updates.. */
 	struct workqueue_struct	*copygc_wq;
+	struct workqueue_struct	*journal_reclaim_wq;
 
 	/* ALLOCATION */
 	struct delayed_work	pd_controllers_update;

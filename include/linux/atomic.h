@@ -37,6 +37,7 @@ typedef struct {
 #define xchg_acquire(p, v)		uatomic_xchg(p, v)
 #define cmpxchg(p, old, new)		uatomic_cmpxchg(p, old, new)
 #define cmpxchg_acquire(p, old, new)	uatomic_cmpxchg(p, old, new)
+#define cmpxchg_release(p, old, new)	uatomic_cmpxchg(p, old, new)
 
 #define smp_mb__before_atomic()		cmm_smp_mb__before_uatomic_add()
 #define smp_mb__after_atomic()		cmm_smp_mb__after_uatomic_add()
@@ -74,6 +75,16 @@ typedef struct {
 	__atomic_compare_exchange_n((p), &__old, new, false,	\
 				    __ATOMIC_ACQUIRE,		\
 				    __ATOMIC_ACQUIRE);		\
+	__old;							\
+})
+
+#define cmpxchg_release(p, old, new)				\
+({								\
+	typeof(*(p)) __old = (old);				\
+								\
+	__atomic_compare_exchange_n((p), &__old, new, false,	\
+				    __ATOMIC_RELEASE,		\
+				    __ATOMIC_RELEASE);		\
 	__old;							\
 })
 

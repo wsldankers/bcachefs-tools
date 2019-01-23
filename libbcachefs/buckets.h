@@ -181,6 +181,8 @@ static inline bool bucket_needs_journal_commit(struct bucket_mark m,
 
 struct bch_dev_usage bch2_dev_usage_read(struct bch_fs *, struct bch_dev *);
 
+void bch2_dev_usage_from_buckets(struct bch_fs *, struct bch_dev *);
+
 static inline u64 __dev_buckets_available(struct bch_dev *ca,
 					  struct bch_dev_usage stats)
 {
@@ -264,8 +266,8 @@ int bch2_mark_key(struct bch_fs *, struct bkey_s_c,
 		  bool, s64, struct gc_pos,
 		  struct bch_fs_usage *, u64, unsigned);
 void bch2_mark_update(struct btree_insert *, struct btree_insert_entry *);
-void bch2_fs_usage_apply(struct bch_fs *, struct bch_fs_usage *,
-			 struct disk_reservation *, struct gc_pos);
+int bch2_fs_usage_apply(struct bch_fs *, struct bch_fs_usage *,
+			struct disk_reservation *, struct gc_pos);
 
 /* disk reservations: */
 

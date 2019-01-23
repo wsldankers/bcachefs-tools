@@ -402,6 +402,8 @@ static long bch2_ioctl_usage(struct bch_fs *c,
 		if (!src)
 			return -ENOMEM;
 
+		percpu_up_read_preempt_enable(&c->mark_lock);
+
 		dst.used		= bch2_fs_sectors_used(c, *src);
 		dst.online_reserved	= src->s.online_reserved;
 

@@ -205,7 +205,9 @@ int bch2_congested(void *data, int bdi_bits)
 static void __bch2_fs_read_only(struct bch_fs *c)
 {
 	struct bch_dev *ca;
+	bool wrote;
 	unsigned i;
+	int ret;
 
 	bch2_rebalance_stop(c);
 
@@ -220,22 +222,41 @@ static void __bch2_fs_read_only(struct bch_fs *c)
 	 */
 	bch2_journal_flush_all_pins(&c->journal);
 
+	do {
+		ret = bch2_alloc_write(c, false, &wrote);
+		if (ret) {
+			bch2_fs_inconsistent(c, "error writing out alloc info %i", ret);
+			break;
+		}
+
+		ret = bch2_stripes_write(c, &wrote);
+		if (ret) {
+			bch2_fs_inconsistent(c, "error writing out stripes");
+			break;
+		}
+
+		for_each_member_device(ca, c, i)
+			bch2_dev_allocator_quiesce(c, ca);
+
+		bch2_journal_flush_all_pins(&c->journal);
+
+		/*
+		 * We need to explicitly wait on btree interior updates to complete
+		 * before stopping the journal, flushing all journal pins isn't
+		 * sufficient, because in the BTREE_INTERIOR_UPDATING_ROOT case btree
+		 * interior updates have to drop their journal pin before they're
+		 * fully complete:
+		 */
+		closure_wait_event(&c->btree_interior_update_wait,
+				   !bch2_btree_interior_updates_nr_pending(c));
+	} while (wrote);
+
 	for_each_member_device(ca, c, i)
 		bch2_dev_allocator_stop(ca);
 
-	bch2_journal_flush_all_pins(&c->journal);
-
-	/*
-	 * We need to explicitly wait on btree interior updates to complete
-	 * before stopping the journal, flushing all journal pins isn't
-	 * sufficient, because in the BTREE_INTERIOR_UPDATING_ROOT case btree
-	 * interior updates have to drop their journal pin before they're
-	 * fully complete:
-	 */
-	closure_wait_event(&c->btree_interior_update_wait,
-			   !bch2_btree_interior_updates_nr_pending(c));
-
 	bch2_fs_journal_stop(&c->journal);
+
+	/* XXX: mark super that alloc info is persistent */
 
 	/*
 	 * the journal kicks off btree writes via reclaim - wait for in flight
@@ -420,6 +441,8 @@ static void bch2_fs_free(struct bch_fs *c)
 	kfree(c->replicas_gc.entries);
 	kfree(rcu_dereference_protected(c->disk_groups, 1));
 
+	if (c->journal_reclaim_wq)
+		destroy_workqueue(c->journal_reclaim_wq);
 	if (c->copygc_wq)
 		destroy_workqueue(c->copygc_wq);
 	if (c->wq)
@@ -637,6 +660,8 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 	if (!(c->wq = alloc_workqueue("bcachefs",
 				WQ_FREEZABLE|WQ_MEM_RECLAIM|WQ_HIGHPRI, 1)) ||
 	    !(c->copygc_wq = alloc_workqueue("bcache_copygc",
+				WQ_FREEZABLE|WQ_MEM_RECLAIM|WQ_HIGHPRI, 1)) ||
+	    !(c->journal_reclaim_wq = alloc_workqueue("bcache_journal",
 				WQ_FREEZABLE|WQ_MEM_RECLAIM|WQ_HIGHPRI, 1)) ||
 	    percpu_ref_init(&c->writes, bch2_writes_disabled, 0, GFP_KERNEL) ||
 	    mempool_init_kmalloc_pool(&c->btree_reserve_pool, 1,
@@ -1297,8 +1322,8 @@ int bch2_dev_remove(struct bch_fs *c, struct bch_dev *ca, int flags)
 	if (data) {
 		char data_has_str[100];
 
-		bch2_string_opt_to_text(&PBUF(data_has_str),
-					bch2_data_types, data);
+		bch2_flags_to_text(&PBUF(data_has_str),
+				   bch2_data_types, data);
 		bch_err(ca, "Remove failed, still has data (%s)", data_has_str);
 		ret = -EBUSY;
 		goto err;

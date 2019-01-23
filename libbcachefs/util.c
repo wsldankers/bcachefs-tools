@@ -133,6 +133,7 @@ void bch2_flags_to_text(struct printbuf *out,
 			const char * const list[], u64 flags)
 {
 	unsigned bit, nr = 0;
+	bool first = true;
 
 	if (out->pos != out->end)
 		*out->pos = '\0';
@@ -141,7 +142,10 @@ void bch2_flags_to_text(struct printbuf *out,
 		nr++;
 
 	while (flags && (bit = __ffs(flags)) < nr) {
-		pr_buf(out, "%s,", list[bit]);
+		pr_buf(out, "%s", list[bit]);
+		if (!first)
+			pr_buf(out, ",");
+		first = false;
 		flags ^= 1 << bit;
 	}
 }
@@ -894,3 +898,28 @@ void eytzinger0_find_test(void)
 	kfree(test_array);
 }
 #endif
+
+/*
+ * Accumulate percpu counters onto one cpu's copy - only valid when access
+ * against any percpu counter is guarded against
+ */
+u64 *bch2_acc_percpu_u64s(u64 __percpu *p, unsigned nr)
+{
+	u64 *ret;
+	int cpu;
+
+	preempt_disable();
+	ret = this_cpu_ptr(p);
+	preempt_enable();
+
+	for_each_possible_cpu(cpu) {
+		u64 *i = per_cpu_ptr(p, cpu);
+
+		if (i != ret) {
+			acc_u64s(ret, i, nr);
+			memset(i, 0, nr * sizeof(u64));
+		}
+	}
+
+	return ret;
+}

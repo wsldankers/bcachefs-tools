@@ -234,17 +234,17 @@ static ssize_t show_fs_alloc_debug(struct bch_fs *c, char *buf)
 {
 	struct printbuf out = _PBUF(buf, PAGE_SIZE);
 	struct bch_fs_usage *fs_usage = bch2_fs_usage_read(c);
-	unsigned replicas;
+	unsigned i;
 
 	if (!fs_usage)
 		return -ENOMEM;
 
 	pr_buf(&out, "capacity:\t\t%llu\n", c->capacity);
 
-	for (replicas = 0;
-	     replicas < ARRAY_SIZE(fs_usage->persistent_reserved);
-	     replicas++) {
-		pr_buf(&out, "%u replicas:\n", replicas + 1);
+	for (i = 0;
+	     i < ARRAY_SIZE(fs_usage->persistent_reserved);
+	     i++) {
+		pr_buf(&out, "%u replicas:\n", i + 1);
 #if 0
 		for (type = BCH_DATA_SB; type < BCH_DATA_NR; type++)
 			pr_buf(&out, "\t%s:\t\t%llu\n",
@@ -254,11 +254,22 @@ static ssize_t show_fs_alloc_debug(struct bch_fs *c, char *buf)
 		       stats.replicas[replicas].ec_data);
 #endif
 		pr_buf(&out, "\treserved:\t%llu\n",
-		       fs_usage->persistent_reserved[replicas]);
+		       fs_usage->persistent_reserved[i]);
 	}
 
 	pr_buf(&out, "online reserved:\t%llu\n",
 	       fs_usage->s.online_reserved);
+
+	for (i = 0; i < c->replicas.nr; i++) {
+		struct bch_replicas_entry *e =
+			cpu_replicas_entry(&c->replicas, i);
+
+		pr_buf(&out, "\t");
+		bch2_replicas_entry_to_text(&out, e);
+		pr_buf(&out, ":\t%llu\n", fs_usage->data[i]);
+	}
+
+	percpu_up_read_preempt_enable(&c->mark_lock);
 
 	kfree(fs_usage);
 
@@ -797,6 +808,12 @@ static ssize_t show_dev_alloc_debug(struct bch_dev *ca, char *buf)
 {
 	struct bch_fs *c = ca->fs;
 	struct bch_dev_usage stats = bch2_dev_usage_read(c, ca);
+	unsigned i, nr[BCH_DATA_NR];
+
+	memset(nr, 0, sizeof(nr));
+
+	for (i = 0; i < ARRAY_SIZE(c->open_buckets); i++)
+		nr[c->open_buckets[i].type]++;
 
 	return scnprintf(buf, PAGE_SIZE,
 		"free_inc:               %zu/%zu\n"
@@ -823,7 +840,10 @@ static ssize_t show_dev_alloc_debug(struct bch_dev *ca, char *buf)
 		"    copygc threshold:   %llu\n"
 		"freelist_wait:          %s\n"
 		"open buckets:           %u/%u (reserved %u)\n"
-		"open_buckets_wait:      %s\n",
+		"open_buckets_wait:      %s\n"
+		"open_buckets_btree:     %u\n"
+		"open_buckets_user:      %u\n"
+		"btree reserve cache:    %u\n",
 		fifo_used(&ca->free_inc),		ca->free_inc.size,
 		fifo_used(&ca->free[RESERVE_BTREE]),	ca->free[RESERVE_BTREE].size,
 		fifo_used(&ca->free[RESERVE_MOVINGGC]),	ca->free[RESERVE_MOVINGGC].size,
@@ -845,8 +865,12 @@ static ssize_t show_dev_alloc_debug(struct bch_dev *ca, char *buf)
 		stats.sectors_fragmented,
 		ca->copygc_threshold,
 		c->freelist_wait.list.first		? "waiting" : "empty",
-		c->open_buckets_nr_free, OPEN_BUCKETS_COUNT, BTREE_NODE_RESERVE,
-		c->open_buckets_wait.list.first		? "waiting" : "empty");
+		c->open_buckets_nr_free, OPEN_BUCKETS_COUNT,
+		BTREE_NODE_OPEN_BUCKET_RESERVE,
+		c->open_buckets_wait.list.first		? "waiting" : "empty",
+		nr[BCH_DATA_BTREE],
+		nr[BCH_DATA_USER],
+		c->btree_reserve_cache_nr);
 }
 
 static const char * const bch2_rw[] = {
