@@ -5,6 +5,7 @@
 #include "btree_update.h"
 #include "btree_update_interior.h"
 #include "btree_io.h"
+#include "buckets.h"
 #include "dirent.h"
 #include "ec.h"
 #include "error.h"
@@ -12,16 +13,17 @@
 #include "journal_io.h"
 #include "quota.h"
 #include "recovery.h"
+#include "replicas.h"
 #include "super-io.h"
 
 #include <linux/stat.h>
 
 #define QSTR(n) { { { .len = strlen(n) } }, .name = n }
 
-struct bkey_i *btree_root_find(struct bch_fs *c,
-			       struct bch_sb_field_clean *clean,
-			       struct jset *j,
-			       enum btree_id id, unsigned *level)
+static struct bkey_i *btree_root_find(struct bch_fs *c,
+				      struct bch_sb_field_clean *clean,
+				      struct jset *j,
+				      enum btree_id id, unsigned *level)
 {
 	struct bkey_i *k;
 	struct jset_entry *entry, *start, *end;
@@ -47,6 +49,60 @@ found:
 	k = entry->start;
 	*level = entry->level;
 	return k;
+}
+
+static int journal_replay_entry_early(struct bch_fs *c,
+				      struct jset_entry *entry)
+{
+	int ret = 0;
+
+	switch (entry->type) {
+	case BCH_JSET_ENTRY_btree_root: {
+		struct btree_root *r = &c->btree_roots[entry->btree_id];
+
+		if (entry->u64s) {
+			r->level = entry->level;
+			bkey_copy(&r->key, &entry->start[0]);
+			r->error = 0;
+		} else {
+			r->error = -EIO;
+		}
+		r->alive = true;
+		break;
+	}
+	case BCH_JSET_ENTRY_usage: {
+		struct jset_entry_usage *u =
+			container_of(entry, struct jset_entry_usage, entry);
+
+		switch (entry->btree_id) {
+		case FS_USAGE_RESERVED:
+			if (entry->level < BCH_REPLICAS_MAX)
+				percpu_u64_set(&c->usage[0]->
+					       persistent_reserved[entry->level],
+					       le64_to_cpu(u->v));
+			break;
+		case FS_USAGE_INODES:
+			percpu_u64_set(&c->usage[0]->s.nr_inodes,
+				       le64_to_cpu(u->v));
+			break;
+		case FS_USAGE_KEY_VERSION:
+			atomic64_set(&c->key_version,
+				     le64_to_cpu(u->v));
+			break;
+		}
+
+		break;
+	}
+	case BCH_JSET_ENTRY_data_usage: {
+		struct jset_entry_data_usage *u =
+			container_of(entry, struct jset_entry_data_usage, entry);
+		ret = bch2_replicas_set_usage(c, &u->r,
+					      le64_to_cpu(u->v));
+		break;
+	}
+	}
+
+	return ret;
 }
 
 static int verify_superblock_clean(struct bch_fs *c,
@@ -107,7 +163,9 @@ static bool journal_empty(struct list_head *journal)
 
 	list_for_each_entry(i, journal, list) {
 		vstruct_for_each(&i->j, entry) {
-			if (entry->type == BCH_JSET_ENTRY_btree_root)
+			if (entry->type == BCH_JSET_ENTRY_btree_root ||
+			    entry->type == BCH_JSET_ENTRY_usage ||
+			    entry->type == BCH_JSET_ENTRY_data_usage)
 				continue;
 
 			if (entry->type == BCH_JSET_ENTRY_btree_keys &&
@@ -124,6 +182,7 @@ int bch2_fs_recovery(struct bch_fs *c)
 {
 	const char *err = "cannot allocate memory";
 	struct bch_sb_field_clean *clean = NULL, *sb_clean = NULL;
+	struct jset_entry *entry;
 	LIST_HEAD(journal);
 	struct jset *j = NULL;
 	unsigned i;
@@ -176,28 +235,46 @@ int bch2_fs_recovery(struct bch_fs *c)
 	fsck_err_on(clean && !journal_empty(&journal), c,
 		    "filesystem marked clean but journal not empty");
 
+	err = "insufficient memory";
 	if (clean) {
 		c->bucket_clock[READ].hand = le16_to_cpu(clean->read_clock);
 		c->bucket_clock[WRITE].hand = le16_to_cpu(clean->write_clock);
+
+		for (entry = clean->start;
+		     entry != vstruct_end(&clean->field);
+		     entry = vstruct_next(entry)) {
+			ret = journal_replay_entry_early(c, entry);
+			if (ret)
+				goto err;
+		}
 	} else {
+		struct journal_replay *i;
+
 		c->bucket_clock[READ].hand = le16_to_cpu(j->read_clock);
 		c->bucket_clock[WRITE].hand = le16_to_cpu(j->write_clock);
+
+		list_for_each_entry(i, &journal, list)
+			vstruct_for_each(&i->j, entry) {
+				ret = journal_replay_entry_early(c, entry);
+				if (ret)
+					goto err;
+			}
 	}
 
-	for (i = 0; i < BTREE_ID_NR; i++) {
-		unsigned level;
-		struct bkey_i *k;
+	bch2_fs_usage_initialize(c);
 
-		k = btree_root_find(c, clean, j, i, &level);
-		if (!k)
+	for (i = 0; i < BTREE_ID_NR; i++) {
+		struct btree_root *r = &c->btree_roots[i];
+
+		if (!r->alive)
 			continue;
 
 		err = "invalid btree root pointer";
-		if (IS_ERR(k))
+		if (r->error)
 			goto err;
 
 		err = "error reading btree root";
-		if (bch2_btree_root_read(c, i, k, level)) {
+		if (bch2_btree_root_read(c, i, &r->key, r->level)) {
 			if (i != BTREE_ID_ALLOC)
 				goto err;
 
@@ -214,21 +291,33 @@ int bch2_fs_recovery(struct bch_fs *c)
 	if (ret)
 		goto err;
 
+	bch_verbose(c, "starting stripes_read");
 	ret = bch2_stripes_read(c, &journal);
 	if (ret)
 		goto err;
-	pr_info("stripes_read done");
+	bch_verbose(c, "stripes_read done");
 
 	set_bit(BCH_FS_ALLOC_READ_DONE, &c->flags);
 
-	bch_verbose(c, "starting mark and sweep:");
-	err = "error in recovery";
-	ret = bch2_initial_gc(c, &journal);
-	if (ret)
-		goto err;
-	bch_verbose(c, "mark and sweep done");
+	if (!(c->sb.compat & (1ULL << BCH_COMPAT_FEAT_ALLOC_INFO)) ||
+	    c->opts.fsck) {
+		bch_verbose(c, "starting mark and sweep:");
+		err = "error in recovery";
+		ret = bch2_gc(c, &journal, true);
+		if (ret)
+			goto err;
+		bch_verbose(c, "mark and sweep done");
+	}
 
 	clear_bit(BCH_FS_REBUILD_REPLICAS, &c->flags);
+	set_bit(BCH_FS_INITIAL_GC_DONE, &c->flags);
+
+	/*
+	 * Skip past versions that might have possibly been used (as nonces),
+	 * but hadn't had their pointers written:
+	 */
+	if (c->sb.encryption_type && !c->sb.clean)
+		atomic64_add(1 << 16, &c->key_version);
 
 	if (c->opts.noreplay)
 		goto out;
@@ -311,14 +400,21 @@ int bch2_fs_initialize(struct bch_fs *c)
 
 	bch_notice(c, "initializing new filesystem");
 
+	mutex_lock(&c->sb_lock);
+	for_each_online_member(ca, c, i)
+		bch2_mark_dev_superblock(c, ca, 0);
+	mutex_unlock(&c->sb_lock);
+
 	set_bit(BCH_FS_ALLOC_READ_DONE, &c->flags);
 
 	for (i = 0; i < BTREE_ID_NR; i++)
 		bch2_btree_root_alloc(c, i);
 
-	ret = bch2_initial_gc(c, &journal);
+	ret = bch2_gc(c, &journal, true);
 	if (ret)
 		goto err;
+
+	set_bit(BCH_FS_INITIAL_GC_DONE, &c->flags);
 
 	err = "unable to allocate journal buckets";
 	for_each_online_member(ca, c, i)

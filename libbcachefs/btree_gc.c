@@ -573,7 +573,8 @@ static void bch2_gc_done(struct bch_fs *c, bool initial)
 
 	percpu_down_write(&c->mark_lock);
 
-	if (initial) {
+	if (initial &&
+	    !(c->sb.compat & (1ULL << BCH_COMPAT_FEAT_ALLOC_INFO))) {
 		bch2_gc_done_nocheck(c);
 		goto out;
 	}
@@ -814,9 +815,6 @@ out:
 
 	bch2_gc_free(c);
 	up_write(&c->gc_lock);
-
-	if (!ret && initial)
-		set_bit(BCH_FS_INITIAL_GC_DONE, &c->flags);
 
 	trace_gc_end(c);
 	bch2_time_stats_update(&c->times[BCH_TIME_btree_gc], start_time);
@@ -1244,20 +1242,4 @@ int bch2_gc_thread_start(struct bch_fs *c)
 	c->gc_thread = p;
 	wake_up_process(p);
 	return 0;
-}
-
-/* Initial GC computes bucket marks during startup */
-
-int bch2_initial_gc(struct bch_fs *c, struct list_head *journal)
-{
-	int ret = bch2_gc(c, journal, true);
-
-	/*
-	 * Skip past versions that might have possibly been used (as nonces),
-	 * but hadn't had their pointers written:
-	 */
-	if (c->sb.encryption_type)
-		atomic64_add(1 << 16, &c->key_version);
-
-	return ret;
 }

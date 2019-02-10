@@ -1,5 +1,6 @@
 
 #include "bcachefs.h"
+#include "journal.h"
 #include "replicas.h"
 #include "super-io.h"
 
@@ -27,11 +28,6 @@ static void replicas_entry_sort(struct bch_replicas_entry *e)
 {
 	bubble_sort(e->devs, e->nr_devs, u8_cmp);
 }
-
-#define for_each_cpu_replicas_entry(_r, _i)				\
-	for (_i = (_r)->entries;					\
-	     (void *) (_i) < (void *) (_r)->entries + (_r)->nr * (_r)->entry_size;\
-	     _i = (void *) (_i) + (_r)->entry_size)
 
 static void bch2_cpu_replicas_sort(struct bch_replicas_cpu *r)
 {
@@ -301,6 +297,32 @@ err:
 	return ret;
 }
 
+static unsigned reserve_journal_replicas(struct bch_fs *c,
+				     struct bch_replicas_cpu *r)
+{
+	struct bch_replicas_entry *e;
+	unsigned journal_res_u64s = 0;
+
+	/* nr_inodes: */
+	journal_res_u64s +=
+		DIV_ROUND_UP(sizeof(struct jset_entry_usage), sizeof(u64));
+
+	/* key_version: */
+	journal_res_u64s +=
+		DIV_ROUND_UP(sizeof(struct jset_entry_usage), sizeof(u64));
+
+	/* persistent_reserved: */
+	journal_res_u64s +=
+		DIV_ROUND_UP(sizeof(struct jset_entry_usage), sizeof(u64)) *
+		BCH_REPLICAS_MAX;
+
+	for_each_cpu_replicas_entry(r, e)
+		journal_res_u64s +=
+			DIV_ROUND_UP(sizeof(struct jset_entry_data_usage) +
+				     e->nr_devs, sizeof(u64));
+	return journal_res_u64s;
+}
+
 noinline
 static int bch2_mark_replicas_slowpath(struct bch_fs *c,
 				struct bch_replicas_entry *new_entry)
@@ -328,6 +350,10 @@ static int bch2_mark_replicas_slowpath(struct bch_fs *c,
 		ret = bch2_cpu_replicas_to_sb_replicas(c, &new_r);
 		if (ret)
 			goto err;
+
+		bch2_journal_entry_res_resize(&c->journal,
+				&c->replicas_journal_res,
+				reserve_journal_replicas(c, &new_r));
 	}
 
 	if (!new_r.entries &&
@@ -425,14 +451,12 @@ int bch2_replicas_gc_end(struct bch_fs *c, int ret)
 		struct bch_replicas_entry *e =
 			cpu_replicas_entry(&c->replicas, i);
 		struct bch_replicas_cpu n;
-		u64 v = 0;
-		int cpu;
+		u64 v;
 
 		if (__replicas_has_entry(&c->replicas_gc, e))
 			continue;
 
-		for_each_possible_cpu(cpu)
-			v += *per_cpu_ptr(&c->usage[0]->data[i], cpu);
+		v = percpu_u64_get(&c->usage[0]->data[i]);
 		if (!v)
 			continue;
 
@@ -506,6 +530,34 @@ int bch2_replicas_gc_start(struct bch_fs *c, unsigned typemask)
 
 	bch2_cpu_replicas_sort(&c->replicas_gc);
 	mutex_unlock(&c->sb_lock);
+
+	return 0;
+}
+
+int bch2_replicas_set_usage(struct bch_fs *c,
+			    struct bch_replicas_entry *r,
+			    u64 sectors)
+{
+	int ret, idx = bch2_replicas_entry_idx(c, r);
+
+	if (idx < 0) {
+		struct bch_replicas_cpu n;
+
+		n = cpu_replicas_add_entry(&c->replicas, r);
+		if (!n.entries)
+			return -ENOMEM;
+
+		ret = replicas_table_update(c, &n);
+		if (ret)
+			return ret;
+
+		kfree(n.entries);
+
+		idx = bch2_replicas_entry_idx(c, r);
+		BUG_ON(ret < 0);
+	}
+
+	percpu_u64_set(&c->usage[0]->data[idx], sectors);
 
 	return 0;
 }
@@ -596,6 +648,7 @@ int bch2_sb_replicas_to_cpu_replicas(struct bch_fs *c)
 	bch2_cpu_replicas_sort(&new_r);
 
 	percpu_down_write(&c->mark_lock);
+
 	ret = replicas_table_update(c, &new_r);
 	percpu_up_write(&c->mark_lock);
 
@@ -915,4 +968,11 @@ unsigned bch2_dev_has_data(struct bch_fs *c, struct bch_dev *ca)
 	percpu_up_read_preempt_enable(&c->mark_lock);
 
 	return ret;
+}
+
+int bch2_fs_replicas_init(struct bch_fs *c)
+{
+	c->journal.entry_u64s_reserved +=
+		reserve_journal_replicas(c, &c->replicas);
+	return 0;
 }

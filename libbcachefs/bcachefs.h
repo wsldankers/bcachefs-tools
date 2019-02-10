@@ -474,6 +474,7 @@ enum {
 	/* startup: */
 	BCH_FS_ALLOC_READ_DONE,
 	BCH_FS_ALLOCATOR_STARTED,
+	BCH_FS_ALLOCATOR_RUNNING,
 	BCH_FS_INITIAL_GC_DONE,
 	BCH_FS_FSCK_DONE,
 	BCH_FS_STARTED,
@@ -541,6 +542,8 @@ struct bch_fs {
 	struct bch_replicas_cpu replicas_gc;
 	struct mutex		replicas_gc_lock;
 
+	struct journal_entry_res replicas_journal_res;
+
 	struct bch_disk_groups_cpu __rcu *disk_groups;
 
 	struct bch_opts		opts;
@@ -562,6 +565,7 @@ struct bch_fs {
 		u32		time_base_hi;
 		u32		time_precision;
 		u64		features;
+		u64		compat;
 	}			sb;
 
 	struct bch_sb_handle	disk_sb;

@@ -1256,7 +1256,8 @@ void bch2_dev_allocator_add(struct bch_fs *c, struct bch_dev *ca)
 
 void bch2_dev_allocator_quiesce(struct bch_fs *c, struct bch_dev *ca)
 {
-	closure_wait_event(&c->freelist_wait, ca->allocator_blocked_full);
+	if (ca->alloc_thread)
+		closure_wait_event(&c->freelist_wait, ca->allocator_blocked_full);
 }
 
 /* stop allocator thread: */
@@ -1533,6 +1534,8 @@ int bch2_fs_allocator_start(struct bch_fs *c)
 			return ret;
 		}
 	}
+
+	set_bit(BCH_FS_ALLOCATOR_RUNNING, &c->flags);
 
 	return bch2_alloc_write(c, false, &wrote);
 }

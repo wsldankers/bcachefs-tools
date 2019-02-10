@@ -222,6 +222,9 @@ static void __bch2_fs_read_only(struct bch_fs *c)
 	 */
 	bch2_journal_flush_all_pins(&c->journal);
 
+	if (!test_bit(BCH_FS_ALLOCATOR_RUNNING, &c->flags))
+		goto allocator_not_running;
+
 	do {
 		ret = bch2_alloc_write(c, false, &wrote);
 		if (ret) {
@@ -250,9 +253,11 @@ static void __bch2_fs_read_only(struct bch_fs *c)
 		closure_wait_event(&c->btree_interior_update_wait,
 				   !bch2_btree_interior_updates_nr_pending(c));
 	} while (wrote);
-
+allocator_not_running:
 	for_each_member_device(ca, c, i)
 		bch2_dev_allocator_stop(ca);
+
+	clear_bit(BCH_FS_ALLOCATOR_RUNNING, &c->flags);
 
 	bch2_fs_journal_stop(&c->journal);
 
@@ -379,6 +384,8 @@ const char *bch2_fs_read_write(struct bch_fs *c)
 			percpu_ref_put(&ca->io_ref);
 			goto err;
 		}
+
+	set_bit(BCH_FS_ALLOCATOR_RUNNING, &c->flags);
 
 	err = "error starting btree GC thread";
 	if (bch2_gc_thread_start(c))
@@ -683,6 +690,7 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 	    bch2_io_clock_init(&c->io_clock[READ]) ||
 	    bch2_io_clock_init(&c->io_clock[WRITE]) ||
 	    bch2_fs_journal_init(&c->journal) ||
+	    bch2_fs_replicas_init(c) ||
 	    bch2_fs_btree_cache_init(c) ||
 	    bch2_fs_io_init(c) ||
 	    bch2_fs_encryption_init(c) ||
@@ -1101,9 +1109,12 @@ static int bch2_dev_attach_bdev(struct bch_fs *c, struct bch_sb_handle *sb)
 	if (ret)
 		return ret;
 
-	mutex_lock(&c->sb_lock);
-	bch2_mark_dev_superblock(ca->fs, ca, 0);
-	mutex_unlock(&c->sb_lock);
+	if (test_bit(BCH_FS_ALLOC_READ_DONE, &c->flags) &&
+	    !percpu_u64_get(&ca->usage[0]->buckets[BCH_DATA_SB])) {
+		mutex_lock(&c->sb_lock);
+		bch2_mark_dev_superblock(ca->fs, ca, 0);
+		mutex_unlock(&c->sb_lock);
+	}
 
 	bch2_dev_sysfs_online(c, ca);
 

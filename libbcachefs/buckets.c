@@ -113,6 +113,36 @@ void bch2_bucket_seq_cleanup(struct bch_fs *c)
 	}
 }
 
+void bch2_fs_usage_initialize(struct bch_fs *c)
+{
+	struct bch_fs_usage *usage;
+	unsigned i, nr;
+
+	percpu_down_write(&c->mark_lock);
+	nr = sizeof(struct bch_fs_usage) / sizeof(u64) + c->replicas.nr;
+	usage = (void *) bch2_acc_percpu_u64s((void *) c->usage[0], nr);
+
+	for (i = 0; i < BCH_REPLICAS_MAX; i++)
+		usage->s.reserved += usage->persistent_reserved[i];
+
+	for (i = 0; i < c->replicas.nr; i++) {
+		struct bch_replicas_entry *e =
+			cpu_replicas_entry(&c->replicas, i);
+
+		switch (e->data_type) {
+		case BCH_DATA_BTREE:
+		case BCH_DATA_USER:
+			usage->s.data	+= usage->data[i];
+			break;
+		case BCH_DATA_CACHED:
+			usage->s.cached	+= usage->data[i];
+			break;
+		}
+	}
+
+	percpu_up_write(&c->mark_lock);
+}
+
 #define bch2_usage_read_raw(_stats)					\
 ({									\
 	typeof(*this_cpu_ptr(_stats)) _acc;				\
@@ -814,7 +844,7 @@ static int __bch2_mark_key(struct bch_fs *c, struct bkey_s_c k,
 		ret = bch2_mark_stripe(c, k, inserting,
 				       fs_usage, journal_seq, flags, gc);
 		break;
-	case KEY_TYPE_alloc:
+	case KEY_TYPE_inode:
 		if (inserting)
 			fs_usage->s.nr_inodes++;
 		else
@@ -994,10 +1024,7 @@ void bch2_mark_update(struct btree_insert *trans,
 
 static u64 bch2_recalc_sectors_available(struct bch_fs *c)
 {
-	int cpu;
-
-	for_each_possible_cpu(cpu)
-		per_cpu_ptr(c->pcpu, cpu)->sectors_available = 0;
+	percpu_u64_set(&c->pcpu->sectors_available, 0);
 
 	return avail_factor(bch2_fs_sectors_free(c));
 }

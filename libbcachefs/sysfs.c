@@ -132,6 +132,7 @@ do {									\
 write_attribute(trigger_journal_flush);
 write_attribute(trigger_btree_coalesce);
 write_attribute(trigger_gc);
+write_attribute(trigger_alloc_write);
 write_attribute(prune_cache);
 rw_attribute(btree_gc_periodic);
 
@@ -239,26 +240,28 @@ static ssize_t show_fs_alloc_debug(struct bch_fs *c, char *buf)
 	if (!fs_usage)
 		return -ENOMEM;
 
-	pr_buf(&out, "capacity:\t\t%llu\n", c->capacity);
+	pr_buf(&out, "capacity:\t\t\t%llu\n", c->capacity);
+
+	pr_buf(&out, "hidden:\t\t\t\t%llu\n",
+	       fs_usage->s.hidden);
+	pr_buf(&out, "data:\t\t\t\t%llu\n",
+	       fs_usage->s.data);
+	pr_buf(&out, "cached:\t\t\t\t%llu\n",
+	       fs_usage->s.cached);
+	pr_buf(&out, "reserved:\t\t\t%llu\n",
+	       fs_usage->s.reserved);
+	pr_buf(&out, "nr_inodes:\t\t\t%llu\n",
+	       fs_usage->s.nr_inodes);
+	pr_buf(&out, "online reserved:\t\t%llu\n",
+	       fs_usage->s.online_reserved);
 
 	for (i = 0;
 	     i < ARRAY_SIZE(fs_usage->persistent_reserved);
 	     i++) {
 		pr_buf(&out, "%u replicas:\n", i + 1);
-#if 0
-		for (type = BCH_DATA_SB; type < BCH_DATA_NR; type++)
-			pr_buf(&out, "\t%s:\t\t%llu\n",
-			       bch2_data_types[type],
-			       stats.replicas[replicas].data[type]);
-		pr_buf(&out, "\terasure coded:\t%llu\n",
-		       stats.replicas[replicas].ec_data);
-#endif
-		pr_buf(&out, "\treserved:\t%llu\n",
+		pr_buf(&out, "\treserved:\t\t%llu\n",
 		       fs_usage->persistent_reserved[i]);
 	}
-
-	pr_buf(&out, "online reserved:\t%llu\n",
-	       fs_usage->s.online_reserved);
 
 	for (i = 0; i < c->replicas.nr; i++) {
 		struct bch_replicas_entry *e =
@@ -492,6 +495,12 @@ STORE(__bch2_fs)
 	if (attr == &sysfs_trigger_gc)
 		bch2_gc(c, NULL, false);
 
+	if (attr == &sysfs_trigger_alloc_write) {
+		bool wrote;
+
+		bch2_alloc_write(c, false, &wrote);
+	}
+
 	if (attr == &sysfs_prune_cache) {
 		struct shrink_control sc;
 
@@ -584,6 +593,7 @@ struct attribute *bch2_fs_internal_files[] = {
 	&sysfs_trigger_journal_flush,
 	&sysfs_trigger_btree_coalesce,
 	&sysfs_trigger_gc,
+	&sysfs_trigger_alloc_write,
 	&sysfs_prune_cache,
 
 	&sysfs_copy_gc_enabled,
@@ -882,20 +892,15 @@ static const char * const bch2_rw[] = {
 static ssize_t show_dev_iodone(struct bch_dev *ca, char *buf)
 {
 	struct printbuf out = _PBUF(buf, PAGE_SIZE);
-	int rw, i, cpu;
+	int rw, i;
 
 	for (rw = 0; rw < 2; rw++) {
 		pr_buf(&out, "%s:\n", bch2_rw[rw]);
 
-		for (i = 1; i < BCH_DATA_NR; i++) {
-			u64 n = 0;
-
-			for_each_possible_cpu(cpu)
-				n += per_cpu_ptr(ca->io_done, cpu)->sectors[rw][i];
-
+		for (i = 1; i < BCH_DATA_NR; i++)
 			pr_buf(&out, "%-12s:%12llu\n",
-			       bch2_data_types[i], n << 9);
-		}
+			       bch2_data_types[i],
+			       percpu_u64_get(&ca->io_done->sectors[rw][i]) << 9);
 	}
 
 	return out.pos - buf;
