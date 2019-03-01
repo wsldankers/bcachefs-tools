@@ -455,6 +455,7 @@ static inline bool btree_node_is_extents(struct btree *b)
 static inline bool btree_node_type_needs_gc(enum btree_node_type type)
 {
 	switch (type) {
+	case BKEY_TYPE_ALLOC:
 	case BKEY_TYPE_BTREE:
 	case BKEY_TYPE_EXTENTS:
 	case BKEY_TYPE_INODES:
@@ -489,7 +490,6 @@ enum btree_insert_ret {
 	/* leaf node needs to be split */
 	BTREE_INSERT_BTREE_NODE_FULL,
 	BTREE_INSERT_ENOSPC,
-	BTREE_INSERT_NEED_GC_LOCK,
 	BTREE_INSERT_NEED_MARK_REPLICAS,
 };
 

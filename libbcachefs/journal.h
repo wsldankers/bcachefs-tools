@@ -178,6 +178,11 @@ static inline unsigned jset_u64s(unsigned u64s)
 	return u64s + sizeof(struct jset_entry) / sizeof(u64);
 }
 
+static inline int journal_entry_overhead(struct journal *j)
+{
+	return sizeof(struct jset) / sizeof(u64) + j->entry_u64s_reserved;
+}
+
 static inline struct jset_entry *
 bch2_journal_add_entry_noreservation(struct journal_buf *buf, size_t u64s)
 {
@@ -222,7 +227,7 @@ static inline void bch2_journal_add_keys(struct journal *j, struct journal_res *
 			       id, 0, k, k->k.u64s);
 }
 
-void bch2_journal_buf_put_slowpath(struct journal *, bool);
+void __bch2_journal_buf_put(struct journal *, bool);
 
 static inline void bch2_journal_buf_put(struct journal *j, unsigned idx,
 				       bool need_write_just_set)
@@ -233,17 +238,10 @@ static inline void bch2_journal_buf_put(struct journal *j, unsigned idx,
 				    .buf0_count = idx == 0,
 				    .buf1_count = idx == 1,
 				    }).v, &j->reservations.counter);
-
-	EBUG_ON(s.idx != idx && !s.prev_buf_unwritten);
-
-	/*
-	 * Do not initiate a journal write if the journal is in an error state
-	 * (previous journal entry write may have failed)
-	 */
-	if (s.idx != idx &&
-	    !journal_state_count(s, idx) &&
-	    s.cur_entry_offset != JOURNAL_ENTRY_ERROR_VAL)
-		bch2_journal_buf_put_slowpath(j, need_write_just_set);
+	if (!journal_state_count(s, idx)) {
+		EBUG_ON(s.idx == idx || !s.prev_buf_unwritten);
+		__bch2_journal_buf_put(j, need_write_just_set);
+	}
 }
 
 /*
@@ -291,6 +289,8 @@ static inline int journal_res_get_fast(struct journal *j,
 		if (new.cur_entry_offset + res->u64s > j->cur_entry_u64s)
 			return 0;
 
+		EBUG_ON(!journal_state_count(new, new.idx));
+
 		if (flags & JOURNAL_RES_GET_CHECK)
 			return 1;
 
@@ -330,6 +330,8 @@ out:
 	return 0;
 }
 
+/* journal_entry_res: */
+
 void bch2_journal_entry_res_resize(struct journal *,
 				   struct journal_entry_res *,
 				   unsigned);
@@ -366,6 +368,9 @@ static inline void bch2_journal_set_replay_done(struct journal *j)
 	BUG_ON(!test_bit(JOURNAL_STARTED, &j->flags));
 	set_bit(JOURNAL_REPLAY_DONE, &j->flags);
 }
+
+void bch2_journal_unblock(struct journal *);
+void bch2_journal_block(struct journal *);
 
 ssize_t bch2_journal_print_debug(struct journal *, char *);
 ssize_t bch2_journal_print_pins(struct journal *, char *);

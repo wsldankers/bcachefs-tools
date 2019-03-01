@@ -138,24 +138,24 @@ static int bch2_gc_mark_key(struct bch_fs *c, struct bkey_s_c k,
 
 		bkey_for_each_ptr(ptrs, ptr) {
 			struct bch_dev *ca = bch_dev_bkey_exists(c, ptr->dev);
-			size_t b = PTR_BUCKET_NR(ca, ptr);
-			struct bucket *g = PTR_BUCKET(ca, ptr);
+			struct bucket *g = PTR_BUCKET(ca, ptr, true);
+			struct bucket *g2 = PTR_BUCKET(ca, ptr, false);
 
 			if (mustfix_fsck_err_on(!g->gen_valid, c,
 					"found ptr with missing gen in alloc btree,\n"
 					"type %u gen %u",
 					k.k->type, ptr->gen)) {
-				g->_mark.gen = ptr->gen;
-				g->gen_valid = 1;
-				bucket_set_dirty(ca, b);
+				g2->_mark.gen	= g->_mark.gen		= ptr->gen;
+				g2->_mark.dirty	= g->_mark.dirty	= true;
+				g2->gen_valid	= g->gen_valid		= true;
 			}
 
 			if (mustfix_fsck_err_on(gen_cmp(ptr->gen, g->mark.gen) > 0, c,
 					"%u ptr gen in the future: %u > %u",
 					k.k->type, ptr->gen, g->mark.gen)) {
-				g->_mark.gen = ptr->gen;
-				g->gen_valid = 1;
-				bucket_set_dirty(ca, b);
+				g2->_mark.gen	= g->_mark.gen		= ptr->gen;
+				g2->_mark.dirty	= g->_mark.dirty	= true;
+				g2->gen_valid	= g->gen_valid		= true;
 				set_bit(BCH_FS_FIXED_GENS, &c->flags);
 			}
 		}
@@ -163,10 +163,10 @@ static int bch2_gc_mark_key(struct bch_fs *c, struct bkey_s_c k,
 
 	bkey_for_each_ptr(ptrs, ptr) {
 		struct bch_dev *ca = bch_dev_bkey_exists(c, ptr->dev);
-		size_t b = PTR_BUCKET_NR(ca, ptr);
+		struct bucket *g = PTR_BUCKET(ca, ptr, true);
 
-		if (gen_after(ca->oldest_gens[b], ptr->gen))
-			ca->oldest_gens[b] = ptr->gen;
+		if (gen_after(g->oldest_gen, ptr->gen))
+			g->oldest_gen = ptr->gen;
 
 		*max_stale = max(*max_stale, ptr_stale(ca, ptr));
 	}
@@ -230,11 +230,11 @@ static int bch2_gc_btree(struct bch_fs *c, enum btree_id btree_id,
 
 		bch2_verify_btree_nr_keys(b);
 
+		gc_pos_set(c, gc_pos_btree_node(b));
+
 		ret = btree_gc_mark_node(c, b, &max_stale, initial);
 		if (ret)
 			break;
-
-		gc_pos_set(c, gc_pos_btree_node(b));
 
 		if (!initial) {
 			if (max_stale > 64)
@@ -483,88 +483,38 @@ static void bch2_gc_free(struct bch_fs *c)
 	percpu_up_write(&c->mark_lock);
 }
 
-static void bch2_gc_done_nocheck(struct bch_fs *c)
-{
-	struct bch_dev *ca;
-	unsigned i;
-
-	{
-		struct genradix_iter dst_iter = genradix_iter_init(&c->stripes[0], 0);
-		struct genradix_iter src_iter = genradix_iter_init(&c->stripes[1], 0);
-		struct stripe *dst, *src;
-
-		c->ec_stripes_heap.used = 0;
-
-		while ((dst = genradix_iter_peek(&dst_iter, &c->stripes[0])) &&
-		       (src = genradix_iter_peek(&src_iter, &c->stripes[1]))) {
-			*dst = *src;
-
-			if (dst->alive)
-				bch2_stripes_heap_insert(c, dst, dst_iter.pos);
-
-			genradix_iter_advance(&dst_iter, &c->stripes[0]);
-			genradix_iter_advance(&src_iter, &c->stripes[1]);
-		}
-	}
-
-	for_each_member_device(ca, c, i) {
-		struct bucket_array *src = __bucket_array(ca, 1);
-
-		memcpy(__bucket_array(ca, 0), src,
-		       sizeof(struct bucket_array) +
-		       sizeof(struct bucket) * src->nbuckets);
-	};
-
-	for_each_member_device(ca, c, i) {
-		unsigned nr = sizeof(struct bch_dev_usage) / sizeof(u64);
-		struct bch_dev_usage *dst = (void *)
-			bch2_acc_percpu_u64s((void *) ca->usage[0], nr);
-		struct bch_dev_usage *src = (void *)
-			bch2_acc_percpu_u64s((void *) ca->usage[1], nr);
-
-		*dst = *src;
-	}
-
-	{
-		unsigned nr = sizeof(struct bch_fs_usage) / sizeof(u64) +
-			c->replicas.nr;
-		struct bch_fs_usage *dst = (void *)
-			bch2_acc_percpu_u64s((void *) c->usage[0], nr);
-		struct bch_fs_usage *src = (void *)
-			bch2_acc_percpu_u64s((void *) c->usage[1], nr);
-
-		memcpy(&dst->s.gc_start[0],
-		       &src->s.gc_start[0],
-		       nr * sizeof(u64) - offsetof(typeof(*dst), s.gc_start));
-	}
-}
-
 static void bch2_gc_done(struct bch_fs *c, bool initial)
 {
 	struct bch_dev *ca;
+	bool verify = !initial ||
+		(c->sb.compat & (1ULL << BCH_COMPAT_FEAT_ALLOC_INFO));
 	unsigned i;
 
 #define copy_field(_f, _msg, ...)					\
 	if (dst->_f != src->_f) {					\
-		bch_err(c, _msg ": got %llu, should be %llu, fixing"	\
-			, ##__VA_ARGS__, dst->_f, src->_f);		\
+		if (verify)						\
+			bch_err(c, _msg ": got %llu, should be %llu, fixing"\
+				, ##__VA_ARGS__, dst->_f, src->_f);	\
 		dst->_f = src->_f;					\
 	}
 #define copy_stripe_field(_f, _msg, ...)				\
 	if (dst->_f != src->_f) {					\
-		bch_err_ratelimited(c, "stripe %zu has wrong "_msg	\
-			": got %u, should be %u, fixing",		\
-			dst_iter.pos, ##__VA_ARGS__,			\
-			dst->_f, src->_f);				\
+		if (verify)						\
+			bch_err_ratelimited(c, "stripe %zu has wrong "_msg\
+				": got %u, should be %u, fixing",	\
+				dst_iter.pos, ##__VA_ARGS__,		\
+				dst->_f, src->_f);			\
 		dst->_f = src->_f;					\
 		dst->dirty = true;					\
 	}
 #define copy_bucket_field(_f)						\
 	if (dst->b[b].mark._f != src->b[b].mark._f) {			\
-		bch_err_ratelimited(c, "dev %u bucket %zu has wrong " #_f\
-			": got %u, should be %u, fixing",		\
-			i, b, dst->b[b].mark._f, src->b[b].mark._f);	\
+		if (verify)						\
+			bch_err_ratelimited(c, "dev %u bucket %zu has wrong " #_f\
+				": got %u, should be %u, fixing", i, b,	\
+				dst->b[b].mark._f, src->b[b].mark._f);	\
 		dst->b[b]._mark._f = src->b[b].mark._f;			\
+		dst->b[b]._mark.dirty = true;				\
 	}
 #define copy_dev_field(_f, _msg, ...)					\
 	copy_field(_f, "dev %u has wrong " _msg, i, ##__VA_ARGS__)
@@ -572,12 +522,6 @@ static void bch2_gc_done(struct bch_fs *c, bool initial)
 	copy_field(_f, "fs has wrong " _msg, ##__VA_ARGS__)
 
 	percpu_down_write(&c->mark_lock);
-
-	if (initial &&
-	    !(c->sb.compat & (1ULL << BCH_COMPAT_FEAT_ALLOC_INFO))) {
-		bch2_gc_done_nocheck(c);
-		goto out;
-	}
 
 	{
 		struct genradix_iter dst_iter = genradix_iter_init(&c->stripes[0], 0);
@@ -629,6 +573,11 @@ static void bch2_gc_done(struct bch_fs *c, bool initial)
 			copy_bucket_field(stripe);
 			copy_bucket_field(dirty_sectors);
 			copy_bucket_field(cached_sectors);
+
+			if (dst->b[b].oldest_gen != src->b[b].oldest_gen) {
+				dst->b[b].oldest_gen = src->b[b].oldest_gen;
+				dst->b[b]._mark.dirty = true;
+			}
 		}
 	};
 
@@ -641,44 +590,46 @@ static void bch2_gc_done(struct bch_fs *c, bool initial)
 		unsigned b;
 
 		for (b = 0; b < BCH_DATA_NR; b++)
-			copy_dev_field(buckets[b],
-				       "buckets[%s]", bch2_data_types[b]);
-		copy_dev_field(buckets_alloc, "buckets_alloc");
-		copy_dev_field(buckets_ec, "buckets_ec");
+			copy_dev_field(buckets[b],	"buckets[%s]",
+				       bch2_data_types[b]);
+		copy_dev_field(buckets_alloc,		"buckets_alloc");
+		copy_dev_field(buckets_ec,		"buckets_ec");
+		copy_dev_field(buckets_unavailable,	"buckets_unavailable");
 
 		for (b = 0; b < BCH_DATA_NR; b++)
-			copy_dev_field(sectors[b],
-				       "sectors[%s]", bch2_data_types[b]);
-		copy_dev_field(sectors_fragmented,
-			       "sectors_fragmented");
+			copy_dev_field(sectors[b],	"sectors[%s]",
+				       bch2_data_types[b]);
+		copy_dev_field(sectors_fragmented,	"sectors_fragmented");
 	}
 
 	{
-		unsigned nr = sizeof(struct bch_fs_usage) / sizeof(u64) +
-			c->replicas.nr;
+		unsigned nr = fs_usage_u64s(c);
 		struct bch_fs_usage *dst = (void *)
 			bch2_acc_percpu_u64s((void *) c->usage[0], nr);
 		struct bch_fs_usage *src = (void *)
 			bch2_acc_percpu_u64s((void *) c->usage[1], nr);
 
-		copy_fs_field(s.hidden,		"hidden");
-		copy_fs_field(s.data,		"data");
-		copy_fs_field(s.cached,		"cached");
-		copy_fs_field(s.reserved,	"reserved");
-		copy_fs_field(s.nr_inodes,	"nr_inodes");
+		copy_fs_field(hidden,		"hidden");
+		copy_fs_field(data,		"data");
+		copy_fs_field(cached,		"cached");
+		copy_fs_field(reserved,		"reserved");
+		copy_fs_field(nr_inodes,	"nr_inodes");
 
 		for (i = 0; i < BCH_REPLICAS_MAX; i++)
 			copy_fs_field(persistent_reserved[i],
 				      "persistent_reserved[%i]", i);
 
 		for (i = 0; i < c->replicas.nr; i++) {
-			/*
-			 * XXX: print out replicas entry
-			 */
-			copy_fs_field(data[i], "data[%i]", i);
+			struct bch_replicas_entry *e =
+				cpu_replicas_entry(&c->replicas, i);
+			char buf[80];
+
+			bch2_replicas_entry_to_text(&PBUF(buf), e);
+
+			copy_fs_field(replicas[i], "%s", buf);
 		}
 	}
-out:
+
 	percpu_up_write(&c->mark_lock);
 
 #undef copy_fs_field
@@ -693,19 +644,18 @@ static int bch2_gc_start(struct bch_fs *c)
 	struct bch_dev *ca;
 	unsigned i;
 
+	percpu_down_write(&c->mark_lock);
+
 	/*
 	 * indicate to stripe code that we need to allocate for the gc stripes
 	 * radix tree, too
 	 */
 	gc_pos_set(c, gc_phase(GC_PHASE_START));
 
-	percpu_down_write(&c->mark_lock);
 	BUG_ON(c->usage[1]);
 
-	c->usage[1] = __alloc_percpu_gfp(sizeof(struct bch_fs_usage) +
-					 sizeof(u64) * c->replicas.nr,
-					 sizeof(u64),
-					 GFP_KERNEL);
+	c->usage[1] = __alloc_percpu_gfp(fs_usage_u64s(c) * sizeof(u64),
+					 sizeof(u64), GFP_KERNEL);
 	percpu_up_write(&c->mark_lock);
 
 	if (!c->usage[1])
@@ -740,8 +690,12 @@ static int bch2_gc_start(struct bch_fs *c)
 		dst->first_bucket	= src->first_bucket;
 		dst->nbuckets		= src->nbuckets;
 
-		for (b = 0; b < src->nbuckets; b++)
-			dst->b[b]._mark.gen = src->b[b].mark.gen;
+		for (b = 0; b < src->nbuckets; b++) {
+			dst->b[b]._mark.gen =
+				dst->b[b].oldest_gen =
+				src->b[b].mark.gen;
+			dst->b[b].gen_valid = src->b[b].gen_valid;
+		}
 	};
 
 	percpu_up_write(&c->mark_lock);
@@ -800,6 +754,8 @@ out:
 		if (iter++ <= 2) {
 			bch_info(c, "Fixed gens, restarting mark and sweep:");
 			clear_bit(BCH_FS_FIXED_GENS, &c->flags);
+			__gc_pos_set(c, gc_phase(GC_PHASE_NOT_RUNNING));
+			bch2_gc_free(c);
 			goto again;
 		}
 

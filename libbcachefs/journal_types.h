@@ -21,8 +21,10 @@ struct journal_buf {
 
 	struct closure_waitlist	wait;
 
-	unsigned		size;
-	unsigned		disk_sectors;
+	unsigned		buf_size;	/* size in bytes of @data */
+	unsigned		sectors;	/* maximum size for current entry */
+	unsigned		disk_sectors;	/* maximum size entry could have been, if
+						   buf_size was bigger */
 	unsigned		u64s_reserved;
 	/* bloom filter: */
 	unsigned long		has_inode[1024 / sizeof(unsigned long)];
@@ -128,9 +130,20 @@ struct journal {
 	unsigned long		flags;
 
 	union journal_res_state reservations;
+
+	/* Max size of current journal entry */
 	unsigned		cur_entry_u64s;
-	unsigned		prev_buf_sectors;
-	unsigned		cur_buf_sectors;
+	unsigned		cur_entry_sectors;
+
+	/*
+	 * 0, or -ENOSPC if waiting on journal reclaim, or -EROFS if
+	 * insufficient devices:
+	 */
+	int			cur_entry_error;
+
+	/* Reserved space in journal entry to be used just prior to write */
+	unsigned		entry_u64s_reserved;
+
 	unsigned		buf_size_want;
 
 	/*
@@ -140,6 +153,9 @@ struct journal {
 	struct journal_buf	buf[2];
 
 	spinlock_t		lock;
+
+	/* if nonzero, we may not open a new journal entry: */
+	unsigned		blocked;
 
 	/* Used when waiting because the journal was full */
 	wait_queue_head_t	wait;
@@ -154,9 +170,6 @@ struct journal {
 	/* seq, last_seq from the most recent journal entry successfully written */
 	u64			seq_ondisk;
 	u64			last_seq_ondisk;
-
-	/* Reserved space in journal entry to be used just prior to write */
-	unsigned		entry_u64s_reserved;
 
 	/*
 	 * FIFO of journal entries whose btree updates have not yet been

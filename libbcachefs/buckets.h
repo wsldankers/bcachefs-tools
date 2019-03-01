@@ -16,13 +16,14 @@
 
 #define bucket_cmpxchg(g, new, expr)				\
 ({								\
+	struct bucket *_g = g;					\
 	u64 _v = atomic64_read(&(g)->_mark.v);			\
 	struct bucket_mark _old;				\
 								\
 	do {							\
 		(new).v.counter = _old.v.counter = _v;		\
 		expr;						\
-	} while ((_v = atomic64_cmpxchg(&(g)->_mark.v,		\
+	} while ((_v = atomic64_cmpxchg(&(_g)->_mark.v,		\
 			       _old.v.counter,			\
 			       (new).v.counter)) != _old.v.counter);\
 	_old;							\
@@ -56,18 +57,6 @@ static inline struct bucket *bucket(struct bch_dev *ca, size_t b)
 	return __bucket(ca, b, false);
 }
 
-static inline void bucket_set_dirty(struct bch_dev *ca, size_t b)
-{
-	struct bucket *g;
-	struct bucket_mark m;
-
-	rcu_read_lock();
-	g = bucket(ca, b);
-	bucket_cmpxchg(g, m, m.dirty = true);
-	rcu_read_unlock();
-
-}
-
 static inline void bucket_io_clock_reset(struct bch_fs *c, struct bch_dev *ca,
 					 size_t b, int rw)
 {
@@ -86,7 +75,9 @@ static inline u16 bucket_last_io(struct bch_fs *c, struct bucket *g, int rw)
 
 static inline u8 bucket_gc_gen(struct bch_dev *ca, size_t b)
 {
-	return bucket(ca, b)->mark.gen - ca->oldest_gens[b];
+	struct bucket *g = bucket(ca, b);
+
+	return g->mark.gen - g->oldest_gen;
 }
 
 static inline size_t PTR_BUCKET_NR(const struct bch_dev *ca,
@@ -96,9 +87,10 @@ static inline size_t PTR_BUCKET_NR(const struct bch_dev *ca,
 }
 
 static inline struct bucket *PTR_BUCKET(struct bch_dev *ca,
-					const struct bch_extent_ptr *ptr)
+					const struct bch_extent_ptr *ptr,
+					bool gc)
 {
-	return bucket(ca, PTR_BUCKET_NR(ca, ptr));
+	return __bucket(ca, PTR_BUCKET_NR(ca, ptr), gc);
 }
 
 static inline struct bucket_mark ptr_bucket_mark(struct bch_dev *ca,
@@ -219,30 +211,27 @@ static inline u64 dev_buckets_free(struct bch_fs *c, struct bch_dev *ca)
 
 /* Filesystem usage: */
 
+static inline unsigned fs_usage_u64s(struct bch_fs *c)
+{
+
+	return sizeof(struct bch_fs_usage) / sizeof(u64) +
+		READ_ONCE(c->replicas.nr);
+}
+
 static inline struct bch_fs_usage *bch2_fs_usage_get_scratch(struct bch_fs *c)
 {
-	struct bch_fs_usage *ret;
+	struct bch_fs_usage *ret = this_cpu_ptr(c->usage_scratch);
 
-	ret = this_cpu_ptr(c->usage_scratch);
-
-	memset(ret, 0, sizeof(*ret) + c->replicas.nr * sizeof(u64));
-
+	memset(ret, 0, fs_usage_u64s(c) * sizeof(u64));
 	return ret;
 }
 
 struct bch_fs_usage *bch2_fs_usage_read(struct bch_fs *);
 
-u64 bch2_fs_sectors_used(struct bch_fs *, struct bch_fs_usage);
+u64 bch2_fs_sectors_used(struct bch_fs *, struct bch_fs_usage *);
 
 struct bch_fs_usage_short
 bch2_fs_usage_read_short(struct bch_fs *);
-
-static inline u64 bch2_fs_sectors_free(struct bch_fs *c)
-{
-	struct bch_fs_usage_short usage = bch2_fs_usage_read_short(c);
-
-	return usage.capacity - usage.used;
-}
 
 /* key/bucket marking: */
 
@@ -257,8 +246,8 @@ void bch2_mark_metadata_bucket(struct bch_fs *, struct bch_dev *,
 			       size_t, enum bch_data_type, unsigned,
 			       struct gc_pos, unsigned);
 
-#define BCH_BUCKET_MARK_NOATOMIC		(1 << 0)
-#define BCH_BUCKET_MARK_GC			(1 << 1)
+#define BCH_BUCKET_MARK_GC			(1 << 0)
+#define BCH_BUCKET_MARK_NOATOMIC		(1 << 1)
 
 int bch2_mark_key_locked(struct bch_fs *, struct bkey_s_c,
 		  bool, s64, struct gc_pos,
@@ -268,7 +257,7 @@ int bch2_mark_key(struct bch_fs *, struct bkey_s_c,
 		  struct bch_fs_usage *, u64, unsigned);
 void bch2_mark_update(struct btree_insert *, struct btree_insert_entry *);
 int bch2_fs_usage_apply(struct bch_fs *, struct bch_fs_usage *,
-			struct disk_reservation *, struct gc_pos);
+			struct disk_reservation *);
 
 /* disk reservations: */
 
@@ -282,8 +271,6 @@ static inline void bch2_disk_reservation_put(struct bch_fs *c,
 }
 
 #define BCH_DISK_RESERVATION_NOFAIL		(1 << 0)
-#define BCH_DISK_RESERVATION_GC_LOCK_HELD	(1 << 1)
-#define BCH_DISK_RESERVATION_BTREE_LOCKS_HELD	(1 << 2)
 
 int bch2_disk_reservation_add(struct bch_fs *,
 			     struct disk_reservation *,

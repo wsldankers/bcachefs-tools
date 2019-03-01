@@ -483,7 +483,7 @@ static struct btree_reserve *bch2_btree_reserve_get(struct bch_fs *c,
 	struct btree *b;
 	struct disk_reservation disk_res = { 0, 0 };
 	unsigned sectors = nr_nodes * c->opts.btree_node_size;
-	int ret, disk_res_flags = BCH_DISK_RESERVATION_GC_LOCK_HELD;
+	int ret, disk_res_flags = 0;
 
 	if (flags & BTREE_INSERT_NOFAIL)
 		disk_res_flags |= BCH_DISK_RESERVATION_NOFAIL;
@@ -1086,8 +1086,7 @@ static void bch2_btree_set_root_inmem(struct btree_update *as, struct btree *b)
 		bch2_btree_node_free_index(as, NULL,
 					   bkey_i_to_s_c(&old->key),
 					   fs_usage);
-	bch2_fs_usage_apply(c, fs_usage, &as->reserve->disk_res,
-			    gc_pos_btree_root(b->btree_id));
+	bch2_fs_usage_apply(c, fs_usage, &as->reserve->disk_res);
 
 	percpu_up_read_preempt_enable(&c->mark_lock);
 	mutex_unlock(&c->btree_interior_update_lock);
@@ -1188,8 +1187,7 @@ static void bch2_insert_fixup_btree_ptr(struct btree_update *as, struct btree *b
 					   bkey_disassemble(b, k, &tmp),
 					   fs_usage);
 
-	bch2_fs_usage_apply(c, fs_usage, &as->reserve->disk_res,
-			    gc_pos_btree_node(b));
+	bch2_fs_usage_apply(c, fs_usage, &as->reserve->disk_res);
 
 	percpu_up_read_preempt_enable(&c->mark_lock);
 	mutex_unlock(&c->btree_interior_update_lock);
@@ -1564,7 +1562,8 @@ int bch2_btree_split_leaf(struct bch_fs *c, struct btree_iter *iter,
 	closure_init_stack(&cl);
 
 	/* Hack, because gc and splitting nodes doesn't mix yet: */
-	if (!down_read_trylock(&c->gc_lock)) {
+	if (!(flags & BTREE_INSERT_GC_LOCK_HELD) &&
+	    !down_read_trylock(&c->gc_lock)) {
 		if (flags & BTREE_INSERT_NOUNLOCK)
 			return -EINTR;
 
@@ -1607,7 +1606,8 @@ int bch2_btree_split_leaf(struct bch_fs *c, struct btree_iter *iter,
 	 */
 	__bch2_btree_iter_downgrade(iter, 1);
 out:
-	up_read(&c->gc_lock);
+	if (!(flags & BTREE_INSERT_GC_LOCK_HELD))
+		up_read(&c->gc_lock);
 	closure_sync(&cl);
 	return ret;
 }
@@ -1685,7 +1685,8 @@ retry:
 	}
 
 	/* We're changing btree topology, doesn't mix with gc: */
-	if (!down_read_trylock(&c->gc_lock))
+	if (!(flags & BTREE_INSERT_GC_LOCK_HELD) &&
+	    !down_read_trylock(&c->gc_lock))
 		goto err_cycle_gc_lock;
 
 	if (!bch2_btree_iter_upgrade(iter, U8_MAX,
@@ -1745,7 +1746,8 @@ retry:
 
 	bch2_btree_update_done(as);
 
-	up_read(&c->gc_lock);
+	if (!(flags & BTREE_INSERT_GC_LOCK_HELD))
+		up_read(&c->gc_lock);
 out:
 	bch2_btree_iter_verify_locks(iter);
 
@@ -1776,7 +1778,8 @@ err_cycle_gc_lock:
 
 err_unlock:
 	six_unlock_intent(&m->lock);
-	up_read(&c->gc_lock);
+	if (!(flags & BTREE_INSERT_GC_LOCK_HELD))
+		up_read(&c->gc_lock);
 err:
 	BUG_ON(ret == -EAGAIN && (flags & BTREE_INSERT_NOUNLOCK));
 
@@ -1942,8 +1945,7 @@ static void __bch2_btree_node_update_key(struct bch_fs *c,
 	ret = bch2_disk_reservation_add(c, &as->reserve->disk_res,
 			c->opts.btree_node_size *
 			bch2_bkey_nr_ptrs(bkey_i_to_s_c(&new_key->k_i)),
-			BCH_DISK_RESERVATION_NOFAIL|
-			BCH_DISK_RESERVATION_GC_LOCK_HELD);
+			BCH_DISK_RESERVATION_NOFAIL);
 	BUG_ON(ret);
 
 	parent = btree_node_parent(iter, b);
@@ -1989,8 +1991,7 @@ static void __bch2_btree_node_update_key(struct bch_fs *c,
 		bch2_btree_node_free_index(as, NULL,
 					   bkey_i_to_s_c(&b->key),
 					   fs_usage);
-		bch2_fs_usage_apply(c, fs_usage, &as->reserve->disk_res,
-				    gc_pos_btree_root(b->btree_id));
+		bch2_fs_usage_apply(c, fs_usage, &as->reserve->disk_res);
 
 		percpu_up_read_preempt_enable(&c->mark_lock);
 		mutex_unlock(&c->btree_interior_update_lock);

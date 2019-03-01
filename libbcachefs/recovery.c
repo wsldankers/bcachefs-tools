@@ -82,7 +82,7 @@ static int journal_replay_entry_early(struct bch_fs *c,
 					       le64_to_cpu(u->v));
 			break;
 		case FS_USAGE_INODES:
-			percpu_u64_set(&c->usage[0]->s.nr_inodes,
+			percpu_u64_set(&c->usage[0]->nr_inodes,
 				       le64_to_cpu(u->v));
 			break;
 		case FS_USAGE_KEY_VERSION:
@@ -406,22 +406,19 @@ int bch2_fs_initialize(struct bch_fs *c)
 	mutex_unlock(&c->sb_lock);
 
 	set_bit(BCH_FS_ALLOC_READ_DONE, &c->flags);
+	set_bit(BCH_FS_INITIAL_GC_DONE, &c->flags);
 
 	for (i = 0; i < BTREE_ID_NR; i++)
 		bch2_btree_root_alloc(c, i);
 
-	ret = bch2_gc(c, &journal, true);
-	if (ret)
-		goto err;
-
-	set_bit(BCH_FS_INITIAL_GC_DONE, &c->flags);
-
 	err = "unable to allocate journal buckets";
-	for_each_online_member(ca, c, i)
-		if (bch2_dev_journal_alloc(ca)) {
+	for_each_online_member(ca, c, i) {
+		ret = bch2_dev_journal_alloc(ca);
+		if (ret) {
 			percpu_ref_put(&ca->io_ref);
 			goto err;
 		}
+	}
 
 	/*
 	 * journal_res_get() will crash if called before this has
