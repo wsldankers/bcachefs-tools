@@ -1466,16 +1466,24 @@ int bch2_dev_allocator_start(struct bch_dev *ca)
 	return 0;
 }
 
-static bool flush_done(struct bch_fs *c)
+static void flush_held_btree_writes(struct bch_fs *c)
 {
 	struct bucket_table *tbl;
 	struct rhash_head *pos;
 	struct btree *b;
-	bool nodes_unwritten;
+	bool nodes_blocked;
 	size_t i;
+	struct closure cl;
+
+	closure_init_stack(&cl);
+
+	clear_bit(BCH_FS_HOLD_BTREE_WRITES, &c->flags);
 again:
+	pr_debug("flushing dirty btree nodes");
 	cond_resched();
-	nodes_unwritten = false;
+	closure_wait(&c->btree_interior_update_wait, &cl);
+
+	nodes_blocked = false;
 
 	rcu_read_lock();
 	for_each_cached_btree(b, c, tbl, i, pos)
@@ -1487,25 +1495,24 @@ again:
 				six_unlock_read(&b->lock);
 				goto again;
 			} else {
-				nodes_unwritten = true;
+				nodes_blocked = true;
 			}
 		}
 	rcu_read_unlock();
 
-	if (c->btree_roots_dirty) {
+	if (c->btree_roots_dirty)
 		bch2_journal_meta(&c->journal);
+
+	if (nodes_blocked) {
+		closure_sync(&cl);
 		goto again;
 	}
 
-	return !nodes_unwritten &&
-		!bch2_btree_interior_updates_nr_pending(c);
-}
+	closure_wake_up(&c->btree_interior_update_wait);
+	closure_sync(&cl);
 
-static void flush_held_btree_writes(struct bch_fs *c)
-{
-	clear_bit(BCH_FS_HOLD_BTREE_WRITES, &c->flags);
-
-	closure_wait_event(&c->btree_interior_update_wait, flush_done(c));
+	closure_wait_event(&c->btree_interior_update_wait,
+			   !bch2_btree_interior_updates_nr_pending(c));
 }
 
 static void allocator_start_issue_discards(struct bch_fs *c)
