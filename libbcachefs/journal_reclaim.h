@@ -3,8 +3,15 @@
 
 #define JOURNAL_PIN	(32 * 1024)
 
+enum journal_space_from {
+	journal_space_discarded,
+	journal_space_clean_ondisk,
+	journal_space_clean,
+};
+
 unsigned bch2_journal_dev_buckets_available(struct journal *,
-					    struct journal_device *);
+					    struct journal_device *,
+					    enum journal_space_from);
 void bch2_journal_space_available(struct journal *);
 
 static inline bool journal_pin_active(struct journal_entry_pin *pin)
@@ -33,6 +40,8 @@ void bch2_journal_pin_add_if_older(struct journal *,
 				  journal_pin_flush_fn);
 void bch2_journal_pin_flush(struct journal *, struct journal_entry_pin *);
 
+void bch2_journal_do_discards(struct journal *);
+void bch2_journal_reclaim(struct journal *);
 void bch2_journal_reclaim_work(struct work_struct *);
 
 void bch2_journal_flush_pins(struct journal *, u64);

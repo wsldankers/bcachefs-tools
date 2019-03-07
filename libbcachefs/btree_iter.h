@@ -105,6 +105,7 @@ void bch2_btree_node_iter_fix(struct btree_iter *, struct btree *,
 			      unsigned, unsigned);
 
 int bch2_btree_iter_unlock(struct btree_iter *);
+bool bch2_btree_iter_relock(struct btree_iter *);
 
 bool __bch2_btree_iter_upgrade(struct btree_iter *, unsigned);
 bool __bch2_btree_iter_upgrade_nounlock(struct btree_iter *, unsigned);
@@ -164,8 +165,6 @@ static inline void bch2_btree_iter_init(struct btree_iter *iter,
 				?  BTREE_ITER_IS_EXTENTS : 0)|flags);
 }
 
-void bch2_btree_iter_link(struct btree_iter *, struct btree_iter *);
-void bch2_btree_iter_unlink(struct btree_iter *);
 void bch2_btree_iter_copy(struct btree_iter *, struct btree_iter *);
 
 static inline struct bpos btree_type_successor(enum btree_id id,

@@ -8,47 +8,72 @@
 
 /* Free space calculations: */
 
+static unsigned journal_space_from(struct journal_device *ja,
+				   enum journal_space_from from)
+{
+	switch (from) {
+	case journal_space_discarded:
+		return ja->discard_idx;
+	case journal_space_clean_ondisk:
+		return ja->dirty_idx_ondisk;
+	case journal_space_clean:
+		return ja->dirty_idx;
+	default:
+		BUG();
+	}
+}
+
 unsigned bch2_journal_dev_buckets_available(struct journal *j,
-					    struct journal_device *ja)
+					    struct journal_device *ja,
+					    enum journal_space_from from)
 {
 	struct bch_fs *c = container_of(j, struct bch_fs, journal);
-	unsigned next = (ja->cur_idx + 1) % ja->nr;
-	unsigned available = (ja->last_idx + ja->nr - next) % ja->nr;
+	unsigned available = (journal_space_from(ja, from) -
+			      ja->cur_idx - 1 + ja->nr) % ja->nr;
 
 	/*
 	 * Allocator startup needs some journal space before we can do journal
 	 * replay:
 	 */
-	if (available &&
-	    test_bit(BCH_FS_ALLOCATOR_STARTED, &c->flags))
-		available--;
+	if (available && test_bit(BCH_FS_ALLOCATOR_STARTED, &c->flags))
+		--available;
 
 	/*
 	 * Don't use the last bucket unless writing the new last_seq
 	 * will make another bucket available:
 	 */
-	if (available &&
-	    journal_last_seq(j) <= ja->bucket_seq[ja->last_idx])
+	if (available && ja->dirty_idx_ondisk == ja->dirty_idx)
 		--available;
 
 	return available;
 }
 
-void bch2_journal_space_available(struct journal *j)
+static void journal_set_remaining(struct journal *j, unsigned u64s_remaining)
+{
+	union journal_preres_state old, new;
+	u64 v = atomic64_read(&j->prereserved.counter);
+
+	do {
+		old.v = new.v = v;
+		new.remaining = u64s_remaining;
+	} while ((v = atomic64_cmpxchg(&j->prereserved.counter,
+				       old.v, new.v)) != old.v);
+}
+
+static struct journal_space {
+	unsigned	next_entry;
+	unsigned	remaining;
+} __journal_space_available(struct journal *j, unsigned nr_devs_want,
+			    enum journal_space_from from)
 {
 	struct bch_fs *c = container_of(j, struct bch_fs, journal);
 	struct bch_dev *ca;
 	unsigned sectors_next_entry	= UINT_MAX;
 	unsigned sectors_total		= UINT_MAX;
-	unsigned max_entry_size		= min(j->buf[0].buf_size >> 9,
-					      j->buf[1].buf_size >> 9);
-	unsigned i, nr_online = 0, nr_devs = 0;
+	unsigned i, nr_devs = 0;
 	unsigned unwritten_sectors = j->reservations.prev_buf_unwritten
 		? journal_prev_buf(j)->sectors
 		: 0;
-	int ret = 0;
-
-	lockdep_assert_held(&j->lock);
 
 	rcu_read_lock();
 	for_each_member_device_rcu(ca, c, i,
@@ -59,9 +84,7 @@ void bch2_journal_space_available(struct journal *j)
 		if (!ja->nr)
 			continue;
 
-		nr_online++;
-
-		buckets_this_device = bch2_journal_dev_buckets_available(j, ja);
+		buckets_this_device = bch2_journal_dev_buckets_available(j, ja, from);
 		sectors_this_device = ja->sectors_free;
 
 		/*
@@ -94,28 +117,88 @@ void bch2_journal_space_available(struct journal *j)
 			buckets_this_device * ca->mi.bucket_size +
 			sectors_this_device);
 
-		max_entry_size = min_t(unsigned, max_entry_size,
-				       ca->mi.bucket_size);
-
 		nr_devs++;
 	}
 	rcu_read_unlock();
 
+	if (nr_devs < nr_devs_want)
+		return (struct journal_space) { 0, 0 };
+
+	return (struct journal_space) {
+		.next_entry	= sectors_next_entry,
+		.remaining	= max_t(int, 0, sectors_total - sectors_next_entry),
+	};
+}
+
+void bch2_journal_space_available(struct journal *j)
+{
+	struct bch_fs *c = container_of(j, struct bch_fs, journal);
+	struct bch_dev *ca;
+	struct journal_space discarded, clean_ondisk, clean;
+	unsigned overhead, u64s_remaining = 0;
+	unsigned max_entry_size	 = min(j->buf[0].buf_size >> 9,
+				       j->buf[1].buf_size >> 9);
+	unsigned i, nr_online = 0, nr_devs_want;
+	bool can_discard = false;
+	int ret = 0;
+
+	lockdep_assert_held(&j->lock);
+
+	rcu_read_lock();
+	for_each_member_device_rcu(ca, c, i,
+				   &c->rw_devs[BCH_DATA_JOURNAL]) {
+		struct journal_device *ja = &ca->journal;
+
+		if (!ja->nr)
+			continue;
+
+		while (ja->dirty_idx != ja->cur_idx &&
+		       ja->bucket_seq[ja->dirty_idx] < journal_last_seq(j))
+			ja->dirty_idx = (ja->dirty_idx + 1) % ja->nr;
+
+		while (ja->dirty_idx_ondisk != ja->dirty_idx &&
+		       ja->bucket_seq[ja->dirty_idx_ondisk] < j->last_seq_ondisk)
+			ja->dirty_idx_ondisk = (ja->dirty_idx_ondisk + 1) % ja->nr;
+
+		if (ja->discard_idx != ja->dirty_idx_ondisk)
+			can_discard = true;
+
+		max_entry_size = min_t(unsigned, max_entry_size, ca->mi.bucket_size);
+		nr_online++;
+	}
+	rcu_read_unlock();
+
+	j->can_discard = can_discard;
+
 	if (nr_online < c->opts.metadata_replicas_required) {
 		ret = -EROFS;
-		sectors_next_entry = 0;
-	} else if (!sectors_next_entry ||
-		   nr_devs < min_t(unsigned, nr_online,
-				   c->opts.metadata_replicas)) {
-		ret = -ENOSPC;
-		sectors_next_entry = 0;
-	} else if (!fifo_free(&j->pin)) {
-		ret = -ENOSPC;
-		sectors_next_entry = 0;
+		goto out;
 	}
 
-	j->cur_entry_sectors	= sectors_next_entry;
+	if (!fifo_free(&j->pin)) {
+		ret = -ENOSPC;
+		goto out;
+	}
+
+	nr_devs_want = min_t(unsigned, nr_online, c->opts.metadata_replicas);
+
+	discarded	= __journal_space_available(j, nr_devs_want, journal_space_discarded);
+	clean_ondisk	= __journal_space_available(j, nr_devs_want, journal_space_clean_ondisk);
+	clean		= __journal_space_available(j, nr_devs_want, journal_space_clean);
+
+	if (!discarded.next_entry)
+		ret = -ENOSPC;
+
+	overhead = DIV_ROUND_UP(clean.remaining, max_entry_size) *
+		journal_entry_overhead(j);
+	u64s_remaining = clean.remaining << 6;
+	u64s_remaining = max_t(int, 0, u64s_remaining - overhead);
+	u64s_remaining /= 4;
+out:
+	j->cur_entry_sectors	= !ret ? discarded.next_entry : 0;
 	j->cur_entry_error	= ret;
+	journal_set_remaining(j, u64s_remaining);
+	journal_check_may_get_unreserved(j);
 
 	if (!ret)
 		journal_wake(j);
@@ -128,25 +211,23 @@ static bool should_discard_bucket(struct journal *j, struct journal_device *ja)
 	bool ret;
 
 	spin_lock(&j->lock);
-	ret = ja->nr &&
-		ja->last_idx != ja->cur_idx &&
-		ja->bucket_seq[ja->last_idx] < j->last_seq_ondisk;
+	ret = ja->discard_idx != ja->dirty_idx_ondisk;
 	spin_unlock(&j->lock);
 
 	return ret;
 }
 
 /*
- * Advance ja->last_idx as long as it points to buckets that are no longer
+ * Advance ja->discard_idx as long as it points to buckets that are no longer
  * dirty, issuing discards if necessary:
  */
-static void journal_do_discards(struct journal *j)
+void bch2_journal_do_discards(struct journal *j)
 {
 	struct bch_fs *c = container_of(j, struct bch_fs, journal);
 	struct bch_dev *ca;
 	unsigned iter;
 
-	mutex_lock(&j->reclaim_lock);
+	mutex_lock(&j->discard_lock);
 
 	for_each_rw_member(ca, c, iter) {
 		struct journal_device *ja = &ca->journal;
@@ -156,18 +237,18 @@ static void journal_do_discards(struct journal *j)
 			    blk_queue_discard(bdev_get_queue(ca->disk_sb.bdev)))
 				blkdev_issue_discard(ca->disk_sb.bdev,
 					bucket_to_sector(ca,
-						ja->buckets[ja->last_idx]),
+						ja->buckets[ja->discard_idx]),
 					ca->mi.bucket_size, GFP_NOIO, 0);
 
 			spin_lock(&j->lock);
-			ja->last_idx = (ja->last_idx + 1) % ja->nr;
+			ja->discard_idx = (ja->discard_idx + 1) % ja->nr;
 
 			bch2_journal_space_available(j);
 			spin_unlock(&j->lock);
 		}
 	}
 
-	mutex_unlock(&j->reclaim_lock);
+	mutex_unlock(&j->discard_lock);
 }
 
 /*
@@ -372,7 +453,7 @@ static void journal_flush_pins(struct journal *j, u64 seq_to_flush,
 }
 
 /**
- * bch2_journal_reclaim_work - free up journal buckets
+ * bch2_journal_reclaim - free up journal buckets
  *
  * Background journal reclaim writes out btree nodes. It should be run
  * early enough so that we never completely run out of journal buckets.
@@ -389,29 +470,37 @@ static void journal_flush_pins(struct journal *j, u64 seq_to_flush,
  * 512 journal entries or 25% of all journal buckets, then
  * journal_next_bucket() should not stall.
  */
-void bch2_journal_reclaim_work(struct work_struct *work)
+void bch2_journal_reclaim(struct journal *j)
 {
-	struct bch_fs *c = container_of(to_delayed_work(work),
-				struct bch_fs, journal.reclaim_work);
-	struct journal *j = &c->journal;
+	struct bch_fs *c = container_of(j, struct bch_fs, journal);
 	struct bch_dev *ca;
-	unsigned iter, bucket_to_flush, min_nr = 0;
+	unsigned iter, min_nr = 0;
 	u64 seq_to_flush = 0;
 
-	journal_do_discards(j);
+	lockdep_assert_held(&j->reclaim_lock);
 
-	mutex_lock(&j->reclaim_lock);
+	bch2_journal_do_discards(j);
+
 	spin_lock(&j->lock);
 
 	for_each_rw_member(ca, c, iter) {
 		struct journal_device *ja = &ca->journal;
+		unsigned nr_buckets, bucket_to_flush;
 
 		if (!ja->nr)
 			continue;
 
-
 		/* Try to keep the journal at most half full: */
-		bucket_to_flush = (ja->cur_idx + (ja->nr >> 1)) % ja->nr;
+		nr_buckets = ja->nr / 2;
+
+		/* And include pre-reservations: */
+		nr_buckets += DIV_ROUND_UP(j->prereserved.reserved,
+					   (ca->mi.bucket_size << 6) -
+					   journal_entry_overhead(j));
+
+		nr_buckets = min(nr_buckets, ja->nr);
+
+		bucket_to_flush = (ja->cur_idx + nr_buckets) % ja->nr;
 		seq_to_flush = max_t(u64, seq_to_flush,
 				     ja->bucket_seq[bucket_to_flush]);
 	}
@@ -430,13 +519,24 @@ void bch2_journal_reclaim_work(struct work_struct *work)
 		       msecs_to_jiffies(j->reclaim_delay_ms)))
 		min_nr = 1;
 
-	journal_flush_pins(j, seq_to_flush, min_nr);
+	if (j->prereserved.reserved * 2 > j->prereserved.remaining)
+		min_nr = 1;
 
-	mutex_unlock(&j->reclaim_lock);
+	journal_flush_pins(j, seq_to_flush, min_nr);
 
 	if (!test_bit(BCH_FS_RO, &c->flags))
 		queue_delayed_work(c->journal_reclaim_wq, &j->reclaim_work,
 				   msecs_to_jiffies(j->reclaim_delay_ms));
+}
+
+void bch2_journal_reclaim_work(struct work_struct *work)
+{
+	struct journal *j = container_of(to_delayed_work(work),
+				struct journal, reclaim_work);
+
+	mutex_lock(&j->reclaim_lock);
+	bch2_journal_reclaim(j);
+	mutex_unlock(&j->reclaim_lock);
 }
 
 static int journal_flush_done(struct journal *j, u64 seq_to_flush)
