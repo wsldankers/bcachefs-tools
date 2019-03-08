@@ -232,12 +232,14 @@ static void i_sectors_acct(struct bch_fs *c, struct bch_inode_info *inode,
 static int sum_sector_overwrites(struct btree_trans *trans,
 				 struct btree_iter *extent_iter,
 				 struct bkey_i *new, bool *allocating,
-				 s64 *i_sectors_delta)
+				 s64 *delta)
 {
-	struct btree_iter *iter = bch2_trans_copy_iter(trans, extent_iter);
+	struct btree_iter *iter;
 	struct bkey_s_c old;
-	s64 delta = 0;
 
+	*delta = 0;
+
+	iter = bch2_trans_copy_iter(trans, extent_iter);
 	if (IS_ERR(iter))
 		return PTR_ERR(iter);
 
@@ -257,7 +259,7 @@ static int sum_sector_overwrites(struct btree_trans *trans,
 		    bch2_bkey_nr_dirty_ptrs(bkey_i_to_s_c(new)))
 			*allocating = true;
 
-		delta += (min(new->k.p.offset,
+		*delta += (min(new->k.p.offset,
 			      old.k->p.offset) -
 			  max(bkey_start_offset(&new->k),
 			      bkey_start_offset(old.k))) *
@@ -271,8 +273,6 @@ static int sum_sector_overwrites(struct btree_trans *trans,
 	}
 
 	bch2_trans_iter_free(trans, iter);
-
-	*i_sectors_delta = delta;
 	return 0;
 }
 
