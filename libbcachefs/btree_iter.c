@@ -1758,7 +1758,7 @@ success:
 
 void bch2_trans_preload_iters(struct btree_trans *trans)
 {
-	btree_trans_realloc_iters(trans, 16);
+	btree_trans_realloc_iters(trans, BTREE_ITER_MAX);
 }
 
 static struct btree_iter *__btree_trans_get_iter(struct btree_trans *trans,
