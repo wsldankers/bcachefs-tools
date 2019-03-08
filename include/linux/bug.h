@@ -9,22 +9,46 @@
 #define BUILD_BUG_ON_ZERO(e)	(sizeof(struct { int:-!!(e); }))
 #define BUILD_BUG_ON_NULL(e)	((void *)sizeof(struct { int:-!!(e); }))
 
-#define BUILD_BUG_ON(condition) ((void)sizeof(char[1 - 2*!!(condition)]))
+#define BUILD_BUG_ON(cond)	((void)sizeof(char[1 - 2*!!(cond)]))
 
 #define BUG()			do { assert(0); unreachable(); } while (0)
 #define BUG_ON(cond)		assert(!(cond))
 
-#define WARN_ON_ONCE(cond)	({ bool _r = (cond); if (_r) assert(0); _r; })
-#define WARN_ONCE(cond, ...)	({ bool _r = (cond); if (_r) assert(0); _r; })
-
-#define __WARN()		assert(0)
-#define __WARN_printf(arg...)	assert(0)
-#define WARN(cond, ...)		assert(!(cond))
-
-#define WARN_ON(condition) ({						\
-	int __ret_warn_on = unlikely(!!(condition));			\
+#define WARN(cond, fmt, ...)						\
+({									\
+	int __ret_warn_on = unlikely(!!(cond));				\
 	if (__ret_warn_on)						\
-		__WARN();						\
+		fprintf(stderr, "WARNING at " __FILE__ ":%d: " fmt "\n",\
+			__LINE__, ##__VA_ARGS__);			\
+	__ret_warn_on;							\
+})
+
+#define WARN_ON(cond) ({						\
+	int __ret_warn_on = unlikely(!!(cond));				\
+	if (__ret_warn_on)						\
+		fprintf(stderr, "WARNING at " __FILE__ ":%d\n", __LINE__);\
+	__ret_warn_on;							\
+})
+
+#define WARN_ONCE(cond, fmt, ...)					\
+({									\
+	static bool __warned;						\
+	int __ret_warn_on = unlikely(!!(cond));				\
+	if (__ret_warn_on && !__warned) {				\
+		__warned = true;					\
+		fprintf(stderr, "WARNING at " __FILE__ ":%d: " fmt "\n",\
+			__LINE__, ##__VA_ARGS__);			\
+	}								\
+	__ret_warn_on;							\
+})
+
+#define WARN_ON_ONCE(cond) ({						\
+	static bool __warned;						\
+	int __ret_warn_on = unlikely(!!(cond));				\
+	if (__ret_warn_on && !__warned) {				\
+		__warned = true;					\
+		fprintf(stderr, "WARNING at " __FILE__ ":%d\n", __LINE__);\
+	}								\
 	__ret_warn_on;							\
 })
 
