@@ -23,6 +23,7 @@ static void usage(void)
 int cmd_fsck(int argc, char *argv[])
 {
 	struct bch_opts opts = bch2_opts_empty();
+	unsigned i;
 	int opt, ret = 0;
 
 	opt_set(opts, degraded, true);
@@ -55,6 +56,10 @@ int cmd_fsck(int argc, char *argv[])
 
 	if (!argc)
 		die("Please supply device(s) to check");
+
+	for (i = 0; i < argc; i++)
+		if (dev_mounted_rw(argv[i]))
+			die("%s is mounted read-write - aborting", argv[i]);
 
 	struct bch_fs *c = bch2_fs_open(argv, argc, opts);
 	if (IS_ERR(c))

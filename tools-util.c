@@ -610,26 +610,18 @@ char *dev_to_path(dev_t dev)
 	return path;
 }
 
-char *dev_to_mount(char *dev)
+struct mntent *dev_to_mount(char *dev)
 {
-	char *line = NULL, *ret = NULL;
-	size_t n = 0;
-
-	FILE *f = fopen("/proc/mounts", "r");
+	struct mntent *mnt, *ret = NULL;
+	FILE *f = setmntent("/proc/mounts", "r");
 	if (!f)
 		die("error opening /proc/mounts: %m");
 
 	struct stat d1 = xstat(dev);
 
-	while (getline(&line, &n, f) != -1) {
-		char *d, *p = line;
-		char *devs = strsep(&p, " ");
-		char *mount = strsep(&p, " ");
+	while ((mnt = getmntent(f))) {
+		char *d, *p = mnt->mnt_fsname;
 
-		if (!devs || !mount)
-			continue;
-
-		p = devs;
 		while ((d = strsep(&p, ":"))) {
 			struct stat d2;
 
@@ -648,12 +640,18 @@ char *dev_to_mount(char *dev)
 					continue;
 			}
 
-			ret = strdup(mount);
+			ret = mnt;
 			goto found;
 		}
 	}
 found:
 	fclose(f);
-	free(line);
 	return ret;
+}
+
+bool dev_mounted_rw(char *dev)
+{
+	struct mntent *mnt = dev_to_mount(dev);
+
+	return mnt && !hasmntopt(mnt, "ro");
 }

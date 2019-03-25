@@ -385,14 +385,14 @@ int cmd_device_resize(int argc, char *argv[])
 
 	struct stat dev_stat = xfstat(dev_fd);
 
-	char *mount = dev_to_mount(dev);
+	struct mntent *mount = dev_to_mount(dev);
 	if (mount) {
 		if (!S_ISBLK(dev_stat.st_mode))
 			die("%s is mounted but isn't a block device?!", dev);
 
 		printf("Doing online resize of %s\n", dev);
 
-		struct bchfs_handle fs = bcache_fs_open(mount);
+		struct bchfs_handle fs = bcache_fs_open(mount->mnt_dir);
 
 		unsigned idx = bchu_disk_get_idx(fs, dev_stat.st_rdev);
 
