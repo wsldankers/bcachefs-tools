@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include <linux/kernel.h>
+#include <linux/log2.h>
 #include <linux/page.h>
 #include <linux/shrinker.h>
 #include <linux/types.h>
@@ -19,7 +20,10 @@ static inline void *kmalloc(size_t size, gfp_t flags)
 
 	run_shrinkers();
 
-	p = malloc(size);
+	p = size
+	    ? aligned_alloc(min(rounddown_pow_of_two(size),
+				PAGE_SIZE), size)
+	    : malloc(0);
 	if (p && (flags & __GFP_ZERO))
 		memset(p, 0, size);
 
