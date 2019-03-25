@@ -275,7 +275,11 @@ do {									\
 		"cached data")						\
 	BCH_DEBUG_PARAM(force_reconstruct_read,				\
 		"Force reads to use the reconstruct path, when reading"	\
-		"from erasure coded extents")
+		"from erasure coded extents")				\
+	BCH_DEBUG_PARAM(test_restart_gc,				\
+		"Test restarting mark and sweep gc when bucket gens change")\
+	BCH_DEBUG_PARAM(test_reconstruct_alloc,				\
+		"Test reconstructing the alloc btree")
 
 #define BCH_DEBUG_PARAMS_ALL() BCH_DEBUG_PARAMS_ALWAYS() BCH_DEBUG_PARAMS_DEBUG()
 
@@ -287,10 +291,11 @@ do {									\
 
 #define BCH_TIME_STATS()			\
 	x(btree_node_mem_alloc)			\
+	x(btree_node_split)			\
+	x(btree_node_sort)			\
+	x(btree_node_read)			\
 	x(btree_gc)				\
-	x(btree_split)				\
-	x(btree_sort)				\
-	x(btree_read)				\
+	x(btree_update)				\
 	x(btree_lock_contended_read)		\
 	x(btree_lock_contended_intent)		\
 	x(btree_lock_contended_write)		\
@@ -299,8 +304,10 @@ do {									\
 	x(data_promote)				\
 	x(journal_write)			\
 	x(journal_delay)			\
-	x(journal_blocked)			\
-	x(journal_flush_seq)
+	x(journal_flush_seq)			\
+	x(blocked_journal)			\
+	x(blocked_allocate)			\
+	x(blocked_allocate_open_bucket)
 
 enum bch_time_stats {
 #define x(name) BCH_TIME_##name,
@@ -380,6 +387,7 @@ struct bch_dev {
 	char			name[BDEVNAME_SIZE];
 
 	struct bch_sb_handle	disk_sb;
+	struct bch_sb		*sb_read_scratch;
 	int			sb_write_error;
 
 	struct bch_devs_mask	self;
@@ -476,6 +484,7 @@ enum {
 	BCH_FS_INITIAL_GC_DONE,
 	BCH_FS_FSCK_DONE,
 	BCH_FS_STARTED,
+	BCH_FS_RW,
 
 	/* shutdown: */
 	BCH_FS_EMERGENCY_RO,
@@ -500,13 +509,6 @@ struct btree_debug {
 	struct dentry		*failed;
 };
 
-enum bch_fs_state {
-	BCH_FS_STARTING		= 0,
-	BCH_FS_STOPPING,
-	BCH_FS_RO,
-	BCH_FS_RW,
-};
-
 struct bch_fs_pcpu {
 	u64			sectors_available;
 };
@@ -528,7 +530,6 @@ struct bch_fs {
 
 	/* ro/rw, add/remove devices: */
 	struct mutex		state_lock;
-	enum bch_fs_state	state;
 
 	/* Counts outstanding writes, for clean transition to read-only */
 	struct percpu_ref	writes;
@@ -632,7 +633,10 @@ struct bch_fs {
 	struct percpu_rw_semaphore	mark_lock;
 
 	struct bch_fs_usage __percpu	*usage[2];
-	struct bch_fs_usage __percpu	*usage_scratch;
+
+	/* single element mempool: */
+	struct mutex		usage_scratch_lock;
+	struct bch_fs_usage	*usage_scratch;
 
 	/*
 	 * When we invalidate buckets, we use both the priority and the amount
@@ -647,6 +651,8 @@ struct bch_fs {
 	/* ALLOCATOR */
 	spinlock_t		freelist_lock;
 	struct closure_waitlist	freelist_wait;
+	u64			blocked_allocate;
+	u64			blocked_allocate_open_bucket;
 	u8			open_buckets_freelist;
 	u8			open_buckets_nr_free;
 	struct closure_waitlist	open_buckets_wait;
@@ -783,11 +789,6 @@ static inline void bch2_set_ra_pages(struct bch_fs *c, unsigned ra_pages)
 	if (c->vfs_sb)
 		c->vfs_sb->s_bdi->ra_pages = ra_pages;
 #endif
-}
-
-static inline bool bch2_fs_running(struct bch_fs *c)
-{
-	return c->state == BCH_FS_RO || c->state == BCH_FS_RW;
 }
 
 static inline unsigned bucket_bytes(const struct bch_dev *ca)

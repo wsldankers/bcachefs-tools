@@ -106,10 +106,11 @@ static int journal_replay_entry_early(struct bch_fs *c,
 }
 
 static int verify_superblock_clean(struct bch_fs *c,
-				   struct bch_sb_field_clean *clean,
+				   struct bch_sb_field_clean **cleanp,
 				   struct jset *j)
 {
 	unsigned i;
+	struct bch_sb_field_clean *clean = *cleanp;
 	int ret = 0;
 
 	if (!clean || !j)
@@ -118,8 +119,11 @@ static int verify_superblock_clean(struct bch_fs *c,
 	if (mustfix_fsck_err_on(j->seq != clean->journal_seq, c,
 			"superblock journal seq (%llu) doesn't match journal (%llu) after clean shutdown",
 			le64_to_cpu(clean->journal_seq),
-			le64_to_cpu(j->seq)))
-		bch2_fs_mark_clean(c, false);
+			le64_to_cpu(j->seq))) {
+		kfree(clean);
+		*cleanp = NULL;
+		return 0;
+	}
 
 	mustfix_fsck_err_on(j->read_clock != clean->read_clock, c,
 			"superblock read clock doesn't match journal after clean shutdown");
@@ -186,6 +190,8 @@ int bch2_fs_recovery(struct bch_fs *c)
 	LIST_HEAD(journal);
 	struct jset *j = NULL;
 	unsigned i;
+	bool run_gc = c->opts.fsck ||
+		!(c->sb.compat & (1ULL << BCH_COMPAT_FEAT_ALLOC_INFO));
 	int ret;
 
 	mutex_lock(&c->sb_lock);
@@ -228,7 +234,7 @@ int bch2_fs_recovery(struct bch_fs *c)
 		BUG_ON(ret);
 	}
 
-	ret = verify_superblock_clean(c, clean, j);
+	ret = verify_superblock_clean(c, &clean, j);
 	if (ret)
 		goto err;
 
@@ -270,15 +276,22 @@ int bch2_fs_recovery(struct bch_fs *c)
 			continue;
 
 		err = "invalid btree root pointer";
+		ret = -1;
 		if (r->error)
 			goto err;
 
+		if (i == BTREE_ID_ALLOC &&
+		    test_reconstruct_alloc(c))
+			continue;
+
 		err = "error reading btree root";
-		if (bch2_btree_root_read(c, i, &r->key, r->level)) {
+		ret = bch2_btree_root_read(c, i, &r->key, r->level);
+		if (ret) {
 			if (i != BTREE_ID_ALLOC)
 				goto err;
 
 			mustfix_fsck_err(c, "error reading btree root");
+			run_gc = true;
 		}
 	}
 
@@ -299,8 +312,7 @@ int bch2_fs_recovery(struct bch_fs *c)
 
 	set_bit(BCH_FS_ALLOC_READ_DONE, &c->flags);
 
-	if (!(c->sb.compat & (1ULL << BCH_COMPAT_FEAT_ALLOC_INFO)) ||
-	    c->opts.fsck) {
+	if (run_gc) {
 		bch_verbose(c, "starting mark and sweep:");
 		err = "error in recovery";
 		ret = bch2_gc(c, &journal, true);
@@ -323,23 +335,11 @@ int bch2_fs_recovery(struct bch_fs *c)
 		goto out;
 
 	/*
-	 * Mark dirty before journal replay, fsck:
-	 * XXX: after a clean shutdown, this could be done lazily only when fsck
-	 * finds an error
-	 */
-	bch2_fs_mark_clean(c, false);
-
-	/*
 	 * bch2_fs_journal_start() can't happen sooner, or btree_gc_finish()
 	 * will give spurious errors about oldest_gen > bucket_gen -
 	 * this is a hack but oh well.
 	 */
 	bch2_fs_journal_start(&c->journal);
-
-	err = "error starting allocator";
-	ret = bch2_fs_allocator_start(c);
-	if (ret)
-		goto err;
 
 	bch_verbose(c, "starting journal replay:");
 	err = "journal replay failed";
@@ -427,8 +427,8 @@ int bch2_fs_initialize(struct bch_fs *c)
 	bch2_fs_journal_start(&c->journal);
 	bch2_journal_set_replay_done(&c->journal);
 
-	err = "error starting allocator";
-	ret = bch2_fs_allocator_start(c);
+	err = "error going read write";
+	ret = __bch2_fs_read_write(c, true);
 	if (ret)
 		goto err;
 

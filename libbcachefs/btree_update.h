@@ -6,36 +6,18 @@
 
 struct bch_fs;
 struct btree;
-struct btree_insert;
 
 void bch2_btree_node_lock_for_insert(struct bch_fs *, struct btree *,
 				     struct btree_iter *);
 bool bch2_btree_bset_insert_key(struct btree_iter *, struct btree *,
 				struct btree_node_iter *, struct bkey_i *);
-void bch2_btree_journal_key(struct btree_insert *trans, struct btree_iter *,
+void bch2_btree_journal_key(struct btree_trans *, struct btree_iter *,
 			    struct bkey_i *);
 
 void bch2_deferred_update_free(struct bch_fs *,
 			       struct deferred_update *);
 struct deferred_update *
 bch2_deferred_update_alloc(struct bch_fs *, enum btree_id, unsigned);
-
-/* Normal update interface: */
-
-struct btree_insert {
-	struct bch_fs		*c;
-	struct disk_reservation *disk_res;
-	struct journal_res	journal_res;
-	struct journal_preres	journal_preres;
-	u64			*journal_seq;
-	unsigned		flags;
-	bool			did_work;
-
-	unsigned short		nr;
-	struct btree_insert_entry  *entries;
-};
-
-int __bch2_btree_insert_at(struct btree_insert *);
 
 #define BTREE_INSERT_ENTRY(_iter, _k)					\
 	((struct btree_insert_entry) {					\
@@ -50,35 +32,12 @@ int __bch2_btree_insert_at(struct btree_insert *);
 		.deferred	= true,					\
 	})
 
-/**
- * bch_btree_insert_at - insert one or more keys at iterator positions
- * @iter:		btree iterator
- * @insert_key:		key to insert
- * @disk_res:		disk reservation
- * @hook:		extent insert callback
- *
- * Return values:
- * -EINTR: locking changed, this function should be called again. Only returned
- *  if passed BTREE_INSERT_ATOMIC.
- * -EROFS: filesystem read only
- * -EIO: journal or btree node IO error
- */
-#define bch2_btree_insert_at(_c, _disk_res, _journal_seq, _flags, ...)	\
-	__bch2_btree_insert_at(&(struct btree_insert) {			\
-		.c		= (_c),					\
-		.disk_res	= (_disk_res),				\
-		.journal_seq	= (_journal_seq),			\
-		.flags		= (_flags),				\
-		.nr		= COUNT_ARGS(__VA_ARGS__),		\
-		.entries	= (struct btree_insert_entry[]) {	\
-			__VA_ARGS__					\
-		}})
-
 enum {
 	__BTREE_INSERT_ATOMIC,
 	__BTREE_INSERT_NOUNLOCK,
 	__BTREE_INSERT_NOFAIL,
 	__BTREE_INSERT_NOCHECK_RW,
+	__BTREE_INSERT_LAZY_RW,
 	__BTREE_INSERT_USE_RESERVE,
 	__BTREE_INSERT_USE_ALLOC_RESERVE,
 	__BTREE_INSERT_JOURNAL_REPLAY,
@@ -105,6 +64,7 @@ enum {
 #define BTREE_INSERT_NOFAIL		(1 << __BTREE_INSERT_NOFAIL)
 
 #define BTREE_INSERT_NOCHECK_RW		(1 << __BTREE_INSERT_NOCHECK_RW)
+#define BTREE_INSERT_LAZY_RW		(1 << __BTREE_INSERT_LAZY_RW)
 
 /* for copygc, or when merging btree nodes */
 #define BTREE_INSERT_USE_RESERVE	(1 << __BTREE_INSERT_USE_RESERVE)
@@ -125,10 +85,7 @@ enum {
 #define BCH_HASH_SET_MUST_CREATE	(1 << __BCH_HASH_SET_MUST_CREATE)
 #define BCH_HASH_SET_MUST_REPLACE	(1 << __BCH_HASH_SET_MUST_REPLACE)
 
-int bch2_btree_delete_at(struct btree_iter *, unsigned);
-
-int bch2_btree_insert_list_at(struct btree_iter *, struct keylist *,
-			     struct disk_reservation *, u64 *, unsigned);
+int bch2_btree_delete_at(struct btree_trans *, struct btree_iter *, unsigned);
 
 int bch2_btree_insert(struct bch_fs *, enum btree_id, struct bkey_i *,
 		     struct disk_reservation *, u64 *, int flags);
@@ -140,8 +97,6 @@ int bch2_btree_node_rewrite(struct bch_fs *c, struct btree_iter *,
 			    __le64, unsigned);
 int bch2_btree_node_update_key(struct bch_fs *, struct btree_iter *,
 			       struct btree *, struct bkey_i_btree_ptr *);
-
-/* new transactional interface: */
 
 static inline void
 bch2_trans_update(struct btree_trans *trans,
@@ -173,5 +128,40 @@ int bch2_trans_commit(struct btree_trans *,
 	bch2_trans_exit(&trans);					\
 	_ret;								\
 })
+
+/*
+ * We sort transaction entries so that if multiple iterators point to the same
+ * leaf node they'll be adjacent:
+ */
+static inline bool same_leaf_as_prev(struct btree_trans *trans,
+				     struct btree_insert_entry *i)
+{
+	return i != trans->updates &&
+		!i->deferred &&
+		i[0].iter->l[0].b == i[-1].iter->l[0].b;
+}
+
+#define __trans_next_update(_trans, _i, _filter)			\
+({									\
+	while ((_i) < (_trans)->updates + (_trans->nr_updates) && !(_filter))\
+		(_i)++;							\
+									\
+	(_i) < (_trans)->updates + (_trans->nr_updates);		\
+})
+
+#define __trans_for_each_update(_trans, _i, _filter)			\
+	for ((_i) = (_trans)->updates;					\
+	     __trans_next_update(_trans, _i, _filter);			\
+	     (_i)++)
+
+#define trans_for_each_update(trans, i)					\
+	__trans_for_each_update(trans, i, true)
+
+#define trans_for_each_update_iter(trans, i)				\
+	__trans_for_each_update(trans, i, !(i)->deferred)
+
+#define trans_for_each_update_leaf(trans, i)				\
+	__trans_for_each_update(trans, i, !(i)->deferred &&		\
+			       !same_leaf_as_prev(trans, i))
 
 #endif /* _BCACHEFS_BTREE_UPDATE_H */

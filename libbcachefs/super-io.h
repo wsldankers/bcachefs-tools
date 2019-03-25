@@ -88,7 +88,7 @@ int bch2_sb_realloc(struct bch_sb_handle *, unsigned);
 const char *bch2_sb_validate(struct bch_sb_handle *);
 
 int bch2_read_super(const char *, struct bch_opts *, struct bch_sb_handle *);
-void bch2_write_super(struct bch_fs *);
+int bch2_write_super(struct bch_fs *);
 
 /* BCH_SB_FIELD_journal: */
 
@@ -140,7 +140,8 @@ bch2_journal_super_entries_add_common(struct bch_fs *,
 
 void bch2_sb_clean_renumber(struct bch_sb_field_clean *, int);
 
-void bch2_fs_mark_clean(struct bch_fs *, bool);
+int bch2_fs_mark_dirty(struct bch_fs *);
+void bch2_fs_mark_clean(struct bch_fs *);
 
 void bch2_sb_field_to_text(struct printbuf *, struct bch_sb *,
 			   struct bch_sb_field *);

@@ -273,6 +273,7 @@ struct btree_insert_entry {
 struct btree_trans {
 	struct bch_fs		*c;
 	size_t			nr_restarts;
+	u64			commit_start;
 
 	u64			iters_live;
 	u64			iters_linked;
@@ -288,6 +289,13 @@ struct btree_trans {
 
 	struct btree_iter	*iters;
 	struct btree_insert_entry *updates;
+
+	/* update path: */
+	struct journal_res	journal_res;
+	struct journal_preres	journal_preres;
+	u64			*journal_seq;
+	struct disk_reservation *disk_res;
+	unsigned		flags;
 
 	struct btree_iter	iters_onstack[2];
 	struct btree_insert_entry updates_onstack[6];
@@ -489,12 +497,11 @@ struct btree_root {
 
 enum btree_insert_ret {
 	BTREE_INSERT_OK,
-	/* extent spanned multiple leaf nodes: have to traverse to next node: */
-	BTREE_INSERT_NEED_TRAVERSE,
 	/* leaf node needs to be split */
 	BTREE_INSERT_BTREE_NODE_FULL,
 	BTREE_INSERT_ENOSPC,
 	BTREE_INSERT_NEED_MARK_REPLICAS,
+	BTREE_INSERT_NEED_JOURNAL_RES,
 };
 
 enum btree_gc_coalesce_fail_reason {
