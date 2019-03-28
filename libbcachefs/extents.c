@@ -788,7 +788,8 @@ static bool bch2_extent_merge_inline(struct bch_fs *,
 				     struct bkey_packed *,
 				     bool);
 
-static void verify_extent_nonoverlapping(struct btree *b,
+static void verify_extent_nonoverlapping(struct bch_fs *c,
+					 struct btree *b,
 					 struct btree_node_iter *_iter,
 					 struct bkey_i *insert)
 {
@@ -796,6 +797,9 @@ static void verify_extent_nonoverlapping(struct btree *b,
 	struct btree_node_iter iter;
 	struct bkey_packed *k;
 	struct bkey uk;
+
+	if (!expensive_debug_checks(c))
+		return;
 
 	iter = *_iter;
 	k = bch2_btree_node_iter_prev_filter(&iter, b, KEY_TYPE_discard);
@@ -847,7 +851,7 @@ static void extent_bset_insert(struct bch_fs *c, struct btree_iter *iter,
 	BUG_ON(insert->k.u64s > bch_btree_keys_u64s_remaining(c, l->b));
 
 	EBUG_ON(bkey_deleted(&insert->k) || !insert->k.size);
-	verify_extent_nonoverlapping(l->b, &l->iter, insert);
+	verify_extent_nonoverlapping(c, l->b, &l->iter, insert);
 
 	node_iter = l->iter;
 	k = bch2_btree_node_iter_prev_filter(&node_iter, l->b, KEY_TYPE_discard);
@@ -1618,15 +1622,18 @@ static bool bch2_extent_merge_inline(struct bch_fs *c,
 bool bch2_check_range_allocated(struct bch_fs *c, struct bpos pos, u64 size,
 			       unsigned nr_replicas)
 {
-	struct btree_iter iter;
+	struct btree_trans trans;
+	struct btree_iter *iter;
 	struct bpos end = pos;
 	struct bkey_s_c k;
 	bool ret = true;
 
 	end.offset += size;
 
-	for_each_btree_key(&iter, c, BTREE_ID_EXTENTS, pos,
-			     BTREE_ITER_SLOTS, k) {
+	bch2_trans_init(&trans, c);
+
+	for_each_btree_key(&trans, iter, BTREE_ID_EXTENTS, pos,
+			   BTREE_ITER_SLOTS, k) {
 		if (bkey_cmp(bkey_start_pos(k.k), end) >= 0)
 			break;
 
@@ -1635,7 +1642,7 @@ bool bch2_check_range_allocated(struct bch_fs *c, struct bpos pos, u64 size,
 			break;
 		}
 	}
-	bch2_btree_iter_unlock(&iter);
+	bch2_trans_exit(&trans);
 
 	return ret;
 }

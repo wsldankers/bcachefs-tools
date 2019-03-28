@@ -10,6 +10,7 @@
 
 struct open_bucket;
 struct btree_update;
+struct btree_trans;
 
 #define MAX_BSETS		3U
 
@@ -208,7 +209,9 @@ enum btree_iter_uptodate {
  * @nodes_intent_locked	- bitmask indicating which locks are intent locks
  */
 struct btree_iter {
-	struct bch_fs		*c;
+	u8			idx;
+
+	struct btree_trans	*trans;
 	struct bpos		pos;
 
 	u8			flags;
@@ -232,15 +235,6 @@ struct btree_iter {
 	struct bkey		k;
 
 	u64			id;
-
-	/*
-	 * Circular linked list of linked iterators: linked iterators share
-	 * locks (e.g. two linked iterators may have the same node intent
-	 * locked, or read and write locked, at the same time), and insertions
-	 * through one iterator won't invalidate the other linked iterators.
-	 */
-	/* Must come last: */
-	struct btree_iter	*next;
 };
 
 struct deferred_update {
@@ -275,8 +269,11 @@ struct btree_trans {
 	size_t			nr_restarts;
 	u64			commit_start;
 
-	u64			iters_live;
 	u64			iters_linked;
+	u64			iters_live;
+	u64			iters_touched;
+	u64			iters_unlink_on_restart;
+	u64			iters_unlink_on_commit;
 
 	u8			nr_iters;
 	u8			nr_updates;

@@ -217,4 +217,6 @@ struct qstr {
 
 #define QSTR_INIT(n,l) { { { .len = l } }, .name = n }
 
+#define POISON_FREE 0x6b
+
 #endif

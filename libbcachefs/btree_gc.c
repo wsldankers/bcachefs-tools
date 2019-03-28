@@ -204,12 +204,15 @@ static int btree_gc_mark_node(struct bch_fs *c, struct btree *b,
 static int bch2_gc_btree(struct bch_fs *c, enum btree_id btree_id,
 			 bool initial)
 {
-	struct btree_iter iter;
+	struct btree_trans trans;
+	struct btree_iter *iter;
 	struct btree *b;
 	struct range_checks r;
 	unsigned depth = btree_node_type_needs_gc(btree_id) ? 0 : 1;
 	u8 max_stale;
 	int ret = 0;
+
+	bch2_trans_init(&trans, c);
 
 	gc_pos_set(c, gc_pos_btree(btree_id, POS_MIN, 0));
 
@@ -224,7 +227,7 @@ static int bch2_gc_btree(struct bch_fs *c, enum btree_id btree_id,
 
 	btree_node_range_checks_init(&r, depth);
 
-	__for_each_btree_node(&iter, c, btree_id, POS_MIN,
+	__for_each_btree_node(&trans, iter, btree_id, POS_MIN,
 			      0, depth, BTREE_ITER_PREFETCH, b) {
 		btree_node_range_checks(c, b, &r);
 
@@ -238,22 +241,22 @@ static int bch2_gc_btree(struct bch_fs *c, enum btree_id btree_id,
 
 		if (!initial) {
 			if (max_stale > 64)
-				bch2_btree_node_rewrite(c, &iter,
+				bch2_btree_node_rewrite(c, iter,
 						b->data->keys.seq,
 						BTREE_INSERT_USE_RESERVE|
 						BTREE_INSERT_NOWAIT|
 						BTREE_INSERT_GC_LOCK_HELD);
 			else if (!btree_gc_rewrite_disabled(c) &&
 				 (btree_gc_always_rewrite(c) || max_stale > 16))
-				bch2_btree_node_rewrite(c, &iter,
+				bch2_btree_node_rewrite(c, iter,
 						b->data->keys.seq,
 						BTREE_INSERT_NOWAIT|
 						BTREE_INSERT_GC_LOCK_HELD);
 		}
 
-		bch2_btree_iter_cond_resched(&iter);
+		bch2_trans_cond_resched(&trans);
 	}
-	ret = bch2_btree_iter_unlock(&iter) ?: ret;
+	ret = bch2_trans_exit(&trans) ?: ret;
 	if (ret)
 		return ret;
 
@@ -474,12 +477,8 @@ static void bch2_gc_free(struct bch_fs *c)
 		ca->usage[1] = NULL;
 	}
 
-	percpu_down_write(&c->mark_lock);
-
 	free_percpu(c->usage[1]);
 	c->usage[1] = NULL;
-
-	percpu_up_write(&c->mark_lock);
 }
 
 static void bch2_gc_done(struct bch_fs *c, bool initial)
@@ -520,8 +519,6 @@ static void bch2_gc_done(struct bch_fs *c, bool initial)
 #define copy_fs_field(_f, _msg, ...)					\
 	copy_field(_f, "fs has wrong " _msg, ##__VA_ARGS__)
 
-	percpu_down_write(&c->mark_lock);
-
 	{
 		struct genradix_iter dst_iter = genradix_iter_init(&c->stripes[0], 0);
 		struct genradix_iter src_iter = genradix_iter_init(&c->stripes[1], 0);
@@ -558,12 +555,6 @@ static void bch2_gc_done(struct bch_fs *c, bool initial)
 		struct bucket_array *dst = __bucket_array(ca, 0);
 		struct bucket_array *src = __bucket_array(ca, 1);
 		size_t b;
-
-		if (initial) {
-			memcpy(dst, src,
-			       sizeof(struct bucket_array) +
-			       sizeof(struct bucket) * dst->nbuckets);
-		}
 
 		for (b = 0; b < src->nbuckets; b++) {
 			copy_bucket_field(gen);
@@ -629,8 +620,6 @@ static void bch2_gc_done(struct bch_fs *c, bool initial)
 		}
 	}
 
-	percpu_up_write(&c->mark_lock);
-
 #undef copy_fs_field
 #undef copy_dev_field
 #undef copy_bucket_field
@@ -643,8 +632,6 @@ static int bch2_gc_start(struct bch_fs *c)
 	struct bch_dev *ca;
 	unsigned i;
 
-	percpu_down_write(&c->mark_lock);
-
 	/*
 	 * indicate to stripe code that we need to allocate for the gc stripes
 	 * radix tree, too
@@ -655,8 +642,6 @@ static int bch2_gc_start(struct bch_fs *c)
 
 	c->usage[1] = __alloc_percpu_gfp(fs_usage_u64s(c) * sizeof(u64),
 					 sizeof(u64), GFP_KERNEL);
-	percpu_up_write(&c->mark_lock);
-
 	if (!c->usage[1])
 		return -ENOMEM;
 
@@ -679,8 +664,6 @@ static int bch2_gc_start(struct bch_fs *c)
 		}
 	}
 
-	percpu_down_write(&c->mark_lock);
-
 	for_each_member_device(ca, c, i) {
 		struct bucket_array *dst = __bucket_array(ca, 1);
 		struct bucket_array *src = __bucket_array(ca, 0);
@@ -696,8 +679,6 @@ static int bch2_gc_start(struct bch_fs *c)
 			dst->b[b].gen_valid = src->b[b].gen_valid;
 		}
 	};
-
-	percpu_up_write(&c->mark_lock);
 
 	return bch2_ec_mem_alloc(c, true);
 }
@@ -731,7 +712,10 @@ int bch2_gc(struct bch_fs *c, struct list_head *journal, bool initial)
 
 	down_write(&c->gc_lock);
 again:
+	percpu_down_write(&c->mark_lock);
 	ret = bch2_gc_start(c);
+	percpu_up_write(&c->mark_lock);
+
 	if (ret)
 		goto out;
 
@@ -756,13 +740,19 @@ out:
 			bch_info(c, "Fixed gens, restarting mark and sweep:");
 			clear_bit(BCH_FS_FIXED_GENS, &c->flags);
 			__gc_pos_set(c, gc_phase(GC_PHASE_NOT_RUNNING));
+
+			percpu_down_write(&c->mark_lock);
 			bch2_gc_free(c);
+			percpu_up_write(&c->mark_lock);
+
 			goto again;
 		}
 
 		bch_info(c, "Unable to fix bucket gens, looping");
 		ret = -EINVAL;
 	}
+
+	percpu_down_write(&c->mark_lock);
 
 	if (!ret)
 		bch2_gc_done(c, initial);
@@ -771,6 +761,8 @@ out:
 	__gc_pos_set(c, gc_phase(GC_PHASE_NOT_RUNNING));
 
 	bch2_gc_free(c);
+	percpu_up_write(&c->mark_lock);
+
 	up_write(&c->gc_lock);
 
 	trace_gc_end(c);
@@ -1027,7 +1019,8 @@ next:
 
 static int bch2_coalesce_btree(struct bch_fs *c, enum btree_id btree_id)
 {
-	struct btree_iter iter;
+	struct btree_trans trans;
+	struct btree_iter *iter;
 	struct btree *b;
 	bool kthread = (current->flags & PF_KTHREAD) != 0;
 	unsigned i;
@@ -1035,6 +1028,8 @@ static int bch2_coalesce_btree(struct bch_fs *c, enum btree_id btree_id)
 	/* Sliding window of adjacent btree nodes */
 	struct btree *merge[GC_MERGE_NODES];
 	u32 lock_seq[GC_MERGE_NODES];
+
+	bch2_trans_init(&trans, c);
 
 	/*
 	 * XXX: We don't have a good way of positively matching on sibling nodes
@@ -1045,7 +1040,7 @@ static int bch2_coalesce_btree(struct bch_fs *c, enum btree_id btree_id)
 	 */
 	memset(merge, 0, sizeof(merge));
 
-	__for_each_btree_node(&iter, c, btree_id, POS_MIN,
+	__for_each_btree_node(&trans, iter, btree_id, POS_MIN,
 			      BTREE_MAX_DEPTH, 0,
 			      BTREE_ITER_PREFETCH, b) {
 		memmove(merge + 1, merge,
@@ -1067,7 +1062,7 @@ static int bch2_coalesce_btree(struct bch_fs *c, enum btree_id btree_id)
 		}
 		memset(merge + i, 0, (GC_MERGE_NODES - i) * sizeof(merge[0]));
 
-		bch2_coalesce_nodes(c, &iter, merge);
+		bch2_coalesce_nodes(c, iter, merge);
 
 		for (i = 1; i < GC_MERGE_NODES && merge[i]; i++) {
 			lock_seq[i] = merge[i]->lock.state.seq;
@@ -1077,23 +1072,23 @@ static int bch2_coalesce_btree(struct bch_fs *c, enum btree_id btree_id)
 		lock_seq[0] = merge[0]->lock.state.seq;
 
 		if (kthread && kthread_should_stop()) {
-			bch2_btree_iter_unlock(&iter);
+			bch2_trans_exit(&trans);
 			return -ESHUTDOWN;
 		}
 
-		bch2_btree_iter_cond_resched(&iter);
+		bch2_trans_cond_resched(&trans);
 
 		/*
 		 * If the parent node wasn't relocked, it might have been split
 		 * and the nodes in our sliding window might not have the same
 		 * parent anymore - blow away the sliding window:
 		 */
-		if (btree_iter_node(&iter, iter.level + 1) &&
-		    !btree_node_intent_locked(&iter, iter.level + 1))
+		if (btree_iter_node(iter, iter->level + 1) &&
+		    !btree_node_intent_locked(iter, iter->level + 1))
 			memset(merge + 1, 0,
 			       (GC_MERGE_NODES - 1) * sizeof(merge[0]));
 	}
-	return bch2_btree_iter_unlock(&iter);
+	return bch2_trans_exit(&trans);
 }
 
 /**

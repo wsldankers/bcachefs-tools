@@ -45,6 +45,7 @@ static inline int scnprintf(char * buf, size_t size, const char * fmt, ...)
 }
 
 #define printk(...)	printf(__VA_ARGS__)
+#define vprintk(...)	vprintf(__VA_ARGS__)
 
 #define no_printk(fmt, ...)				\
 ({							\

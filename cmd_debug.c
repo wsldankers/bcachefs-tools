@@ -59,10 +59,13 @@ static void dump_one_device(struct bch_fs *c, struct bch_dev *ca, int fd)
 	/* Btree: */
 	for (i = 0; i < BTREE_ID_NR; i++) {
 		const struct bch_extent_ptr *ptr;
-		struct btree_iter iter;
+		struct btree_trans trans;
+		struct btree_iter *iter;
 		struct btree *b;
 
-		for_each_btree_node(&iter, c, i, POS_MIN, 0, b) {
+		bch2_trans_init(&trans, c);
+
+		for_each_btree_node(&trans, iter, i, POS_MIN, 0, b) {
 			struct bkey_s_c_extent e = bkey_i_to_s_c_extent(&b->key);
 
 			extent_for_each_ptr(e, ptr)
@@ -71,7 +74,7 @@ static void dump_one_device(struct bch_fs *c, struct bch_dev *ca, int fd)
 						  ptr->offset << 9,
 						  b->written << 9);
 		}
-		bch2_btree_iter_unlock(&iter);
+		bch2_trans_exit(&trans);
 	}
 
 	qcow2_write_image(ca->disk_sb.bdev->bd_fd, fd, &data,
@@ -151,11 +154,14 @@ int cmd_dump(int argc, char *argv[])
 static void list_keys(struct bch_fs *c, enum btree_id btree_id,
 		      struct bpos start, struct bpos end)
 {
-	struct btree_iter iter;
+	struct btree_trans trans;
+	struct btree_iter *iter;
 	struct bkey_s_c k;
 	char buf[512];
 
-	for_each_btree_key(&iter, c, btree_id, start,
+	bch2_trans_init(&trans, c);
+
+	for_each_btree_key(&trans, iter, btree_id, start,
 			   BTREE_ITER_PREFETCH, k) {
 		if (bkey_cmp(k.k->p, end) > 0)
 			break;
@@ -163,37 +169,43 @@ static void list_keys(struct bch_fs *c, enum btree_id btree_id,
 		bch2_bkey_val_to_text(&PBUF(buf), c, k);
 		puts(buf);
 	}
-	bch2_btree_iter_unlock(&iter);
+	bch2_trans_exit(&trans);
 }
 
 static void list_btree_formats(struct bch_fs *c, enum btree_id btree_id,
 			       struct bpos start, struct bpos end)
 {
-	struct btree_iter iter;
+	struct btree_trans trans;
+	struct btree_iter *iter;
 	struct btree *b;
 	char buf[4096];
 
-	for_each_btree_node(&iter, c, btree_id, start, 0, b) {
+	bch2_trans_init(&trans, c);
+
+	for_each_btree_node(&trans, iter, btree_id, start, 0, b) {
 		if (bkey_cmp(b->key.k.p, end) > 0)
 			break;
 
 		bch2_btree_node_to_text(&PBUF(buf), c, b);
 		puts(buf);
 	}
-	bch2_btree_iter_unlock(&iter);
+	bch2_trans_exit(&trans);
 }
 
 static void list_nodes_keys(struct bch_fs *c, enum btree_id btree_id,
 			    struct bpos start, struct bpos end)
 {
-	struct btree_iter iter;
+	struct btree_trans trans;
+	struct btree_iter *iter;
 	struct btree_node_iter node_iter;
 	struct bkey unpacked;
 	struct bkey_s_c k;
 	struct btree *b;
 	char buf[4096];
 
-	for_each_btree_node(&iter, c, btree_id, start, 0, b) {
+	bch2_trans_init(&trans, c);
+
+	for_each_btree_node(&trans, iter, btree_id, start, 0, b) {
 		if (bkey_cmp(b->key.k.p, end) > 0)
 			break;
 
@@ -206,7 +218,7 @@ static void list_nodes_keys(struct bch_fs *c, enum btree_id btree_id,
 			puts(buf);
 		}
 	}
-	bch2_btree_iter_unlock(&iter);
+	bch2_trans_exit(&trans);
 }
 
 static struct bpos parse_pos(char *buf)
