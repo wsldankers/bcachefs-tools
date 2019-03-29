@@ -65,9 +65,9 @@ int cmd_fsck(int argc, char *argv[])
 	if (IS_ERR(c))
 		die("error opening %s: %s", argv[0], strerror(-PTR_ERR(c)));
 
-	if (test_bit(BCH_FS_FSCK_FIXED_ERRORS, &c->flags))
+	if (test_bit(BCH_FS_ERRORS_FIXED, &c->flags))
 		ret = 2;
-	if (test_bit(BCH_FS_FSCK_UNFIXED_ERRORS, &c->flags))
+	if (test_bit(BCH_FS_ERROR, &c->flags))
 		ret = 4;
 
 	bch2_fs_stop(c);
