@@ -183,6 +183,7 @@
 #include <linux/closure.h>
 #include <linux/kobject.h>
 #include <linux/list.h>
+#include <linux/math64.h>
 #include <linux/mutex.h>
 #include <linux/percpu-refcount.h>
 #include <linux/percpu-rwsem.h>
@@ -220,6 +221,8 @@
 	printk(KERN_NOTICE bch2_fmt(c, fmt), ##__VA_ARGS__)
 #define bch_warn(c, fmt, ...) \
 	printk(KERN_WARNING bch2_fmt(c, fmt), ##__VA_ARGS__)
+#define bch_warn_ratelimited(c, fmt, ...) \
+	printk_ratelimited(KERN_WARNING bch2_fmt(c, fmt), ##__VA_ARGS__)
 #define bch_err(c, fmt, ...) \
 	printk(KERN_ERR bch2_fmt(c, fmt), ##__VA_ARGS__)
 #define bch_err_ratelimited(c, fmt, ...) \
@@ -481,6 +484,7 @@ enum {
 	BCH_FS_RW,
 
 	/* shutdown: */
+	BCH_FS_STOPPING,
 	BCH_FS_EMERGENCY_RO,
 	BCH_FS_WRITE_DISABLE_COMPLETE,
 
@@ -504,6 +508,15 @@ struct btree_debug {
 
 struct bch_fs_pcpu {
 	u64			sectors_available;
+};
+
+struct journal_seq_blacklist_table {
+	size_t			nr;
+	struct journal_seq_blacklist_table_entry {
+		u64		start;
+		u64		end;
+		bool		dirty;
+	}			entries[0];
 };
 
 struct bch_fs {
@@ -640,6 +653,11 @@ struct bch_fs {
 	struct bucket_clock	bucket_clock[2];
 
 	struct io_clock		io_clock[2];
+
+	/* JOURNAL SEQ BLACKLIST */
+	struct journal_seq_blacklist_table *
+				journal_seq_blacklist_table;
+	struct work_struct	journal_seq_blacklist_gc_work;
 
 	/* ALLOCATOR */
 	spinlock_t		freelist_lock;
@@ -792,6 +810,29 @@ static inline unsigned bucket_bytes(const struct bch_dev *ca)
 static inline unsigned block_bytes(const struct bch_fs *c)
 {
 	return c->opts.block_size << 9;
+}
+
+static inline struct timespec64 bch2_time_to_timespec(struct bch_fs *c, u64 time)
+{
+	return ns_to_timespec64(time * c->sb.time_precision + c->sb.time_base_lo);
+}
+
+static inline s64 timespec_to_bch2_time(struct bch_fs *c, struct timespec64 ts)
+{
+	s64 ns = timespec64_to_ns(&ts) - c->sb.time_base_lo;
+
+	if (c->sb.time_precision == 1)
+		return ns;
+
+	return div_s64(ns, c->sb.time_precision);
+}
+
+static inline s64 bch2_current_time(struct bch_fs *c)
+{
+	struct timespec64 now;
+
+	ktime_get_real_ts64(&now);
+	return timespec_to_bch2_time(c, now);
 }
 
 #endif /* _BCACHEFS_H */

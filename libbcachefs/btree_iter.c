@@ -818,14 +818,6 @@ void bch2_btree_iter_node_drop(struct btree_iter *iter, struct btree *b)
 	struct btree_iter *linked;
 	unsigned level = b->level;
 
-	/* caller now responsible for unlocking @b */
-
-	BUG_ON(iter->l[level].b != b);
-	BUG_ON(!btree_node_intent_locked(iter, level));
-
-	iter->l[level].b = BTREE_ITER_NOT_END;
-	mark_btree_node_unlocked(iter, level);
-
 	trans_for_each_iter(iter->trans, linked)
 		if (linked->l[level].b == b) {
 			__btree_node_unlock(linked, level);
@@ -990,6 +982,7 @@ retry_all:
 	}
 
 	if (unlikely(ret == -EIO)) {
+		trans->error = true;
 		iter->flags |= BTREE_ITER_ERROR;
 		iter->l[iter->level].b = BTREE_ITER_NOT_END;
 		goto out;
@@ -1161,6 +1154,8 @@ struct btree *bch2_btree_iter_next_node(struct btree_iter *iter, unsigned depth)
 	/* already got to end? */
 	if (!btree_iter_node(iter, iter->level))
 		return NULL;
+
+	bch2_trans_cond_resched(iter->trans);
 
 	btree_iter_up(iter);
 
@@ -1712,7 +1707,7 @@ void bch2_trans_preload_iters(struct btree_trans *trans)
 
 static int btree_trans_iter_alloc(struct btree_trans *trans)
 {
-	unsigned idx = ffz(trans->iters_linked);
+	unsigned idx = __ffs64(~trans->iters_linked);
 
 	if (idx < trans->nr_iters)
 		goto got_slot;
@@ -1877,17 +1872,17 @@ void *bch2_trans_kmalloc(struct btree_trans *trans,
 
 int bch2_trans_unlock(struct btree_trans *trans)
 {
-	unsigned iters = trans->iters_linked;
+	u64 iters = trans->iters_linked;
 	int ret = 0;
 
 	while (iters) {
-		unsigned idx = __ffs(iters);
+		unsigned idx = __ffs64(iters);
 		struct btree_iter *iter = &trans->iters[idx];
 
 		ret = ret ?: btree_iter_err(iter);
 
 		__bch2_btree_iter_unlock(iter);
-		iters ^= 1 << idx;
+		iters ^= 1ULL << idx;
 	}
 
 	return ret;
@@ -1949,7 +1944,7 @@ void bch2_trans_init(struct btree_trans *trans, struct bch_fs *c)
 
 int bch2_trans_exit(struct btree_trans *trans)
 {
-	int ret = bch2_trans_unlock(trans);
+	bch2_trans_unlock(trans);
 
 	kfree(trans->mem);
 	if (trans->used_mempool)
@@ -1958,5 +1953,6 @@ int bch2_trans_exit(struct btree_trans *trans)
 		kfree(trans->iters);
 	trans->mem	= (void *) 0x1;
 	trans->iters	= (void *) 0x1;
-	return ret;
+
+	return trans->error ? -EIO : 0;
 }

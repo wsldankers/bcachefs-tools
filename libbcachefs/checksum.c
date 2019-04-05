@@ -9,7 +9,7 @@
 #include <linux/random.h>
 #include <linux/scatterlist.h>
 #include <crypto/algapi.h>
-#include <crypto/chacha20.h>
+#include <crypto/chacha.h>
 #include <crypto/hash.h>
 #include <crypto/poly1305.h>
 #include <keys/user-type.h>

@@ -265,7 +265,7 @@ long bch2_fs_file_ioctl(struct file *file, unsigned cmd, unsigned long arg)
 			return -EPERM;
 
 		down_write(&sb->s_umount);
-		sb->s_flags |= MS_RDONLY;
+		sb->s_flags |= SB_RDONLY;
 		bch2_fs_emergency_read_only(c);
 		up_write(&sb->s_umount);
 		return 0;

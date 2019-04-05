@@ -457,7 +457,7 @@ static int bch2_quota_enable(struct super_block	*sb, unsigned uflags)
 {
 	struct bch_fs *c = sb->s_fs_info;
 
-	if (sb->s_flags & MS_RDONLY)
+	if (sb->s_flags & SB_RDONLY)
 		return -EROFS;
 
 	/* Accounting must be enabled at mount time: */
@@ -494,7 +494,7 @@ static int bch2_quota_disable(struct super_block *sb, unsigned uflags)
 {
 	struct bch_fs *c = sb->s_fs_info;
 
-	if (sb->s_flags & MS_RDONLY)
+	if (sb->s_flags & SB_RDONLY)
 		return -EROFS;
 
 	mutex_lock(&c->sb_lock);
@@ -518,7 +518,7 @@ static int bch2_quota_remove(struct super_block *sb, unsigned uflags)
 	struct bch_fs *c = sb->s_fs_info;
 	int ret;
 
-	if (sb->s_flags & MS_RDONLY)
+	if (sb->s_flags & SB_RDONLY)
 		return -EROFS;
 
 	if (uflags & FS_USER_QUOTA) {
@@ -600,7 +600,7 @@ static int bch2_quota_set_info(struct super_block *sb, int type,
 	struct bch_sb_field_quota *sb_quota;
 	struct bch_memquota_type *q;
 
-	if (sb->s_flags & MS_RDONLY)
+	if (sb->s_flags & SB_RDONLY)
 		return -EROFS;
 
 	if (type >= QTYP_NR)
@@ -719,7 +719,7 @@ static int bch2_set_quota(struct super_block *sb, struct kqid qid,
 	struct bkey_i_quota new_quota;
 	int ret;
 
-	if (sb->s_flags & MS_RDONLY)
+	if (sb->s_flags & SB_RDONLY)
 		return -EROFS;
 
 	bkey_quota_init(&new_quota.k_i);

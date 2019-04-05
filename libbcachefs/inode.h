@@ -3,8 +3,6 @@
 
 #include "opts.h"
 
-#include <linux/math64.h>
-
 extern const char * const bch2_inode_opts[];
 
 const char *bch2_inode_invalid(const struct bch_fs *, struct bkey_s_c);
@@ -59,23 +57,9 @@ int bch2_inode_create(struct bch_fs *, struct bch_inode_unpacked *,
 
 int bch2_inode_rm(struct bch_fs *, u64);
 
-int bch2_inode_find_by_inum(struct bch_fs *, u64,
-			   struct bch_inode_unpacked *);
-
-static inline struct timespec64 bch2_time_to_timespec(struct bch_fs *c, u64 time)
-{
-	return ns_to_timespec64(time * c->sb.time_precision + c->sb.time_base_lo);
-}
-
-static inline u64 timespec_to_bch2_time(struct bch_fs *c, struct timespec64 ts)
-{
-	s64 ns = timespec64_to_ns(&ts) - c->sb.time_base_lo;
-
-	if (c->sb.time_precision == 1)
-		return ns;
-
-	return div_s64(ns, c->sb.time_precision);
-}
+int bch2_inode_find_by_inum_trans(struct btree_trans *, u64,
+				  struct bch_inode_unpacked *);
+int bch2_inode_find_by_inum(struct bch_fs *, u64, struct bch_inode_unpacked *);
 
 static inline struct bch_io_opts bch2_inode_opts_get(struct bch_inode_unpacked *inode)
 {

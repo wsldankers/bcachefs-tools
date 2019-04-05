@@ -17,7 +17,7 @@
 
 #include <linux/crypto.h>
 #include <crypto/algapi.h>
-#include <crypto/chacha20.h>
+#include <crypto/chacha.h>
 #include <crypto/skcipher.h>
 
 #include <sodium/crypto_stream_chacha20.h>
@@ -36,7 +36,7 @@ static int crypto_chacha20_setkey(struct crypto_skcipher *tfm, const u8 *key,
 		container_of(tfm, struct chacha20_tfm, tfm);
 	int i;
 
-	if (keysize != CHACHA20_KEY_SIZE)
+	if (keysize != CHACHA_KEY_SIZE)
 		return -EINVAL;
 
 	for (i = 0; i < ARRAY_SIZE(ctx->key); i++)
@@ -72,8 +72,8 @@ static int crypto_chacha20_crypt(struct skcipher_request *req)
 		if (sg_is_last(sg))
 			break;
 
-		BUG_ON(sg->length % CHACHA20_BLOCK_SIZE);
-		iv[0] += sg->length / CHACHA20_BLOCK_SIZE;
+		BUG_ON(sg->length % CHACHA_BLOCK_SIZE);
+		iv[0] += sg->length / CHACHA_BLOCK_SIZE;
 		sg = sg_next(sg);
 	};
 
@@ -93,8 +93,8 @@ static void *crypto_chacha20_alloc_tfm(void)
 	tfm->tfm.setkey		= crypto_chacha20_setkey;
 	tfm->tfm.encrypt	= crypto_chacha20_crypt;
 	tfm->tfm.decrypt	= crypto_chacha20_crypt;
-	tfm->tfm.ivsize		= CHACHA20_IV_SIZE;
-	tfm->tfm.keysize	= CHACHA20_KEY_SIZE;
+	tfm->tfm.ivsize		= CHACHA_IV_SIZE;
+	tfm->tfm.keysize	= CHACHA_KEY_SIZE;
 
 	return tfm;
 }

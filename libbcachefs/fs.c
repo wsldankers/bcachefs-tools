@@ -1582,7 +1582,7 @@ static int bch2_remount(struct super_block *sb, int *flags, char *data)
 	struct bch_opts opts = bch2_opts_empty();
 	int ret;
 
-	opt_set(opts, read_only, (*flags & MS_RDONLY) != 0);
+	opt_set(opts, read_only, (*flags & SB_RDONLY) != 0);
 
 	ret = bch2_parse_mount_opts(&opts, data);
 	if (ret)
@@ -1594,7 +1594,7 @@ static int bch2_remount(struct super_block *sb, int *flags, char *data)
 		if (opts.read_only) {
 			bch2_fs_read_only(c);
 
-			sb->s_flags |= MS_RDONLY;
+			sb->s_flags |= SB_RDONLY;
 		} else {
 			ret = bch2_fs_read_write(c);
 			if (ret) {
@@ -1603,7 +1603,7 @@ static int bch2_remount(struct super_block *sb, int *flags, char *data)
 				return -EINVAL;
 			}
 
-			sb->s_flags &= ~MS_RDONLY;
+			sb->s_flags &= ~SB_RDONLY;
 		}
 
 		c->opts.read_only = opts.read_only;
@@ -1681,7 +1681,7 @@ static struct dentry *bch2_mount(struct file_system_type *fs_type,
 	unsigned i;
 	int ret;
 
-	opt_set(opts, read_only, (flags & MS_RDONLY) != 0);
+	opt_set(opts, read_only, (flags & SB_RDONLY) != 0);
 
 	ret = bch2_parse_mount_opts(&opts, data);
 	if (ret)
@@ -1691,7 +1691,7 @@ static struct dentry *bch2_mount(struct file_system_type *fs_type,
 	if (IS_ERR(c))
 		return ERR_CAST(c);
 
-	sb = sget(fs_type, bch2_test_super, bch2_set_super, flags|MS_NOSEC, c);
+	sb = sget(fs_type, bch2_test_super, bch2_set_super, flags|SB_NOSEC, c);
 	if (IS_ERR(sb)) {
 		closure_put(&c->cl);
 		return ERR_CAST(sb);
@@ -1702,7 +1702,7 @@ static struct dentry *bch2_mount(struct file_system_type *fs_type,
 	if (sb->s_root) {
 		closure_put(&c->cl);
 
-		if ((flags ^ sb->s_flags) & MS_RDONLY) {
+		if ((flags ^ sb->s_flags) & SB_RDONLY) {
 			ret = -EBUSY;
 			goto err_put_super;
 		}
@@ -1745,7 +1745,7 @@ static struct dentry *bch2_mount(struct file_system_type *fs_type,
 
 #ifdef CONFIG_BCACHEFS_POSIX_ACL
 	if (c->opts.acl)
-		sb->s_flags	|= MS_POSIXACL;
+		sb->s_flags	|= SB_POSIXACL;
 #endif
 
 	vinode = bch2_vfs_inode_get(c, BCACHEFS_ROOT_INO);
@@ -1760,7 +1760,7 @@ static struct dentry *bch2_mount(struct file_system_type *fs_type,
 		goto err_put_super;
 	}
 
-	sb->s_flags |= MS_ACTIVE;
+	sb->s_flags |= SB_ACTIVE;
 out:
 	return dget(sb->s_root);
 

@@ -114,7 +114,6 @@ static int bch2_gc_mark_key(struct bch_fs *c, struct bkey_s_c k,
 {
 	struct bkey_ptrs_c ptrs = bch2_bkey_ptrs_c(k);
 	const struct bch_extent_ptr *ptr;
-	struct gc_pos pos = { 0 };
 	unsigned flags =
 		BCH_BUCKET_MARK_GC|
 		(initial ? BCH_BUCKET_MARK_NOATOMIC : 0);
@@ -171,7 +170,7 @@ static int bch2_gc_mark_key(struct bch_fs *c, struct bkey_s_c k,
 		*max_stale = max(*max_stale, ptr_stale(ca, ptr));
 	}
 
-	bch2_mark_key(c, k, true, k.k->size, pos, NULL, 0, flags);
+	bch2_mark_key(c, k, true, k.k->size, NULL, 0, flags);
 fsck_err:
 	return ret;
 }
@@ -202,7 +201,7 @@ static int btree_gc_mark_node(struct bch_fs *c, struct btree *b,
 }
 
 static int bch2_gc_btree(struct bch_fs *c, enum btree_id btree_id,
-			 bool initial)
+			 bool initial, bool metadata_only)
 {
 	struct btree_trans trans;
 	struct btree_iter *iter;
@@ -222,7 +221,9 @@ static int bch2_gc_btree(struct bch_fs *c, enum btree_id btree_id,
 	 * and on startup, we have to read every btree node (XXX: only if it was
 	 * an unclean shutdown)
 	 */
-	if (initial || expensive_debug_checks(c))
+	if (metadata_only)
+		depth = 1;
+	else if (initial || expensive_debug_checks(c))
 		depth = 0;
 
 	btree_node_range_checks_init(&r, depth);
@@ -278,7 +279,7 @@ static inline int btree_id_gc_phase_cmp(enum btree_id l, enum btree_id r)
 }
 
 static int bch2_gc_btrees(struct bch_fs *c, struct list_head *journal,
-			  bool initial)
+			  bool initial, bool metadata_only)
 {
 	enum btree_id ids[BTREE_ID_NR];
 	u8 max_stale;
@@ -292,11 +293,12 @@ static int bch2_gc_btrees(struct bch_fs *c, struct list_head *journal,
 		enum btree_id id = ids[i];
 		enum btree_node_type type = __btree_node_type(0, id);
 
-		int ret = bch2_gc_btree(c, id, initial);
+		int ret = bch2_gc_btree(c, id, initial, metadata_only);
 		if (ret)
 			return ret;
 
-		if (journal && btree_node_type_needs_gc(type)) {
+		if (journal && !metadata_only &&
+		    btree_node_type_needs_gc(type)) {
 			struct bkey_i *k, *n;
 			struct jset_entry *j;
 			struct journal_replay *r;
@@ -397,7 +399,6 @@ static void bch2_mark_superblocks(struct bch_fs *c)
 /* Also see bch2_pending_btree_node_free_insert_done() */
 static void bch2_mark_pending_btree_node_frees(struct bch_fs *c)
 {
-	struct gc_pos pos = { 0 };
 	struct btree_update *as;
 	struct pending_btree_node_free *d;
 
@@ -407,8 +408,7 @@ static void bch2_mark_pending_btree_node_frees(struct bch_fs *c)
 	for_each_pending_btree_node_free(c, as, d)
 		if (d->index_update_done)
 			bch2_mark_key(c, bkey_i_to_s_c(&d->key),
-				      true, 0,
-				      pos, NULL, 0,
+				      true, 0, NULL, 0,
 				      BCH_BUCKET_MARK_GC);
 
 	mutex_unlock(&c->btree_interior_update_lock);
@@ -481,25 +481,28 @@ static void bch2_gc_free(struct bch_fs *c)
 	c->usage[1] = NULL;
 }
 
-static void bch2_gc_done(struct bch_fs *c, bool initial)
+static int bch2_gc_done(struct bch_fs *c,
+			bool initial, bool metadata_only)
 {
 	struct bch_dev *ca;
-	bool verify = !initial ||
-		(c->sb.compat & (1ULL << BCH_COMPAT_FEAT_ALLOC_INFO));
+	bool verify = !metadata_only &&
+		(!initial ||
+		 (c->sb.compat & (1ULL << BCH_COMPAT_FEAT_ALLOC_INFO)));
 	unsigned i;
+	int ret = 0;
 
 #define copy_field(_f, _msg, ...)					\
 	if (dst->_f != src->_f) {					\
 		if (verify)						\
-			bch_err(c, _msg ": got %llu, should be %llu, fixing"\
+			fsck_err(c, _msg ": got %llu, should be %llu"	\
 				, ##__VA_ARGS__, dst->_f, src->_f);	\
 		dst->_f = src->_f;					\
 	}
 #define copy_stripe_field(_f, _msg, ...)				\
 	if (dst->_f != src->_f) {					\
 		if (verify)						\
-			bch_err_ratelimited(c, "stripe %zu has wrong "_msg\
-				": got %u, should be %u, fixing",	\
+			fsck_err(c, "stripe %zu has wrong "_msg		\
+				": got %u, should be %u",		\
 				dst_iter.pos, ##__VA_ARGS__,		\
 				dst->_f, src->_f);			\
 		dst->_f = src->_f;					\
@@ -508,8 +511,8 @@ static void bch2_gc_done(struct bch_fs *c, bool initial)
 #define copy_bucket_field(_f)						\
 	if (dst->b[b].mark._f != src->b[b].mark._f) {			\
 		if (verify)						\
-			bch_err_ratelimited(c, "dev %u bucket %zu has wrong " #_f\
-				": got %u, should be %u, fixing", i, b,	\
+			fsck_err(c, "dev %u bucket %zu has wrong " #_f	\
+				": got %u, should be %u", i, b,		\
 				dst->b[b].mark._f, src->b[b].mark._f);	\
 		dst->b[b]._mark._f = src->b[b].mark._f;			\
 		dst->b[b]._mark.dirty = true;				\
@@ -519,7 +522,7 @@ static void bch2_gc_done(struct bch_fs *c, bool initial)
 #define copy_fs_field(_f, _msg, ...)					\
 	copy_field(_f, "fs has wrong " _msg, ##__VA_ARGS__)
 
-	{
+	if (!metadata_only) {
 		struct genradix_iter dst_iter = genradix_iter_init(&c->stripes[0], 0);
 		struct genradix_iter src_iter = genradix_iter_init(&c->stripes[1], 0);
 		struct stripe *dst, *src;
@@ -571,26 +574,7 @@ static void bch2_gc_done(struct bch_fs *c, bool initial)
 		}
 	};
 
-	for_each_member_device(ca, c, i) {
-		unsigned nr = sizeof(struct bch_dev_usage) / sizeof(u64);
-		struct bch_dev_usage *dst = (void *)
-			bch2_acc_percpu_u64s((void *) ca->usage[0], nr);
-		struct bch_dev_usage *src = (void *)
-			bch2_acc_percpu_u64s((void *) ca->usage[1], nr);
-		unsigned b;
-
-		for (b = 0; b < BCH_DATA_NR; b++)
-			copy_dev_field(buckets[b],	"buckets[%s]",
-				       bch2_data_types[b]);
-		copy_dev_field(buckets_alloc,		"buckets_alloc");
-		copy_dev_field(buckets_ec,		"buckets_ec");
-		copy_dev_field(buckets_unavailable,	"buckets_unavailable");
-
-		for (b = 0; b < BCH_DATA_NR; b++)
-			copy_dev_field(sectors[b],	"sectors[%s]",
-				       bch2_data_types[b]);
-		copy_dev_field(sectors_fragmented,	"sectors_fragmented");
-	}
+	bch2_dev_usage_from_buckets(c);
 
 	{
 		unsigned nr = fs_usage_u64s(c);
@@ -600,19 +584,28 @@ static void bch2_gc_done(struct bch_fs *c, bool initial)
 			bch2_acc_percpu_u64s((void *) c->usage[1], nr);
 
 		copy_fs_field(hidden,		"hidden");
-		copy_fs_field(data,		"data");
-		copy_fs_field(cached,		"cached");
-		copy_fs_field(reserved,		"reserved");
-		copy_fs_field(nr_inodes,	"nr_inodes");
+		copy_fs_field(btree,		"btree");
 
-		for (i = 0; i < BCH_REPLICAS_MAX; i++)
-			copy_fs_field(persistent_reserved[i],
-				      "persistent_reserved[%i]", i);
+		if (!metadata_only) {
+			copy_fs_field(data,	"data");
+			copy_fs_field(cached,	"cached");
+			copy_fs_field(reserved,	"reserved");
+			copy_fs_field(nr_inodes,"nr_inodes");
+
+			for (i = 0; i < BCH_REPLICAS_MAX; i++)
+				copy_fs_field(persistent_reserved[i],
+					      "persistent_reserved[%i]", i);
+		}
 
 		for (i = 0; i < c->replicas.nr; i++) {
 			struct bch_replicas_entry *e =
 				cpu_replicas_entry(&c->replicas, i);
 			char buf[80];
+
+			if (metadata_only &&
+			    (e->data_type == BCH_DATA_USER ||
+			     e->data_type == BCH_DATA_CACHED))
+				continue;
 
 			bch2_replicas_entry_to_text(&PBUF(buf), e);
 
@@ -625,9 +618,12 @@ static void bch2_gc_done(struct bch_fs *c, bool initial)
 #undef copy_bucket_field
 #undef copy_stripe_field
 #undef copy_field
+fsck_err:
+	return ret;
 }
 
-static int bch2_gc_start(struct bch_fs *c)
+static int bch2_gc_start(struct bch_fs *c,
+			 bool metadata_only)
 {
 	struct bch_dev *ca;
 	unsigned i;
@@ -673,10 +669,18 @@ static int bch2_gc_start(struct bch_fs *c)
 		dst->nbuckets		= src->nbuckets;
 
 		for (b = 0; b < src->nbuckets; b++) {
-			dst->b[b]._mark.gen =
-				dst->b[b].oldest_gen =
-				src->b[b].mark.gen;
-			dst->b[b].gen_valid = src->b[b].gen_valid;
+			struct bucket *d = &dst->b[b];
+			struct bucket *s = &src->b[b];
+
+			d->_mark.gen = dst->b[b].oldest_gen = s->mark.gen;
+			d->gen_valid = s->gen_valid;
+
+			if (metadata_only &&
+			    (s->mark.data_type == BCH_DATA_USER ||
+			     s->mark.data_type == BCH_DATA_CACHED)) {
+				d->_mark = s->mark;
+				d->_mark.owned_by_allocator = 0;
+			}
 		}
 	};
 
@@ -701,7 +705,8 @@ static int bch2_gc_start(struct bch_fs *c)
  *    move around - if references move backwards in the ordering GC
  *    uses, GC could skip past them
  */
-int bch2_gc(struct bch_fs *c, struct list_head *journal, bool initial)
+int bch2_gc(struct bch_fs *c, struct list_head *journal,
+	    bool initial, bool metadata_only)
 {
 	struct bch_dev *ca;
 	u64 start_time = local_clock();
@@ -713,7 +718,7 @@ int bch2_gc(struct bch_fs *c, struct list_head *journal, bool initial)
 	down_write(&c->gc_lock);
 again:
 	percpu_down_write(&c->mark_lock);
-	ret = bch2_gc_start(c);
+	ret = bch2_gc_start(c, metadata_only);
 	percpu_up_write(&c->mark_lock);
 
 	if (ret)
@@ -721,7 +726,7 @@ again:
 
 	bch2_mark_superblocks(c);
 
-	ret = bch2_gc_btrees(c, journal, initial);
+	ret = bch2_gc_btrees(c, journal, initial, metadata_only);
 	if (ret)
 		goto out;
 
@@ -755,7 +760,7 @@ out:
 	percpu_down_write(&c->mark_lock);
 
 	if (!ret)
-		bch2_gc_done(c, initial);
+		ret = bch2_gc_done(c, initial, metadata_only);
 
 	/* Indicates that gc is no longer in progress: */
 	__gc_pos_set(c, gc_phase(GC_PHASE_NOT_RUNNING));
@@ -1157,7 +1162,7 @@ static int bch2_gc_thread(void *arg)
 		last = atomic_long_read(&clock->now);
 		last_kick = atomic_read(&c->kick_gc);
 
-		ret = bch2_gc(c, NULL, false);
+		ret = bch2_gc(c, NULL, false, false);
 		if (ret)
 			bch_err(c, "btree gc failed: %i", ret);
 
