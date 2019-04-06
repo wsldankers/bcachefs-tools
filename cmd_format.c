@@ -109,6 +109,7 @@ u64 read_flag_list_or_die(char *opt, const char * const list[],
 int cmd_format(int argc, char *argv[])
 {
 	darray(struct dev_opts) devices;
+	darray(char *) device_paths;
 	struct format_opts opts	= format_opts_default();
 	struct dev_opts dev_opts = dev_opts_default(), *dev;
 	bool force = false, no_passphrase = false, quiet = false;
@@ -116,6 +117,7 @@ int cmd_format(int argc, char *argv[])
 	int opt;
 
 	darray_init(devices);
+	darray_init(device_paths);
 
 	struct bch_opt_strs fs_opt_strs =
 		bch2_cmdline_opts_get(&argc, argv, OPT_FORMAT);
@@ -182,6 +184,7 @@ int cmd_format(int argc, char *argv[])
 				die("invalid durability");
 			break;
 		case O_no_opt:
+			darray_append(device_paths, optarg);
 			dev_opts.path = optarg;
 			darray_append(devices, dev_opts);
 			dev_opts.size = 0;
@@ -225,6 +228,21 @@ int cmd_format(int argc, char *argv[])
 	}
 
 	darray_free(devices);
+
+	if (!opts.passphrase) {
+		/*
+		 * Start the filesystem once, to allocate the journal and create
+		 * the root directory:
+		 */
+		struct bch_fs *c = bch2_fs_open(device_paths.item,
+						darray_size(device_paths),
+						bch2_opts_empty());
+		if (IS_ERR(c))
+			die("error opening %s: %s", device_paths.item,
+			    strerror(-PTR_ERR(c)));
+
+		bch2_fs_stop(c);
+	}
 
 	return 0;
 }
