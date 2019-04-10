@@ -10,7 +10,7 @@
 #include <sys/syscall.h>
 #include <linux/bug.h>
 
-#ifdef __NR_getrandom
+#ifdef SYS_getrandom
 static inline int getrandom(void *buf, size_t buflen, unsigned int flags)
 {
 	 return syscall(SYS_getrandom, buf, buflen, flags);

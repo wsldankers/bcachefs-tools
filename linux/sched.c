@@ -120,7 +120,7 @@ static void sched_init(void)
 	rcu_register_thread();
 }
 
-#ifndef __NR_getrandom
+#ifndef SYS_getrandom
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
