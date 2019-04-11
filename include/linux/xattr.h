@@ -16,6 +16,14 @@
 #include <linux/spinlock.h>
 #include <uapi/linux/xattr.h>
 
+#ifndef XATTR_CREATE
+#define XATTR_CREATE	0x1
+#endif
+
+#ifndef XATTR_REPLACE
+#define XATTR_REPLACE	0x2
+#endif
+
 struct inode;
 struct dentry;
 
