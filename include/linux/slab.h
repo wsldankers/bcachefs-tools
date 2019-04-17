@@ -59,8 +59,10 @@ static inline void *krealloc(void *old, size_t size, gfp_t flags)
 #define kcalloc(n, size, flags)		kmalloc_array(n, size, flags|__GFP_ZERO)
 
 #define kfree(p)			free(p)
-#define kvfree(p)			free(p)
 #define kzfree(p)			free(p)
+
+#define kvmalloc(size, flags)		kmalloc(size, flags)
+#define kvfree(p)			kfree(p)
 
 static inline struct page *alloc_pages(gfp_t flags, unsigned int order)
 {

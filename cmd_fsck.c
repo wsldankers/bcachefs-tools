@@ -27,6 +27,7 @@ int cmd_fsck(int argc, char *argv[])
 	int opt, ret = 0;
 
 	opt_set(opts, degraded, true);
+	opt_set(opts, fsck, true);
 	opt_set(opts, fix_errors, FSCK_OPT_ASK);
 
 	while ((opt = getopt(argc, argv, "apynfvh")) != -1)

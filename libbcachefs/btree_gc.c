@@ -18,9 +18,9 @@
 #include "error.h"
 #include "extents.h"
 #include "journal.h"
-#include "journal_io.h"
 #include "keylist.h"
 #include "move.h"
+#include "recovery.h"
 #include "replicas.h"
 #include "super-io.h"
 
@@ -207,24 +207,16 @@ static int bch2_gc_btree(struct bch_fs *c, enum btree_id btree_id,
 	struct btree_iter *iter;
 	struct btree *b;
 	struct range_checks r;
-	unsigned depth = btree_node_type_needs_gc(btree_id) ? 0 : 1;
+	unsigned depth = metadata_only			? 1
+		: expensive_debug_checks(c)		? 0
+		: !btree_node_type_needs_gc(btree_id)	? 1
+		: 0;
 	u8 max_stale;
 	int ret = 0;
 
 	bch2_trans_init(&trans, c);
 
 	gc_pos_set(c, gc_pos_btree(btree_id, POS_MIN, 0));
-
-	/*
-	 * if expensive_debug_checks is on, run range_checks on all leaf nodes:
-	 *
-	 * and on startup, we have to read every btree node (XXX: only if it was
-	 * an unclean shutdown)
-	 */
-	if (metadata_only)
-		depth = 1;
-	else if (initial || expensive_debug_checks(c))
-		depth = 0;
 
 	btree_node_range_checks_init(&r, depth);
 
@@ -278,11 +270,40 @@ static inline int btree_id_gc_phase_cmp(enum btree_id l, enum btree_id r)
 		(int) btree_id_to_gc_phase(r);
 }
 
-static int bch2_gc_btrees(struct bch_fs *c, struct list_head *journal,
+static int mark_journal_key(struct bch_fs *c, enum btree_id id,
+			    struct bkey_i *insert)
+{
+	struct btree_trans trans;
+	struct btree_iter *iter;
+	struct bkey_s_c k;
+	u8 max_stale;
+	int ret = 0;
+
+	ret = bch2_gc_mark_key(c, bkey_i_to_s_c(insert), &max_stale, true);
+	if (ret)
+		return ret;
+
+	bch2_trans_init(&trans, c);
+
+	for_each_btree_key(&trans, iter, id, bkey_start_pos(&insert->k),
+			   BTREE_ITER_SLOTS, k, ret) {
+		percpu_down_read_preempt_disable(&c->mark_lock);
+		ret = bch2_mark_overwrite(&trans, iter, k, insert, NULL,
+					 BCH_BUCKET_MARK_GC|
+					 BCH_BUCKET_MARK_NOATOMIC);
+		percpu_up_read_preempt_enable(&c->mark_lock);
+
+		if (!ret)
+			break;
+	}
+
+	return bch2_trans_exit(&trans) ?: ret;
+}
+
+static int bch2_gc_btrees(struct bch_fs *c, struct journal_keys *journal_keys,
 			  bool initial, bool metadata_only)
 {
 	enum btree_id ids[BTREE_ID_NR];
-	u8 max_stale;
 	unsigned i;
 
 	for (i = 0; i < BTREE_ID_NR; i++)
@@ -297,22 +318,16 @@ static int bch2_gc_btrees(struct bch_fs *c, struct list_head *journal,
 		if (ret)
 			return ret;
 
-		if (journal && !metadata_only &&
+		if (journal_keys && !metadata_only &&
 		    btree_node_type_needs_gc(type)) {
-			struct bkey_i *k, *n;
-			struct jset_entry *j;
-			struct journal_replay *r;
+			struct journal_key *j;
 			int ret;
 
-			list_for_each_entry(r, journal, list)
-				for_each_jset_key(k, n, j, &r->j) {
-					if (type == __btree_node_type(j->level, j->btree_id)) {
-						ret = bch2_gc_mark_key(c,
-							bkey_i_to_s_c(k),
-							&max_stale, initial);
-						if (ret)
-							return ret;
-					}
+			for_each_journal_key(*journal_keys, j)
+				if (j->btree_id == id) {
+					ret = mark_journal_key(c, id, j->k);
+					if (ret)
+						return ret;
 				}
 		}
 	}
@@ -477,8 +492,8 @@ static void bch2_gc_free(struct bch_fs *c)
 		ca->usage[1] = NULL;
 	}
 
-	free_percpu(c->usage[1]);
-	c->usage[1] = NULL;
+	free_percpu(c->usage_gc);
+	c->usage_gc = NULL;
 }
 
 static int bch2_gc_done(struct bch_fs *c,
@@ -574,14 +589,16 @@ static int bch2_gc_done(struct bch_fs *c,
 		}
 	};
 
+	bch2_fs_usage_acc_to_base(c, 0);
+	bch2_fs_usage_acc_to_base(c, 1);
+
 	bch2_dev_usage_from_buckets(c);
 
 	{
 		unsigned nr = fs_usage_u64s(c);
-		struct bch_fs_usage *dst = (void *)
-			bch2_acc_percpu_u64s((void *) c->usage[0], nr);
+		struct bch_fs_usage *dst = c->usage_base;
 		struct bch_fs_usage *src = (void *)
-			bch2_acc_percpu_u64s((void *) c->usage[1], nr);
+			bch2_acc_percpu_u64s((void *) c->usage_gc, nr);
 
 		copy_fs_field(hidden,		"hidden");
 		copy_fs_field(btree,		"btree");
@@ -634,11 +651,11 @@ static int bch2_gc_start(struct bch_fs *c,
 	 */
 	gc_pos_set(c, gc_phase(GC_PHASE_START));
 
-	BUG_ON(c->usage[1]);
+	BUG_ON(c->usage_gc);
 
-	c->usage[1] = __alloc_percpu_gfp(fs_usage_u64s(c) * sizeof(u64),
+	c->usage_gc = __alloc_percpu_gfp(fs_usage_u64s(c) * sizeof(u64),
 					 sizeof(u64), GFP_KERNEL);
-	if (!c->usage[1])
+	if (!c->usage_gc)
 		return -ENOMEM;
 
 	for_each_member_device(ca, c, i) {
@@ -705,7 +722,7 @@ static int bch2_gc_start(struct bch_fs *c,
  *    move around - if references move backwards in the ordering GC
  *    uses, GC could skip past them
  */
-int bch2_gc(struct bch_fs *c, struct list_head *journal,
+int bch2_gc(struct bch_fs *c, struct journal_keys *journal_keys,
 	    bool initial, bool metadata_only)
 {
 	struct bch_dev *ca;
@@ -726,7 +743,7 @@ again:
 
 	bch2_mark_superblocks(c);
 
-	ret = bch2_gc_btrees(c, journal, initial, metadata_only);
+	ret = bch2_gc_btrees(c, journal_keys, initial, metadata_only);
 	if (ret)
 		goto out;
 
@@ -757,10 +774,16 @@ out:
 		ret = -EINVAL;
 	}
 
-	percpu_down_write(&c->mark_lock);
+	if (!ret) {
+		bch2_journal_block(&c->journal);
 
-	if (!ret)
+		percpu_down_write(&c->mark_lock);
 		ret = bch2_gc_done(c, initial, metadata_only);
+
+		bch2_journal_unblock(&c->journal);
+	} else {
+		percpu_down_write(&c->mark_lock);
+	}
 
 	/* Indicates that gc is no longer in progress: */
 	__gc_pos_set(c, gc_phase(GC_PHASE_NOT_RUNNING));

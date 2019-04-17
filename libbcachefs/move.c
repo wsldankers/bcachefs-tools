@@ -62,6 +62,7 @@ static int bch2_migrate_index_update(struct bch_write_op *op)
 	int ret = 0;
 
 	bch2_trans_init(&trans, c);
+	bch2_trans_preload_iters(&trans);
 
 	iter = bch2_trans_get_iter(&trans, BTREE_ID_EXTENTS,
 				   bkey_start_pos(&bch2_keylist_front(keys)->k),
@@ -184,6 +185,7 @@ nomatch:
 	}
 out:
 	bch2_trans_exit(&trans);
+	BUG_ON(ret == -EINTR);
 	return ret;
 }
 
@@ -631,7 +633,7 @@ static int bch2_gc_data_replicas(struct bch_fs *c)
 	bch2_replicas_gc_start(c, (1 << BCH_DATA_USER)|(1 << BCH_DATA_CACHED));
 
 	for_each_btree_key(&trans, iter, BTREE_ID_EXTENTS, POS_MIN,
-			   BTREE_ITER_PREFETCH, k) {
+			   BTREE_ITER_PREFETCH, k, ret) {
 		ret = bch2_mark_bkey_replicas(c, k);
 		if (ret)
 			break;

@@ -11,8 +11,8 @@
 #include "ec.h"
 #include "error.h"
 #include "io.h"
-#include "journal_io.h"
 #include "keylist.h"
+#include "recovery.h"
 #include "super-io.h"
 #include "util.h"
 
@@ -536,14 +536,17 @@ static int ec_stripe_mem_alloc(struct bch_fs *c,
 			       struct btree_iter *iter)
 {
 	size_t idx = iter->pos.offset;
+	int ret = 0;
 
 	if (!__ec_stripe_mem_alloc(c, idx, GFP_NOWAIT))
-		return 0;
+		return ret;
 
 	bch2_btree_trans_unlock(iter->trans);
+	ret = -EINTR;
 
 	if (!__ec_stripe_mem_alloc(c, idx, GFP_KERNEL))
-		return -EINTR;
+		return ret;
+
 	return -ENOMEM;
 }
 
@@ -678,10 +681,8 @@ retry:
 	bch2_trans_begin(&trans);
 
 	/* XXX: start pos hint */
-	iter = bch2_trans_get_iter(&trans, BTREE_ID_EC, POS_MIN,
-				   BTREE_ITER_SLOTS|BTREE_ITER_INTENT);
-
-	for_each_btree_key_continue(iter, BTREE_ITER_SLOTS|BTREE_ITER_INTENT, k) {
+	for_each_btree_key(&trans, iter, BTREE_ID_EC, POS_MIN,
+			   BTREE_ITER_SLOTS|BTREE_ITER_INTENT, k, ret) {
 		if (bkey_cmp(k.k->p, POS(0, U32_MAX)) > 0)
 			break;
 
@@ -689,24 +690,24 @@ retry:
 			goto found_slot;
 	}
 
-	ret = -ENOSPC;
-	goto out;
+	if (!ret)
+		ret = -ENOSPC;
+	goto err;
 found_slot:
 	ret = ec_stripe_mem_alloc(c, iter);
-
-	if (ret == -EINTR)
-		goto retry;
 	if (ret)
-		return ret;
+		goto err;
 
 	stripe->k.p = iter->pos;
 
 	bch2_trans_update(&trans, BTREE_INSERT_ENTRY(iter, &stripe->k_i));
 
 	ret = bch2_trans_commit(&trans, NULL, NULL,
-				BTREE_INSERT_NOFAIL|
-				BTREE_INSERT_USE_RESERVE);
-out:
+				BTREE_INSERT_ATOMIC|
+				BTREE_INSERT_NOFAIL);
+err:
+	if (ret == -EINTR)
+		goto retry;
 	bch2_trans_exit(&trans);
 
 	return ret;
@@ -743,6 +744,7 @@ static int ec_stripe_update_ptrs(struct bch_fs *c,
 	int ret = 0, dev, idx;
 
 	bch2_trans_init(&trans, c);
+	bch2_trans_preload_iters(&trans);
 
 	iter = bch2_trans_get_iter(&trans, BTREE_ID_EXTENTS,
 				   bkey_start_pos(pos),
@@ -950,7 +952,7 @@ static int unsigned_cmp(const void *_l, const void *_r)
 	unsigned l = *((const unsigned *) _l);
 	unsigned r = *((const unsigned *) _r);
 
-	return (l > r) - (l < r);
+	return cmp_int(l, r);
 }
 
 /* pick most common bucket size: */
@@ -1193,7 +1195,7 @@ static int __bch2_stripe_write_key(struct btree_trans *trans,
 				 BTREE_INSERT_NOFAIL|flags);
 }
 
-int bch2_stripes_write(struct bch_fs *c, bool *wrote)
+int bch2_stripes_write(struct bch_fs *c, unsigned flags, bool *wrote)
 {
 	struct btree_trans trans;
 	struct btree_iter *iter;
@@ -1215,7 +1217,7 @@ int bch2_stripes_write(struct bch_fs *c, bool *wrote)
 			continue;
 
 		ret = __bch2_stripe_write_key(&trans, iter, m, giter.pos,
-					new_key, BTREE_INSERT_NOCHECK_RW);
+					      new_key, flags);
 		if (ret)
 			break;
 
@@ -1229,14 +1231,9 @@ int bch2_stripes_write(struct bch_fs *c, bool *wrote)
 	return ret;
 }
 
-static void bch2_stripe_read_key(struct bch_fs *c, struct bkey_s_c k)
+int bch2_stripes_read(struct bch_fs *c, struct journal_keys *journal_keys)
 {
-	bch2_mark_key(c, k, true, 0, NULL, 0, 0);
-}
-
-int bch2_stripes_read(struct bch_fs *c, struct list_head *journal_replay_list)
-{
-	struct journal_replay *r;
+	struct journal_key *i;
 	struct btree_trans trans;
 	struct btree_iter *iter;
 	struct bkey_s_c k;
@@ -1248,23 +1245,19 @@ int bch2_stripes_read(struct bch_fs *c, struct list_head *journal_replay_list)
 
 	bch2_trans_init(&trans, c);
 
-	for_each_btree_key(&trans, iter, BTREE_ID_EC, POS_MIN, 0, k) {
-		bch2_stripe_read_key(c, k);
-		bch2_trans_cond_resched(&trans);
-	}
+	for_each_btree_key(&trans, iter, BTREE_ID_EC, POS_MIN, 0, k, ret)
+		bch2_mark_key(c, k, true, 0, NULL, 0, 0);
 
-	ret = bch2_trans_exit(&trans);
-	if (ret)
+	ret = bch2_trans_exit(&trans) ?: ret;
+	if (ret) {
+		bch_err(c, "error reading stripes: %i", ret);
 		return ret;
-
-	list_for_each_entry(r, journal_replay_list, list) {
-		struct bkey_i *k, *n;
-		struct jset_entry *entry;
-
-		for_each_jset_key(k, n, entry, &r->j)
-			if (entry->btree_id == BTREE_ID_EC)
-				bch2_stripe_read_key(c, bkey_i_to_s_c(k));
 	}
+
+	for_each_journal_key(*journal_keys, i)
+		if (i->btree_id == BTREE_ID_EC)
+			bch2_mark_key(c, bkey_i_to_s_c(i->k),
+				      true, 0, NULL, 0, 0);
 
 	return 0;
 }

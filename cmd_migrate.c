@@ -718,9 +718,9 @@ static int migrate_fs(const char		*fs_path,
 
 	mark_unreserved_space(c, extents);
 
-	const char *err = bch2_fs_start(c);
-	if (err)
-		die("Error starting new filesystem: %s", err);
+	int ret = bch2_fs_start(c);
+	if (ret)
+		die("Error starting new filesystem: %s", strerror(-ret));
 
 	copy_fs(c, fs_fd, fs_path, bcachefs_inum, &extents);
 

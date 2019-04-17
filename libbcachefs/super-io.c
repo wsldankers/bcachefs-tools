@@ -1,5 +1,6 @@
 
 #include "bcachefs.h"
+#include "buckets.h"
 #include "checksum.h"
 #include "disk_groups.h"
 #include "ec.h"
@@ -648,7 +649,7 @@ static void read_back_super(struct bch_fs *c, struct bch_dev *ca)
 	bio_reset(bio);
 	bio_set_dev(bio, ca->disk_sb.bdev);
 	bio->bi_iter.bi_sector	= le64_to_cpu(sb->layout.sb_offset[0]);
-	bio->bi_iter.bi_size	= 4096;
+	bio->bi_iter.bi_size	= PAGE_SIZE;
 	bio->bi_end_io		= write_super_endio;
 	bio->bi_private		= ca;
 	bio_set_op_attrs(bio, REQ_OP_READ, REQ_SYNC|REQ_META);
@@ -944,7 +945,7 @@ int bch2_fs_mark_dirty(struct bch_fs *c)
 
 	mutex_lock(&c->sb_lock);
 	SET_BCH_SB_CLEAN(c->disk_sb.sb, false);
-	c->disk_sb.sb->compat[0] &= ~(1ULL << BCH_COMPAT_FEAT_ALLOC_INFO);
+	c->disk_sb.sb->compat[0] &= ~(1ULL << BCH_COMPAT_FEAT_ALLOC_METADATA);
 	ret = bch2_write_super(c);
 	mutex_unlock(&c->sb_lock);
 
@@ -953,7 +954,8 @@ int bch2_fs_mark_dirty(struct bch_fs *c)
 
 struct jset_entry *
 bch2_journal_super_entries_add_common(struct bch_fs *c,
-				      struct jset_entry *entry)
+				      struct jset_entry *entry,
+				      u64 journal_seq)
 {
 	struct btree_root *r;
 	unsigned i;
@@ -976,10 +978,16 @@ bch2_journal_super_entries_add_common(struct bch_fs *c,
 
 	mutex_unlock(&c->btree_root_lock);
 
-	percpu_down_read_preempt_disable(&c->mark_lock);
+	percpu_down_write(&c->mark_lock);
+
+	if (!journal_seq) {
+		bch2_fs_usage_acc_to_base(c, 0);
+		bch2_fs_usage_acc_to_base(c, 1);
+	} else {
+		bch2_fs_usage_acc_to_base(c, journal_seq & 1);
+	}
 
 	{
-		u64 nr_inodes = percpu_u64_get(&c->usage[0]->nr_inodes);
 		struct jset_entry_usage *u =
 			container_of(entry, struct jset_entry_usage, entry);
 
@@ -987,7 +995,7 @@ bch2_journal_super_entries_add_common(struct bch_fs *c,
 		u->entry.u64s	= DIV_ROUND_UP(sizeof(*u), sizeof(u64)) - 1;
 		u->entry.type	= BCH_JSET_ENTRY_usage;
 		u->entry.btree_id = FS_USAGE_INODES;
-		u->v		= cpu_to_le64(nr_inodes);
+		u->v		= cpu_to_le64(c->usage_base->nr_inodes);
 
 		entry = vstruct_next(entry);
 	}
@@ -1008,17 +1016,13 @@ bch2_journal_super_entries_add_common(struct bch_fs *c,
 	for (i = 0; i < BCH_REPLICAS_MAX; i++) {
 		struct jset_entry_usage *u =
 			container_of(entry, struct jset_entry_usage, entry);
-		u64 sectors = percpu_u64_get(&c->usage[0]->persistent_reserved[i]);
-
-		if (!sectors)
-			continue;
 
 		memset(u, 0, sizeof(*u));
 		u->entry.u64s	= DIV_ROUND_UP(sizeof(*u), sizeof(u64)) - 1;
 		u->entry.type	= BCH_JSET_ENTRY_usage;
 		u->entry.btree_id = FS_USAGE_RESERVED;
 		u->entry.level	= i;
-		u->v		= sectors;
+		u->v		= cpu_to_le64(c->usage_base->persistent_reserved[i]);
 
 		entry = vstruct_next(entry);
 	}
@@ -1026,7 +1030,6 @@ bch2_journal_super_entries_add_common(struct bch_fs *c,
 	for (i = 0; i < c->replicas.nr; i++) {
 		struct bch_replicas_entry *e =
 			cpu_replicas_entry(&c->replicas, i);
-		u64 sectors = percpu_u64_get(&c->usage[0]->replicas[i]);
 		struct jset_entry_data_usage *u =
 			container_of(entry, struct jset_entry_data_usage, entry);
 
@@ -1034,13 +1037,13 @@ bch2_journal_super_entries_add_common(struct bch_fs *c,
 		u->entry.u64s	= DIV_ROUND_UP(sizeof(*u) + e->nr_devs,
 					       sizeof(u64)) - 1;
 		u->entry.type	= BCH_JSET_ENTRY_data_usage;
-		u->v		= cpu_to_le64(sectors);
+		u->v		= cpu_to_le64(c->usage_base->replicas[i]);
 		memcpy(&u->r, e, replicas_entry_bytes(e));
 
 		entry = vstruct_next(entry);
 	}
 
-	percpu_up_read_preempt_enable(&c->mark_lock);
+	percpu_up_write(&c->mark_lock);
 
 	return entry;
 }
@@ -1058,6 +1061,7 @@ void bch2_fs_mark_clean(struct bch_fs *c)
 	SET_BCH_SB_CLEAN(c->disk_sb.sb, true);
 
 	c->disk_sb.sb->compat[0] |= 1ULL << BCH_COMPAT_FEAT_ALLOC_INFO;
+	c->disk_sb.sb->compat[0] |= 1ULL << BCH_COMPAT_FEAT_ALLOC_METADATA;
 
 	u64s = sizeof(*sb_clean) / sizeof(u64) + c->journal.entry_u64s_reserved;
 
@@ -1076,7 +1080,7 @@ void bch2_fs_mark_clean(struct bch_fs *c)
 	BUG_ON(le64_to_cpu(sb_clean->journal_seq) > S64_MAX);
 
 	entry = sb_clean->start;
-	entry = bch2_journal_super_entries_add_common(c, entry);
+	entry = bch2_journal_super_entries_add_common(c, entry, 0);
 	BUG_ON((void *) entry > vstruct_end(&sb_clean->field));
 
 	memset(entry, 0,

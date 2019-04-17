@@ -444,8 +444,12 @@ struct bch_dev {
 	 * XXX: this should be an enum for allocator state, so as to include
 	 * error state
 	 */
-	bool			allocator_blocked;
-	bool			allocator_blocked_full;
+	enum {
+		ALLOCATOR_STOPPED,
+		ALLOCATOR_RUNNING,
+		ALLOCATOR_BLOCKED,
+		ALLOCATOR_BLOCKED_FULL,
+	}			allocator_state;
 
 	alloc_heap		alloc_heap;
 
@@ -638,7 +642,10 @@ struct bch_fs {
 
 	struct percpu_rw_semaphore	mark_lock;
 
+	seqcount_t			usage_lock;
+	struct bch_fs_usage		*usage_base;
 	struct bch_fs_usage __percpu	*usage[2];
+	struct bch_fs_usage __percpu	*usage_gc;
 
 	/* single element mempool: */
 	struct mutex		usage_scratch_lock;
@@ -831,7 +838,7 @@ static inline s64 bch2_current_time(struct bch_fs *c)
 {
 	struct timespec64 now;
 
-	ktime_get_real_ts64(&now);
+	ktime_get_coarse_real_ts64(&now);
 	return timespec_to_bch2_time(c, now);
 }
 

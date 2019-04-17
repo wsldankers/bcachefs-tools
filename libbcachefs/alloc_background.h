@@ -12,7 +12,9 @@ struct bkey_alloc_unpacked {
 #undef  x
 };
 
-struct bkey_alloc_unpacked bch2_alloc_unpack(const struct bch_alloc *);
+struct bkey_alloc_unpacked bch2_alloc_unpack(struct bkey_s_c);
+void bch2_alloc_pack(struct bkey_i_alloc *,
+		     const struct bkey_alloc_unpacked);
 
 #define ALLOC_SCAN_BATCH(ca)		max_t(size_t, 1, (ca)->mi.nbuckets >> 9)
 
@@ -24,7 +26,8 @@ void bch2_alloc_to_text(struct printbuf *, struct bch_fs *, struct bkey_s_c);
 	.val_to_text	= bch2_alloc_to_text,		\
 }
 
-int bch2_alloc_read(struct bch_fs *, struct list_head *);
+struct journal_keys;
+int bch2_alloc_read(struct bch_fs *, struct journal_keys *);
 int bch2_alloc_replay_key(struct bch_fs *, struct bkey_i *);
 
 static inline void bch2_wake_allocator(struct bch_dev *ca)
@@ -64,7 +67,7 @@ void bch2_dev_allocator_quiesce(struct bch_fs *, struct bch_dev *);
 void bch2_dev_allocator_stop(struct bch_dev *);
 int bch2_dev_allocator_start(struct bch_dev *);
 
-int bch2_alloc_write(struct bch_fs *, bool, bool *);
+int bch2_alloc_write(struct bch_fs *, unsigned, bool *);
 int bch2_fs_allocator_start(struct bch_fs *);
 void bch2_fs_allocator_background_init(struct bch_fs *);
 

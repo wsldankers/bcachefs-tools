@@ -11,7 +11,7 @@
 #include "debug.h"
 #include "ec.h"
 #include "error.h"
-#include "journal_io.h"
+#include "recovery.h"
 
 #include <linux/kthread.h>
 #include <linux/math64.h>
@@ -128,20 +128,26 @@ static inline void put_alloc_field(struct bkey_i_alloc *a, void **p,
 	*p += bytes;
 }
 
-struct bkey_alloc_unpacked bch2_alloc_unpack(const struct bch_alloc *a)
+struct bkey_alloc_unpacked bch2_alloc_unpack(struct bkey_s_c k)
 {
-	struct bkey_alloc_unpacked ret = { .gen = a->gen };
-	const void *d = a->data;
-	unsigned idx = 0;
+	struct bkey_alloc_unpacked ret = { .gen = 0 };
+
+	if (k.k->type == KEY_TYPE_alloc) {
+		const struct bch_alloc *a = bkey_s_c_to_alloc(k).v;
+		const void *d = a->data;
+		unsigned idx = 0;
+
+		ret.gen = a->gen;
 
 #define x(_name, _bits)	ret._name = get_alloc_field(a, &d, idx++);
-	BCH_ALLOC_FIELDS()
+		BCH_ALLOC_FIELDS()
 #undef  x
+	}
 	return ret;
 }
 
-static void bch2_alloc_pack(struct bkey_i_alloc *dst,
-			    const struct bkey_alloc_unpacked src)
+void bch2_alloc_pack(struct bkey_i_alloc *dst,
+		     const struct bkey_alloc_unpacked src)
 {
 	unsigned idx = 0;
 	void *d = dst->v.data;
@@ -198,97 +204,45 @@ void bch2_alloc_to_text(struct printbuf *out, struct bch_fs *c,
 			       get_alloc_field(a.v, &d, i));
 }
 
-static void __alloc_read_key(struct bucket *g, const struct bch_alloc *a)
+static inline struct bkey_alloc_unpacked
+alloc_mem_to_key(struct bucket *g, struct bucket_mark m)
 {
-	const void *d = a->data;
-	unsigned idx = 0, data_type, dirty_sectors, cached_sectors;
-	struct bucket_mark m;
-
-	g->io_time[READ]	= get_alloc_field(a, &d, idx++);
-	g->io_time[WRITE]	= get_alloc_field(a, &d, idx++);
-	data_type		= get_alloc_field(a, &d, idx++);
-	dirty_sectors		= get_alloc_field(a, &d, idx++);
-	cached_sectors		= get_alloc_field(a, &d, idx++);
-	g->oldest_gen		= get_alloc_field(a, &d, idx++);
-
-	bucket_cmpxchg(g, m, ({
-		m.gen			= a->gen;
-		m.data_type		= data_type;
-		m.dirty_sectors		= dirty_sectors;
-		m.cached_sectors	= cached_sectors;
-	}));
-
-	g->gen_valid		= 1;
+	return (struct bkey_alloc_unpacked) {
+		.gen		= m.gen,
+		.oldest_gen	= g->oldest_gen,
+		.data_type	= m.data_type,
+		.dirty_sectors	= m.dirty_sectors,
+		.cached_sectors	= m.cached_sectors,
+		.read_time	= g->io_time[READ],
+		.write_time	= g->io_time[WRITE],
+	};
 }
 
-static void __alloc_write_key(struct bkey_i_alloc *a, struct bucket *g,
-			      struct bucket_mark m)
+int bch2_alloc_read(struct bch_fs *c, struct journal_keys *journal_keys)
 {
-	unsigned idx = 0;
-	void *d = a->v.data;
-
-	a->v.fields	= 0;
-	a->v.gen	= m.gen;
-
-	d = a->v.data;
-	put_alloc_field(a, &d, idx++, g->io_time[READ]);
-	put_alloc_field(a, &d, idx++, g->io_time[WRITE]);
-	put_alloc_field(a, &d, idx++, m.data_type);
-	put_alloc_field(a, &d, idx++, m.dirty_sectors);
-	put_alloc_field(a, &d, idx++, m.cached_sectors);
-	put_alloc_field(a, &d, idx++, g->oldest_gen);
-
-	set_bkey_val_bytes(&a->k, (void *) d - (void *) &a->v);
-}
-
-static void bch2_alloc_read_key(struct bch_fs *c, struct bkey_s_c k)
-{
-	struct bch_dev *ca;
-	struct bkey_s_c_alloc a;
-
-	if (k.k->type != KEY_TYPE_alloc)
-		return;
-
-	a = bkey_s_c_to_alloc(k);
-	ca = bch_dev_bkey_exists(c, a.k->p.inode);
-
-	if (a.k->p.offset >= ca->mi.nbuckets)
-		return;
-
-	percpu_down_read_preempt_disable(&c->mark_lock);
-	__alloc_read_key(bucket(ca, a.k->p.offset), a.v);
-	percpu_up_read_preempt_enable(&c->mark_lock);
-}
-
-int bch2_alloc_read(struct bch_fs *c, struct list_head *journal_replay_list)
-{
-	struct journal_replay *r;
 	struct btree_trans trans;
 	struct btree_iter *iter;
 	struct bkey_s_c k;
 	struct bch_dev *ca;
+	struct journal_key *j;
 	unsigned i;
 	int ret;
 
 	bch2_trans_init(&trans, c);
 
-	for_each_btree_key(&trans, iter, BTREE_ID_ALLOC, POS_MIN, 0, k) {
-		bch2_alloc_read_key(c, k);
-		bch2_trans_cond_resched(&trans);
-	}
+	for_each_btree_key(&trans, iter, BTREE_ID_ALLOC, POS_MIN, 0, k, ret)
+		bch2_mark_key(c, k, true, 0, NULL, 0, 0);
 
-	ret = bch2_trans_exit(&trans);
-	if (ret)
+	ret = bch2_trans_exit(&trans) ?: ret;
+	if (ret) {
+		bch_err(c, "error reading alloc info: %i", ret);
 		return ret;
-
-	list_for_each_entry(r, journal_replay_list, list) {
-		struct bkey_i *k, *n;
-		struct jset_entry *entry;
-
-		for_each_jset_key(k, n, entry, &r->j)
-			if (entry->btree_id == BTREE_ID_ALLOC)
-				bch2_alloc_read_key(c, bkey_i_to_s_c(k));
 	}
+
+	for_each_journal_key(*journal_keys, j)
+		if (j->btree_id == BTREE_ID_ALLOC)
+			bch2_mark_key(c, bkey_i_to_s_c(j->k),
+				      true, 0, NULL, 0, 0);
 
 	percpu_down_write(&c->mark_lock);
 	bch2_dev_usage_from_buckets(c);
@@ -356,86 +310,32 @@ err:
 	return ret;
 }
 
-static int __bch2_alloc_write_key(struct btree_trans *trans, struct bch_dev *ca,
-				  size_t b, struct btree_iter *iter,
-				  u64 *journal_seq, unsigned flags)
+int bch2_alloc_write(struct bch_fs *c, unsigned flags, bool *wrote)
 {
-	struct bch_fs *c = trans->c;
-#if 0
-	__BKEY_PADDED(k, BKEY_ALLOC_VAL_U64s_MAX) alloc_key;
-#else
-	/* hack: */
-	__BKEY_PADDED(k, 8) alloc_key;
-#endif
-	struct bkey_i_alloc *a = bkey_alloc_init(&alloc_key.k);
+	struct btree_trans trans;
+	struct btree_iter *iter;
+	struct bucket_array *buckets;
+	struct bch_dev *ca;
 	struct bucket *g;
 	struct bucket_mark m, new;
-	int ret;
+	struct bkey_alloc_unpacked old_u, new_u;
+	__BKEY_PADDED(k, 8) alloc_key; /* hack: */
+	struct bkey_i_alloc *a;
+	struct bkey_s_c k;
+	unsigned i;
+	size_t b;
+	int ret = 0;
 
 	BUG_ON(BKEY_ALLOC_VAL_U64s_MAX > 8);
 
-	a->k.p = POS(ca->dev_idx, b);
+	bch2_trans_init(&trans, c);
 
-	bch2_btree_iter_set_pos(iter, a->k.p);
-
-	ret = bch2_btree_iter_traverse(iter);
-	if (ret)
-		return ret;
-
-	percpu_down_read_preempt_disable(&c->mark_lock);
-	g = bucket(ca, b);
-	m = READ_ONCE(g->mark);
-
-	if (!m.dirty) {
-		percpu_up_read_preempt_enable(&c->mark_lock);
-		return 0;
-	}
-
-	__alloc_write_key(a, g, m);
-	percpu_up_read_preempt_enable(&c->mark_lock);
-
-	bch2_trans_update(trans, BTREE_INSERT_ENTRY(iter, &a->k_i));
-
-	ret = bch2_trans_commit(trans, NULL, journal_seq,
-				   BTREE_INSERT_NOCHECK_RW|
-				   BTREE_INSERT_NOFAIL|
-				   BTREE_INSERT_USE_RESERVE|
-				   BTREE_INSERT_USE_ALLOC_RESERVE|
-				   BTREE_INSERT_NOMARK|
-				   flags);
-	if (ret)
-		return ret;
-
-	new = m;
-	new.dirty = false;
-	atomic64_cmpxchg(&g->_mark.v, m.v.counter, new.v.counter);
-
-	if (ca->buckets_written)
-		set_bit(b, ca->buckets_written);
-
-	return 0;
-}
-
-int bch2_alloc_write(struct bch_fs *c, bool nowait, bool *wrote)
-{
-	struct bch_dev *ca;
-	unsigned i;
-	int ret = 0;
-
-	*wrote = false;
+	iter = bch2_trans_get_iter(&trans, BTREE_ID_ALLOC, POS_MIN,
+				   BTREE_ITER_SLOTS|BTREE_ITER_INTENT);
 
 	for_each_rw_member(ca, c, i) {
-		struct btree_trans trans;
-		struct btree_iter *iter;
-		struct bucket_array *buckets;
-		size_t b;
-
-		bch2_trans_init(&trans, c);
-
-		iter = bch2_trans_get_iter(&trans, BTREE_ID_ALLOC, POS_MIN,
-					   BTREE_ITER_SLOTS|BTREE_ITER_INTENT);
-
 		down_read(&ca->bucket_lock);
+restart:
 		buckets = bucket_array(ca);
 
 		for (b = buckets->first_bucket;
@@ -444,25 +344,77 @@ int bch2_alloc_write(struct bch_fs *c, bool nowait, bool *wrote)
 			if (!buckets->b[b].mark.dirty)
 				continue;
 
-			ret = __bch2_alloc_write_key(&trans, ca, b, iter, NULL,
-						     nowait
-						     ? BTREE_INSERT_NOWAIT
-						     : 0);
+			bch2_btree_iter_set_pos(iter, POS(i, b));
+			k = bch2_btree_iter_peek_slot(iter);
+			ret = bkey_err(k);
+			if (ret)
+				goto err;
+
+			old_u = bch2_alloc_unpack(k);
+
+			percpu_down_read_preempt_disable(&c->mark_lock);
+			g	= bucket(ca, b);
+			m	= READ_ONCE(g->mark);
+			new_u	= alloc_mem_to_key(g, m);
+			percpu_up_read_preempt_enable(&c->mark_lock);
+
+			if (!m.dirty)
+				continue;
+
+			if ((flags & BTREE_INSERT_LAZY_RW) &&
+			    percpu_ref_is_zero(&c->writes)) {
+				up_read(&ca->bucket_lock);
+				bch2_trans_unlock(&trans);
+
+				ret = bch2_fs_read_write_early(c);
+				down_read(&ca->bucket_lock);
+
+				if (ret)
+					goto err;
+				goto restart;
+			}
+
+			a = bkey_alloc_init(&alloc_key.k);
+			a->k.p = iter->pos;
+			bch2_alloc_pack(a, new_u);
+
+			bch2_trans_update(&trans, BTREE_INSERT_ENTRY(iter, &a->k_i));
+			ret = bch2_trans_commit(&trans, NULL, NULL,
+						BTREE_INSERT_NOFAIL|
+						BTREE_INSERT_NOMARK|
+						flags);
+err:
+			if (ret && !test_bit(BCH_FS_EMERGENCY_RO, &c->flags)) {
+				bch_err(c, "error %i writing alloc info", ret);
+				printk(KERN_CONT "dev %llu bucket %llu\n",
+				       iter->pos.inode, iter->pos.offset);
+				printk(KERN_CONT "gen %u -> %u\n", old_u.gen, new_u.gen);
+#define x(_name, _bits)		printk(KERN_CONT #_name " %u -> %u\n", old_u._name, new_u._name);
+				BCH_ALLOC_FIELDS()
+#undef  x
+			}
 			if (ret)
 				break;
+
+			new = m;
+			new.dirty = false;
+			atomic64_cmpxchg(&g->_mark.v, m.v.counter, new.v.counter);
+
+			if (ca->buckets_written)
+				set_bit(b, ca->buckets_written);
 
 			bch2_trans_cond_resched(&trans);
 			*wrote = true;
 		}
 		up_read(&ca->bucket_lock);
 
-		bch2_trans_exit(&trans);
-
 		if (ret) {
 			percpu_ref_put(&ca->io_ref);
 			break;
 		}
 	}
+
+	bch2_trans_exit(&trans);
 
 	return ret;
 }
@@ -598,6 +550,9 @@ static int wait_buckets_available(struct bch_fs *c, struct bch_dev *ca)
 	unsigned long gc_count = c->gc_count;
 	int ret = 0;
 
+	ca->allocator_state = ALLOCATOR_BLOCKED;
+	closure_wake_up(&c->freelist_wait);
+
 	while (1) {
 		set_current_state(TASK_INTERRUPTIBLE);
 		if (kthread_should_stop()) {
@@ -620,6 +575,9 @@ static int wait_buckets_available(struct bch_fs *c, struct bch_dev *ca)
 	}
 
 	__set_current_state(TASK_RUNNING);
+	ca->allocator_state = ALLOCATOR_RUNNING;
+	closure_wake_up(&c->freelist_wait);
+
 	return ret;
 }
 
@@ -693,16 +651,16 @@ static inline int bucket_alloc_cmp(alloc_heap *h,
 				   struct alloc_heap_entry l,
 				   struct alloc_heap_entry r)
 {
-	return (l.key > r.key) - (l.key < r.key) ?:
-		(l.nr < r.nr)  - (l.nr  > r.nr) ?:
-		(l.bucket > r.bucket) - (l.bucket < r.bucket);
+	return  cmp_int(l.key, r.key) ?:
+		cmp_int(r.nr, l.nr) ?:
+		cmp_int(l.bucket, r.bucket);
 }
 
 static inline int bucket_idx_cmp(const void *_l, const void *_r)
 {
 	const struct alloc_heap_entry *l = _l, *r = _r;
 
-	return (l->bucket > r->bucket) - (l->bucket < r->bucket);
+	return cmp_int(l->bucket, r->bucket);
 }
 
 static void find_reclaimable_buckets_lru(struct bch_fs *c, struct bch_dev *ca)
@@ -916,6 +874,7 @@ static int bch2_invalidate_one_bucket2(struct btree_trans *trans,
 	struct bch_fs *c = trans->c;
 	struct bkey_i_alloc *a;
 	struct bkey_alloc_unpacked u;
+	struct bucket *g;
 	struct bucket_mark m;
 	struct bkey_s_c k;
 	bool invalidating_cached_data;
@@ -935,7 +894,6 @@ static int bch2_invalidate_one_bucket2(struct btree_trans *trans,
 	BUG_ON(!fifo_push(&ca->free_inc, b));
 
 	bch2_mark_alloc_bucket(c, ca, b, true, gc_pos_alloc(c, NULL), 0);
-	m = bucket(ca, b)->mark;
 
 	spin_unlock(&c->freelist_lock);
 	percpu_up_read_preempt_enable(&c->mark_lock);
@@ -949,26 +907,25 @@ retry:
 	if (ret)
 		return ret;
 
-	if (k.k && k.k->type == KEY_TYPE_alloc)
-		u = bch2_alloc_unpack(bkey_s_c_to_alloc(k).v);
-	else
-		memset(&u, 0, sizeof(u));
-
-	invalidating_cached_data = m.cached_sectors != 0;
-
-	//BUG_ON(u.dirty_sectors);
-	u.data_type	= 0;
-	u.dirty_sectors	= 0;
-	u.cached_sectors = 0;
-	u.read_time	= c->bucket_clock[READ].hand;
-	u.write_time	= c->bucket_clock[WRITE].hand;
-
 	/*
 	 * The allocator has to start before journal replay is finished - thus,
 	 * we have to trust the in memory bucket @m, not the version in the
 	 * btree:
 	 */
-	u.gen		= m.gen + 1;
+	percpu_down_read_preempt_disable(&c->mark_lock);
+	g = bucket(ca, b);
+	m = READ_ONCE(g->mark);
+	u = alloc_mem_to_key(g, m);
+	percpu_up_read_preempt_enable(&c->mark_lock);
+
+	invalidating_cached_data = m.cached_sectors != 0;
+
+	u.gen++;
+	u.data_type	= 0;
+	u.dirty_sectors	= 0;
+	u.cached_sectors = 0;
+	u.read_time	= c->bucket_clock[READ].hand;
+	u.write_time	= c->bucket_clock[WRITE].hand;
 
 	a = bkey_alloc_init(&alloc_key.k);
 	a->k.p = iter->pos;
@@ -1119,14 +1076,14 @@ static int push_invalidated_bucket(struct bch_fs *c, struct bch_dev *ca, size_t 
 				fifo_pop(&ca->free_inc, bucket);
 
 				closure_wake_up(&c->freelist_wait);
-				ca->allocator_blocked_full = false;
+				ca->allocator_state = ALLOCATOR_RUNNING;
 
 				spin_unlock(&c->freelist_lock);
 				goto out;
 			}
 
-		if (!ca->allocator_blocked_full) {
-			ca->allocator_blocked_full = true;
+		if (ca->allocator_state != ALLOCATOR_BLOCKED_FULL) {
+			ca->allocator_state = ALLOCATOR_BLOCKED_FULL;
 			closure_wake_up(&c->freelist_wait);
 		}
 
@@ -1184,6 +1141,7 @@ static int bch2_allocator_thread(void *arg)
 	int ret;
 
 	set_freezable();
+	ca->allocator_state = ALLOCATOR_RUNNING;
 
 	while (1) {
 		cond_resched();
@@ -1242,9 +1200,6 @@ static int bch2_allocator_thread(void *arg)
 			if (!nr ||
 			    (nr < ALLOC_SCAN_BATCH(ca) &&
 			     !fifo_full(&ca->free[RESERVE_MOVINGGC]))) {
-				ca->allocator_blocked = true;
-				closure_wake_up(&c->freelist_wait);
-
 				ret = wait_buckets_available(c, ca);
 				if (ret) {
 					up_read(&c->gc_lock);
@@ -1253,7 +1208,6 @@ static int bch2_allocator_thread(void *arg)
 			}
 		} while (!nr);
 
-		ca->allocator_blocked = false;
 		up_read(&c->gc_lock);
 
 		pr_debug("%zu buckets to invalidate", nr);
@@ -1266,6 +1220,8 @@ static int bch2_allocator_thread(void *arg)
 
 stop:
 	pr_debug("alloc thread stopping (ret %i)", ret);
+	ca->allocator_state = ALLOCATOR_STOPPED;
+	closure_wake_up(&c->freelist_wait);
 	return 0;
 }
 
@@ -1457,7 +1413,8 @@ void bch2_dev_allocator_add(struct bch_fs *c, struct bch_dev *ca)
 void bch2_dev_allocator_quiesce(struct bch_fs *c, struct bch_dev *ca)
 {
 	if (ca->alloc_thread)
-		closure_wait_event(&c->freelist_wait, ca->allocator_blocked_full);
+		closure_wait_event(&c->freelist_wait,
+				   ca->allocator_state != ALLOCATOR_RUNNING);
 }
 
 /* stop allocator thread: */
@@ -1682,7 +1639,10 @@ int bch2_fs_allocator_start(struct bch_fs *c)
 		 * XXX: it's possible for this to deadlock waiting on journal reclaim,
 		 * since we're holding btree writes. What then?
 		 */
-		ret = bch2_alloc_write(c, true, &wrote);
+		ret = bch2_alloc_write(c,
+				       BTREE_INSERT_NOCHECK_RW|
+				       BTREE_INSERT_USE_ALLOC_RESERVE|
+				       BTREE_INSERT_NOWAIT, &wrote);
 
 		/*
 		 * If bch2_alloc_write() did anything, it may have used some

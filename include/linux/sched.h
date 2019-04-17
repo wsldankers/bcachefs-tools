@@ -147,7 +147,7 @@ static inline u64 ktime_get_real_seconds(void)
 	return ts.tv_sec;
 }
 
-static inline void ktime_get_real_ts64(struct timespec64 *ts)
+static inline void ktime_get_coarse_real_ts64(struct timespec64 *ts)
 {
 	clock_gettime(CLOCK_MONOTONIC, ts);
 }

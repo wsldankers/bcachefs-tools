@@ -235,42 +235,11 @@ static ssize_t show_fs_alloc_debug(struct bch_fs *c, char *buf)
 {
 	struct printbuf out = _PBUF(buf, PAGE_SIZE);
 	struct bch_fs_usage *fs_usage = bch2_fs_usage_read(c);
-	unsigned i;
 
 	if (!fs_usage)
 		return -ENOMEM;
 
-	pr_buf(&out, "capacity:\t\t\t%llu\n", c->capacity);
-
-	pr_buf(&out, "hidden:\t\t\t\t%llu\n",
-	       fs_usage->hidden);
-	pr_buf(&out, "data:\t\t\t\t%llu\n",
-	       fs_usage->data);
-	pr_buf(&out, "cached:\t\t\t\t%llu\n",
-	       fs_usage->cached);
-	pr_buf(&out, "reserved:\t\t\t%llu\n",
-	       fs_usage->reserved);
-	pr_buf(&out, "nr_inodes:\t\t\t%llu\n",
-	       fs_usage->nr_inodes);
-	pr_buf(&out, "online reserved:\t\t%llu\n",
-	       fs_usage->online_reserved);
-
-	for (i = 0;
-	     i < ARRAY_SIZE(fs_usage->persistent_reserved);
-	     i++) {
-		pr_buf(&out, "%u replicas:\n", i + 1);
-		pr_buf(&out, "\treserved:\t\t%llu\n",
-		       fs_usage->persistent_reserved[i]);
-	}
-
-	for (i = 0; i < c->replicas.nr; i++) {
-		struct bch_replicas_entry *e =
-			cpu_replicas_entry(&c->replicas, i);
-
-		pr_buf(&out, "\t");
-		bch2_replicas_entry_to_text(&out, e);
-		pr_buf(&out, ":\t%llu\n", fs_usage->replicas[i]);
-	}
+	bch2_fs_usage_to_text(&out, c, fs_usage);
 
 	percpu_up_read_preempt_enable(&c->mark_lock);
 
@@ -288,13 +257,14 @@ static ssize_t bch2_compression_stats(struct bch_fs *c, char *buf)
 	    nr_compressed_extents = 0,
 	    compressed_sectors_compressed = 0,
 	    compressed_sectors_uncompressed = 0;
+	int ret;
 
 	if (!test_bit(BCH_FS_STARTED, &c->flags))
 		return -EPERM;
 
 	bch2_trans_init(&trans, c);
 
-	for_each_btree_key(&trans, iter, BTREE_ID_EXTENTS, POS_MIN, 0, k)
+	for_each_btree_key(&trans, iter, BTREE_ID_EXTENTS, POS_MIN, 0, k, ret)
 		if (k.k->type == KEY_TYPE_extent) {
 			struct bkey_s_c_extent e = bkey_s_c_to_extent(k);
 			const union bch_extent_entry *entry;
@@ -316,7 +286,10 @@ static ssize_t bch2_compression_stats(struct bch_fs *c, char *buf)
 				break;
 			}
 		}
-	bch2_trans_exit(&trans);
+
+	ret = bch2_trans_exit(&trans) ?: ret;
+	if (ret)
+		return ret;
 
 	return scnprintf(buf, PAGE_SIZE,
 			"uncompressed data:\n"
@@ -501,7 +474,7 @@ STORE(__bch2_fs)
 	if (attr == &sysfs_trigger_alloc_write) {
 		bool wrote;
 
-		bch2_alloc_write(c, false, &wrote);
+		bch2_alloc_write(c, 0, &wrote);
 	}
 
 	if (attr == &sysfs_prune_cache) {
@@ -750,10 +723,10 @@ static unsigned bucket_oldest_gen_fn(struct bch_fs *c, struct bch_dev *ca,
 
 static int unsigned_cmp(const void *_l, const void *_r)
 {
-	unsigned l = *((unsigned *) _l);
-	unsigned r = *((unsigned *) _r);
+	const unsigned *l = _l;
+	const unsigned *r = _r;
 
-	return (l > r) - (l < r);
+	return cmp_int(*l, *r);
 }
 
 static ssize_t show_quantiles(struct bch_fs *c, struct bch_dev *ca,

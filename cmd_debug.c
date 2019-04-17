@@ -91,7 +91,7 @@ int cmd_dump(int argc, char *argv[])
 	int fd, opt;
 
 	opt_set(opts, nochanges,	true);
-	opt_set(opts, noreplay,		true);
+	opt_set(opts, norecovery,	true);
 	opt_set(opts, degraded,		true);
 	opt_set(opts, errors,		BCH_ON_ERROR_CONTINUE);
 
@@ -158,11 +158,12 @@ static void list_keys(struct bch_fs *c, enum btree_id btree_id,
 	struct btree_iter *iter;
 	struct bkey_s_c k;
 	char buf[512];
+	int ret;
 
 	bch2_trans_init(&trans, c);
 
 	for_each_btree_key(&trans, iter, btree_id, start,
-			   BTREE_ITER_PREFETCH, k) {
+			   BTREE_ITER_PREFETCH, k, ret) {
 		if (bkey_cmp(k.k->p, end) > 0)
 			break;
 

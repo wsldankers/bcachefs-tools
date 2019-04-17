@@ -227,17 +227,16 @@ static void __bch2_fs_read_only(struct bch_fs *c)
 		goto allocator_not_running;
 
 	do {
-		ret = bch2_stripes_write(c, &wrote);
-		if (ret) {
-			bch2_fs_inconsistent(c, "error writing out stripes");
-			break;
-		}
+		wrote = false;
 
-		ret = bch2_alloc_write(c, false, &wrote);
-		if (ret) {
+		ret = bch2_stripes_write(c, BTREE_INSERT_NOCHECK_RW, &wrote) ?:
+			bch2_alloc_write(c, BTREE_INSERT_NOCHECK_RW, &wrote);
+
+		if (ret && !test_bit(BCH_FS_EMERGENCY_RO, &c->flags))
 			bch2_fs_inconsistent(c, "error writing out alloc info %i", ret);
+
+		if (ret)
 			break;
-		}
 
 		for_each_member_device(ca, c, i)
 			bch2_dev_allocator_quiesce(c, ca);
@@ -336,7 +335,8 @@ void bch2_fs_read_only(struct bch_fs *c)
 	if (!bch2_journal_error(&c->journal) &&
 	    !test_bit(BCH_FS_ERROR, &c->flags) &&
 	    !test_bit(BCH_FS_EMERGENCY_RO, &c->flags) &&
-	    test_bit(BCH_FS_STARTED, &c->flags))
+	    test_bit(BCH_FS_STARTED, &c->flags) &&
+	    !c->opts.norecovery)
 		bch2_fs_mark_clean(c);
 
 	clear_bit(BCH_FS_RW, &c->flags);
@@ -408,6 +408,15 @@ int __bch2_fs_read_write(struct bch_fs *c, bool early)
 
 	if (test_bit(BCH_FS_RW, &c->flags))
 		return 0;
+
+	/*
+	 * nochanges is used for fsck -n mode - we have to allow going rw
+	 * during recovery for that to work:
+	 */
+	if (c->opts.norecovery ||
+	    (c->opts.nochanges &&
+	     (!early || c->opts.read_only)))
+		return -EROFS;
 
 	ret = bch2_fs_mark_dirty(c);
 	if (ret)
@@ -488,7 +497,9 @@ static void bch2_fs_free(struct bch_fs *c)
 	bch2_fs_compress_exit(c);
 	percpu_free_rwsem(&c->mark_lock);
 	kfree(c->usage_scratch);
+	free_percpu(c->usage[1]);
 	free_percpu(c->usage[0]);
+	kfree(c->usage_base);
 	free_percpu(c->pcpu);
 	mempool_exit(&c->btree_iters_pool);
 	mempool_exit(&c->btree_bounce_pool);
@@ -682,6 +693,8 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 
 	seqcount_init(&c->gc_pos_lock);
 
+	seqcount_init(&c->usage_lock);
+
 	c->copy_gc_enabled		= 1;
 	c->rebalance.enabled		= 1;
 	c->promote_whole_extents	= true;
@@ -713,9 +726,6 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 
 	c->block_bits		= ilog2(c->opts.block_size);
 	c->btree_foreground_merge_threshold = BTREE_FOREGROUND_MERGE_THRESHOLD(c);
-
-	c->opts.nochanges	|= c->opts.noreplay;
-	c->opts.read_only	|= c->opts.nochanges;
 
 	if (bch2_fs_init_fault("fs_alloc"))
 		goto err;
@@ -794,7 +804,41 @@ err:
 	goto out;
 }
 
-const char *bch2_fs_start(struct bch_fs *c)
+noinline_for_stack
+static void print_mount_opts(struct bch_fs *c)
+{
+	enum bch_opt_id i;
+	char buf[512];
+	struct printbuf p = PBUF(buf);
+	bool first = true;
+
+	strcpy(buf, "(null)");
+
+	if (c->opts.read_only) {
+		pr_buf(&p, "ro");
+		first = false;
+	}
+
+	for (i = 0; i < bch2_opts_nr; i++) {
+		const struct bch_option *opt = &bch2_opt_table[i];
+		u64 v = bch2_opt_get_by_id(&c->opts, i);
+
+		if (!(opt->mode & OPT_MOUNT))
+			continue;
+
+		if (v == bch2_opt_get_by_id(&bch2_opts_default, i))
+			continue;
+
+		if (!first)
+			pr_buf(&p, ",");
+		first = false;
+		bch2_opt_to_text(&p, c, opt, v, OPT_SHOW_MOUNT_STYLE);
+	}
+
+	bch_info(c, "mounted with opts: %s", buf);
+}
+
+int bch2_fs_start(struct bch_fs *c)
 {
 	const char *err = "cannot allocate memory";
 	struct bch_sb_field_members *mi;
@@ -833,26 +877,27 @@ const char *bch2_fs_start(struct bch_fs *c)
 		goto err;
 
 	err = "dynamic fault";
+	ret = -EINVAL;
 	if (bch2_fs_init_fault("fs_start"))
 		goto err;
 
-	if (c->opts.read_only) {
+	if (c->opts.read_only || c->opts.nochanges) {
 		bch2_fs_read_only(c);
 	} else {
-		if (!test_bit(BCH_FS_RW, &c->flags)
-		    ? bch2_fs_read_write(c)
-		    : bch2_fs_read_write_late(c)) {
-			err = "error going read write";
+		err = "error going read write";
+		ret = !test_bit(BCH_FS_RW, &c->flags)
+			? bch2_fs_read_write(c)
+			: bch2_fs_read_write_late(c);
+		if (ret)
 			goto err;
-		}
 	}
 
 	set_bit(BCH_FS_STARTED, &c->flags);
-
-	err = NULL;
+	print_mount_opts(c);
+	ret = 0;
 out:
 	mutex_unlock(&c->state_lock);
-	return err;
+	return ret;
 err:
 	switch (ret) {
 	case BCH_FSCK_ERRORS_NOT_FIXED:
@@ -880,7 +925,7 @@ err:
 		break;
 	}
 
-	BUG_ON(!err);
+	BUG_ON(!ret);
 	goto out;
 }
 
@@ -947,7 +992,7 @@ static void bch2_dev_free(struct bch_dev *ca)
 	free_percpu(ca->io_done);
 	bioset_exit(&ca->replica_set);
 	bch2_dev_buckets_free(ca);
-	kfree(ca->sb_read_scratch);
+	free_page((unsigned long) ca->sb_read_scratch);
 
 	bch2_time_stats_exit(&ca->io_latency[WRITE]);
 	bch2_time_stats_exit(&ca->io_latency[READ]);
@@ -1061,7 +1106,7 @@ static struct bch_dev *__bch2_dev_alloc(struct bch_fs *c,
 			    0, GFP_KERNEL) ||
 	    percpu_ref_init(&ca->io_ref, bch2_dev_io_ref_complete,
 			    PERCPU_REF_INIT_DEAD, GFP_KERNEL) ||
-	    !(ca->sb_read_scratch = kmalloc(4096, GFP_KERNEL)) ||
+	    !(ca->sb_read_scratch = (void *) __get_free_page(GFP_KERNEL)) ||
 	    bch2_dev_buckets_alloc(c, ca) ||
 	    bioset_init(&ca->replica_set, 4,
 			offsetof(struct bch_write_bio, bio), 0) ||
@@ -1460,13 +1505,8 @@ err:
 static void dev_usage_clear(struct bch_dev *ca)
 {
 	struct bucket_array *buckets;
-	int cpu;
 
-	for_each_possible_cpu(cpu) {
-		struct bch_dev_usage *p =
-			per_cpu_ptr(ca->usage[0], cpu);
-		memset(p, 0, sizeof(*p));
-	}
+	percpu_memset(ca->usage[0], 0, sizeof(*ca->usage[0]));
 
 	down_read(&ca->bucket_lock);
 	buckets = bucket_array(ca);
@@ -1817,9 +1857,9 @@ struct bch_fs *bch2_fs_open(char * const *devices, unsigned nr_devices,
 		goto err_print;
 
 	if (!c->opts.nostart) {
-		err = bch2_fs_start(c);
-		if (err)
-			goto err_print;
+		ret = bch2_fs_start(c);
+		if (ret)
+			goto err;
 	}
 out:
 	kfree(sb);
@@ -1846,6 +1886,7 @@ static const char *__bch2_fs_open_incremental(struct bch_sb_handle *sb,
 	const char *err;
 	struct bch_fs *c;
 	bool allocated_fs = false;
+	int ret;
 
 	err = bch2_sb_validate(sb);
 	if (err)
@@ -1878,8 +1919,9 @@ static const char *__bch2_fs_open_incremental(struct bch_sb_handle *sb,
 	mutex_unlock(&c->sb_lock);
 
 	if (!c->opts.nostart && bch2_fs_may_start(c)) {
-		err = bch2_fs_start(c);
-		if (err)
+		err = "error starting filesystem";
+		ret = bch2_fs_start(c);
+		if (ret)
 			goto err;
 	}
 
