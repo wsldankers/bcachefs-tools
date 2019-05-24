@@ -213,8 +213,7 @@ static int bch2_extent_replay_key(struct bch_fs *c, struct bkey_i *k)
 	bool split_compressed = false;
 	int ret;
 
-	bch2_trans_init(&trans, c);
-	bch2_trans_preload_iters(&trans);
+	bch2_trans_init(&trans, c, BTREE_ITER_MAX, 0);
 retry:
 	bch2_trans_begin(&trans);
 
@@ -258,13 +257,9 @@ retry:
 	} while (bkey_cmp(iter->pos, k->k.p) < 0);
 
 	if (split_compressed) {
-		memset(&trans.fs_usage_deltas.fs_usage, 0,
-		       sizeof(trans.fs_usage_deltas.fs_usage));
-		trans.fs_usage_deltas.top = trans.fs_usage_deltas.d;
-
-		ret = bch2_trans_mark_key(&trans, bkey_i_to_s_c(k), false,
+		ret = bch2_trans_mark_key(&trans, bkey_i_to_s_c(k),
 					  -((s64) k->k.size),
-					  &trans.fs_usage_deltas) ?:
+					  BCH_BUCKET_MARK_OVERWRITE) ?:
 		      bch2_trans_commit(&trans, &disk_res, NULL,
 					BTREE_INSERT_ATOMIC|
 					BTREE_INSERT_NOFAIL|

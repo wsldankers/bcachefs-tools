@@ -170,7 +170,7 @@ static int bch2_gc_mark_key(struct bch_fs *c, struct bkey_s_c k,
 		*max_stale = max(*max_stale, ptr_stale(ca, ptr));
 	}
 
-	bch2_mark_key(c, k, true, k.k->size, NULL, 0, flags);
+	bch2_mark_key(c, k, k.k->size, NULL, 0, flags);
 fsck_err:
 	return ret;
 }
@@ -214,7 +214,7 @@ static int bch2_gc_btree(struct bch_fs *c, enum btree_id btree_id,
 	u8 max_stale;
 	int ret = 0;
 
-	bch2_trans_init(&trans, c);
+	bch2_trans_init(&trans, c, 0, 0);
 
 	gc_pos_set(c, gc_pos_btree(btree_id, POS_MIN, 0));
 
@@ -283,7 +283,7 @@ static int mark_journal_key(struct bch_fs *c, enum btree_id id,
 	if (ret)
 		return ret;
 
-	bch2_trans_init(&trans, c);
+	bch2_trans_init(&trans, c, 0, 0);
 
 	for_each_btree_key(&trans, iter, id, bkey_start_pos(&insert->k),
 			   BTREE_ITER_SLOTS, k, ret) {
@@ -422,8 +422,7 @@ static void bch2_mark_pending_btree_node_frees(struct bch_fs *c)
 
 	for_each_pending_btree_node_free(c, as, d)
 		if (d->index_update_done)
-			bch2_mark_key(c, bkey_i_to_s_c(&d->key),
-				      true, 0, NULL, 0,
+			bch2_mark_key(c, bkey_i_to_s_c(&d->key), 0, NULL, 0,
 				      BCH_BUCKET_MARK_GC);
 
 	mutex_unlock(&c->btree_interior_update_lock);
@@ -1057,7 +1056,7 @@ static int bch2_coalesce_btree(struct bch_fs *c, enum btree_id btree_id)
 	struct btree *merge[GC_MERGE_NODES];
 	u32 lock_seq[GC_MERGE_NODES];
 
-	bch2_trans_init(&trans, c);
+	bch2_trans_init(&trans, c, 0, 0);
 
 	/*
 	 * XXX: We don't have a good way of positively matching on sibling nodes

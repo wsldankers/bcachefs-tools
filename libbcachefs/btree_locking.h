@@ -107,7 +107,7 @@ static inline void __btree_node_unlock(struct btree_iter *iter, unsigned level)
 
 static inline void btree_node_unlock(struct btree_iter *iter, unsigned level)
 {
-	BUG_ON(!level && iter->flags & BTREE_ITER_NOUNLOCK);
+	EBUG_ON(!level && iter->trans->nounlock);
 
 	__btree_node_unlock(iter, level);
 }
@@ -175,20 +175,18 @@ static inline bool btree_node_lock_increment(struct btree_iter *iter,
 }
 
 bool __bch2_btree_node_lock(struct btree *, struct bpos, unsigned,
-			    struct btree_iter *, enum six_lock_type, bool);
+			    struct btree_iter *, enum six_lock_type);
 
 static inline bool btree_node_lock(struct btree *b, struct bpos pos,
 				   unsigned level,
 				   struct btree_iter *iter,
-				   enum six_lock_type type,
-				   bool may_drop_locks)
+				   enum six_lock_type type)
 {
 	EBUG_ON(level >= BTREE_MAX_DEPTH);
 
 	return likely(six_trylock_type(&b->lock, type)) ||
 		btree_node_lock_increment(iter, b, level, type) ||
-		__bch2_btree_node_lock(b, pos, level, iter,
-				       type, may_drop_locks);
+		__bch2_btree_node_lock(b, pos, level, iter, type);
 }
 
 bool __bch2_btree_node_relock(struct btree_iter *, unsigned);

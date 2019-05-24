@@ -193,7 +193,9 @@ found:
 		       : gc_pos_btree_root(as->btree_id)) >= 0 &&
 	    gc_pos_cmp(c->gc_pos, gc_phase(GC_PHASE_PENDING_DELETE)) < 0)
 		bch2_mark_key_locked(c, bkey_i_to_s_c(&d->key),
-			      false, 0, NULL, 0, BCH_BUCKET_MARK_GC);
+			      0, NULL, 0,
+			      BCH_BUCKET_MARK_OVERWRITE|
+			      BCH_BUCKET_MARK_GC);
 }
 
 static void __btree_node_free(struct bch_fs *c, struct btree *b)
@@ -263,13 +265,13 @@ static void bch2_btree_node_free_ondisk(struct bch_fs *c,
 {
 	BUG_ON(!pending->index_update_done);
 
-	bch2_mark_key(c, bkey_i_to_s_c(&pending->key),
-		      false, 0,
-		      NULL, 0, 0);
+	bch2_mark_key(c, bkey_i_to_s_c(&pending->key), 0, NULL, 0,
+		      BCH_BUCKET_MARK_OVERWRITE);
 
 	if (gc_visited(c, gc_phase(GC_PHASE_PENDING_DELETE)))
-		bch2_mark_key(c, bkey_i_to_s_c(&pending->key),
-			      false, 0, NULL, 0, BCH_BUCKET_MARK_GC);
+		bch2_mark_key(c, bkey_i_to_s_c(&pending->key), 0, NULL, 0,
+			      BCH_BUCKET_MARK_OVERWRITE|
+			      BCH_BUCKET_MARK_GC);
 }
 
 static struct btree *__bch2_btree_node_alloc(struct bch_fs *c,
@@ -1074,10 +1076,12 @@ static void bch2_btree_set_root_inmem(struct btree_update *as, struct btree *b)
 	fs_usage = bch2_fs_usage_scratch_get(c);
 
 	bch2_mark_key_locked(c, bkey_i_to_s_c(&b->key),
-		      true, 0, fs_usage, 0, 0);
+		      0, fs_usage, 0,
+		      BCH_BUCKET_MARK_INSERT);
 	if (gc_visited(c, gc_pos_btree_root(b->btree_id)))
 		bch2_mark_key_locked(c, bkey_i_to_s_c(&b->key),
-				     true, 0, NULL, 0,
+				     0, NULL, 0,
+				     BCH_BUCKET_MARK_INSERT|
 				     BCH_BUCKET_MARK_GC);
 
 	if (old && !btree_node_fake(old))
@@ -1170,11 +1174,14 @@ static void bch2_insert_fixup_btree_ptr(struct btree_update *as, struct btree *b
 	fs_usage = bch2_fs_usage_scratch_get(c);
 
 	bch2_mark_key_locked(c, bkey_i_to_s_c(insert),
-			     true, 0, fs_usage, 0, 0);
+			     0, fs_usage, 0,
+			     BCH_BUCKET_MARK_INSERT);
 
 	if (gc_visited(c, gc_pos_btree_node(b)))
 		bch2_mark_key_locked(c, bkey_i_to_s_c(insert),
-				     true, 0, NULL, 0, BCH_BUCKET_MARK_GC);
+				     0, NULL, 0,
+				     BCH_BUCKET_MARK_INSERT|
+				     BCH_BUCKET_MARK_GC);
 
 	while ((k = bch2_btree_node_iter_peek_all(node_iter, b)) &&
 	       bkey_iter_pos_cmp(b, &insert->k.p, k) > 0)
@@ -1550,6 +1557,7 @@ split:
 int bch2_btree_split_leaf(struct bch_fs *c, struct btree_iter *iter,
 			  unsigned flags)
 {
+	struct btree_trans *trans = iter->trans;
 	struct btree *b = iter->l[0].b;
 	struct btree_update *as;
 	struct closure cl;
@@ -1560,7 +1568,7 @@ int bch2_btree_split_leaf(struct bch_fs *c, struct btree_iter *iter,
 	 * We already have a disk reservation and open buckets pinned; this
 	 * allocation must not block:
 	 */
-	trans_for_each_iter(iter->trans, linked)
+	trans_for_each_iter(trans, linked)
 		if (linked->btree_id == BTREE_ID_EXTENTS)
 			flags |= BTREE_INSERT_USE_RESERVE;
 
@@ -1572,10 +1580,10 @@ int bch2_btree_split_leaf(struct bch_fs *c, struct btree_iter *iter,
 		if (flags & BTREE_INSERT_NOUNLOCK)
 			return -EINTR;
 
-		bch2_btree_trans_unlock(iter->trans);
+		bch2_trans_unlock(trans);
 		down_read(&c->gc_lock);
 
-		if (!bch2_btree_trans_relock(iter->trans))
+		if (!bch2_trans_relock(trans))
 			ret = -EINTR;
 	}
 
@@ -1583,8 +1591,8 @@ int bch2_btree_split_leaf(struct bch_fs *c, struct btree_iter *iter,
 	 * XXX: figure out how far we might need to split,
 	 * instead of locking/reserving all the way to the root:
 	 */
-	if (!bch2_btree_iter_upgrade(iter, U8_MAX,
-			!(flags & BTREE_INSERT_NOUNLOCK))) {
+	if (!bch2_btree_iter_upgrade(iter, U8_MAX)) {
+		trace_trans_restart_iter_upgrade(trans->ip);
 		ret = -EINTR;
 		goto out;
 	}
@@ -1596,7 +1604,7 @@ int bch2_btree_split_leaf(struct bch_fs *c, struct btree_iter *iter,
 		ret = PTR_ERR(as);
 		if (ret == -EAGAIN) {
 			BUG_ON(flags & BTREE_INSERT_NOUNLOCK);
-			bch2_btree_iter_unlock(iter);
+			bch2_trans_unlock(trans);
 			ret = -EINTR;
 		}
 		goto out;
@@ -1623,6 +1631,7 @@ void __bch2_foreground_maybe_merge(struct bch_fs *c,
 				   unsigned flags,
 				   enum btree_node_sibling sib)
 {
+	struct btree_trans *trans = iter->trans;
 	struct btree_update *as;
 	struct bkey_format_state new_s;
 	struct bkey_format new_f;
@@ -1646,8 +1655,7 @@ retry:
 		goto out;
 
 	/* XXX: can't be holding read locks */
-	m = bch2_btree_node_get_sibling(c, iter, b,
-			!(flags & BTREE_INSERT_NOUNLOCK), sib);
+	m = bch2_btree_node_get_sibling(c, iter, b, sib);
 	if (IS_ERR(m)) {
 		ret = PTR_ERR(m);
 		goto err;
@@ -1694,8 +1702,7 @@ retry:
 	    !down_read_trylock(&c->gc_lock))
 		goto err_cycle_gc_lock;
 
-	if (!bch2_btree_iter_upgrade(iter, U8_MAX,
-			!(flags & BTREE_INSERT_NOUNLOCK))) {
+	if (!bch2_btree_iter_upgrade(iter, U8_MAX)) {
 		ret = -EINTR;
 		goto err_unlock;
 	}
@@ -1757,7 +1764,7 @@ retry:
 	if (!(flags & BTREE_INSERT_GC_LOCK_HELD))
 		up_read(&c->gc_lock);
 out:
-	bch2_btree_trans_verify_locks(iter->trans);
+	bch2_btree_trans_verify_locks(trans);
 
 	/*
 	 * Don't downgrade locks here: we're called after successful insert,
@@ -1777,7 +1784,7 @@ err_cycle_gc_lock:
 	if (flags & BTREE_INSERT_NOUNLOCK)
 		goto out;
 
-	bch2_btree_iter_unlock(iter);
+	bch2_trans_unlock(trans);
 
 	down_read(&c->gc_lock);
 	up_read(&c->gc_lock);
@@ -1793,7 +1800,7 @@ err:
 
 	if ((ret == -EAGAIN || ret == -EINTR) &&
 	    !(flags & BTREE_INSERT_NOUNLOCK)) {
-		bch2_btree_iter_unlock(iter);
+		bch2_trans_unlock(trans);
 		closure_sync(&cl);
 		ret = bch2_btree_iter_traverse(iter);
 		if (ret)
@@ -1860,6 +1867,7 @@ static int __btree_node_rewrite(struct bch_fs *c, struct btree_iter *iter,
 int bch2_btree_node_rewrite(struct bch_fs *c, struct btree_iter *iter,
 			    __le64 seq, unsigned flags)
 {
+	struct btree_trans *trans = iter->trans;
 	struct closure cl;
 	struct btree *b;
 	int ret;
@@ -1868,11 +1876,11 @@ int bch2_btree_node_rewrite(struct bch_fs *c, struct btree_iter *iter,
 
 	closure_init_stack(&cl);
 
-	bch2_btree_iter_upgrade(iter, U8_MAX, true);
+	bch2_btree_iter_upgrade(iter, U8_MAX);
 
 	if (!(flags & BTREE_INSERT_GC_LOCK_HELD)) {
 		if (!down_read_trylock(&c->gc_lock)) {
-			bch2_btree_iter_unlock(iter);
+			bch2_trans_unlock(trans);
 			down_read(&c->gc_lock);
 		}
 	}
@@ -1891,7 +1899,7 @@ int bch2_btree_node_rewrite(struct bch_fs *c, struct btree_iter *iter,
 		    ret != -EINTR)
 			break;
 
-		bch2_btree_iter_unlock(iter);
+		bch2_trans_unlock(trans);
 		closure_sync(&cl);
 	}
 
@@ -1994,10 +2002,12 @@ static void __bch2_btree_node_update_key(struct bch_fs *c,
 		fs_usage = bch2_fs_usage_scratch_get(c);
 
 		bch2_mark_key_locked(c, bkey_i_to_s_c(&new_key->k_i),
-			      true, 0, fs_usage, 0, 0);
+			      0, fs_usage, 0,
+			      BCH_BUCKET_MARK_INSERT);
 		if (gc_visited(c, gc_pos_btree_root(b->btree_id)))
 			bch2_mark_key_locked(c, bkey_i_to_s_c(&new_key->k_i),
-					     true, 0, NULL, 0,
+					     0, NULL, 0,
+					     BCH_BUCKET_MARK_INSERT||
 					     BCH_BUCKET_MARK_GC);
 
 		bch2_btree_node_free_index(as, NULL,
@@ -2040,14 +2050,14 @@ int bch2_btree_node_update_key(struct bch_fs *c, struct btree_iter *iter,
 
 	closure_init_stack(&cl);
 
-	if (!bch2_btree_iter_upgrade(iter, U8_MAX, true))
+	if (!bch2_btree_iter_upgrade(iter, U8_MAX))
 		return -EINTR;
 
 	if (!down_read_trylock(&c->gc_lock)) {
-		bch2_btree_trans_unlock(iter->trans);
+		bch2_trans_unlock(iter->trans);
 		down_read(&c->gc_lock);
 
-		if (!bch2_btree_trans_relock(iter->trans)) {
+		if (!bch2_trans_relock(iter->trans)) {
 			ret = -EINTR;
 			goto err;
 		}
@@ -2058,12 +2068,12 @@ int bch2_btree_node_update_key(struct bch_fs *c, struct btree_iter *iter,
 		/* bch2_btree_reserve_get will unlock */
 		ret = bch2_btree_cache_cannibalize_lock(c, &cl);
 		if (ret) {
-			bch2_btree_trans_unlock(iter->trans);
+			bch2_trans_unlock(iter->trans);
 			up_read(&c->gc_lock);
 			closure_sync(&cl);
 			down_read(&c->gc_lock);
 
-			if (!bch2_btree_trans_relock(iter->trans)) {
+			if (!bch2_trans_relock(iter->trans)) {
 				ret = -EINTR;
 				goto err;
 			}
@@ -2087,12 +2097,12 @@ int bch2_btree_node_update_key(struct bch_fs *c, struct btree_iter *iter,
 		if (ret != -EINTR)
 			goto err;
 
-		bch2_btree_trans_unlock(iter->trans);
+		bch2_trans_unlock(iter->trans);
 		up_read(&c->gc_lock);
 		closure_sync(&cl);
 		down_read(&c->gc_lock);
 
-		if (!bch2_btree_trans_relock(iter->trans))
+		if (!bch2_trans_relock(iter->trans))
 			goto err;
 	}
 

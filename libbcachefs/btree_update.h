@@ -47,6 +47,7 @@ enum {
 	__BTREE_INSERT_NOMARK,
 	__BTREE_INSERT_MARK_INMEM,
 	__BTREE_INSERT_NO_CLEAR_REPLICAS,
+	__BTREE_INSERT_BUCKET_INVALIDATE,
 	__BTREE_INSERT_NOWAIT,
 	__BTREE_INSERT_GC_LOCK_HELD,
 	__BCH_HASH_SET_MUST_CREATE,
@@ -93,6 +94,8 @@ enum {
 
 #define BTREE_INSERT_NO_CLEAR_REPLICAS	(1 << __BTREE_INSERT_NO_CLEAR_REPLICAS)
 
+#define BTREE_INSERT_BUCKET_INVALIDATE	(1 << __BTREE_INSERT_BUCKET_INVALIDATE)
+
 /* Don't block on allocation failure (for new btree nodes: */
 #define BTREE_INSERT_NOWAIT		(1 << __BTREE_INSERT_NOWAIT)
 #define BTREE_INSERT_GC_LOCK_HELD	(1 << __BTREE_INSERT_GC_LOCK_HELD)
@@ -105,6 +108,8 @@ int bch2_btree_delete_at(struct btree_trans *, struct btree_iter *, unsigned);
 int bch2_btree_insert(struct bch_fs *, enum btree_id, struct bkey_i *,
 		     struct disk_reservation *, u64 *, int flags);
 
+int bch2_btree_delete_at_range(struct btree_trans *, struct btree_iter *,
+			       struct bpos, u64 *);
 int bch2_btree_delete_range(struct bch_fs *, enum btree_id,
 			    struct bpos, struct bpos, u64 *);
 
@@ -125,7 +130,7 @@ struct btree_insert_entry *bch2_trans_update(struct btree_trans *,
 	struct btree_trans trans;					\
 	int _ret;							\
 									\
-	bch2_trans_init(&trans, (_c));					\
+	bch2_trans_init(&trans, (_c), 0, 0);				\
 									\
 	do {								\
 		bch2_trans_begin(&trans);				\

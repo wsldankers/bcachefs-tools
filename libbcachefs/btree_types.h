@@ -193,7 +193,6 @@ enum btree_iter_type {
  */
 #define BTREE_ITER_IS_EXTENTS		(1 << 4)
 #define BTREE_ITER_ERROR		(1 << 5)
-#define BTREE_ITER_NOUNLOCK		(1 << 6)
 
 enum btree_iter_uptodate {
 	BTREE_ITER_UPTODATE		= 0,
@@ -269,7 +268,6 @@ struct btree_insert_entry {
 struct btree_trans {
 	struct bch_fs		*c;
 	unsigned long		ip;
-	size_t			nr_restarts;
 	u64			commit_start;
 
 	u64			iters_linked;
@@ -283,6 +281,7 @@ struct btree_trans {
 	u8			size;
 	unsigned		used_mempool:1;
 	unsigned		error:1;
+	unsigned		nounlock:1;
 
 	unsigned		mem_top;
 	unsigned		mem_bytes;
@@ -297,11 +296,12 @@ struct btree_trans {
 	u64			*journal_seq;
 	struct disk_reservation *disk_res;
 	unsigned		flags;
+	unsigned		journal_u64s;
 
 	struct btree_iter	iters_onstack[2];
 	struct btree_insert_entry updates_onstack[6];
 
-	struct replicas_delta_list fs_usage_deltas;
+	struct replicas_delta_list *fs_usage_deltas;
 };
 
 #define BTREE_FLAG(flag)						\
