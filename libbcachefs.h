@@ -152,7 +152,7 @@ static inline struct bch_ioctl_usage *bchu_usage(struct bchfs_handle fs)
 		if (!ioctl(fs.ioctl_fd, BCH_IOCTL_USAGE, u))
 			return u;
 
-		if (errno != ENOSPC)
+		if (errno != ERANGE)
 			die("BCH_IOCTL_USAGE error: %m");
 		nr_devices *= 2;
 	}
