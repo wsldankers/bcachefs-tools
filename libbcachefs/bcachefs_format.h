@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _BCACHEFS_FORMAT_H
 #define _BCACHEFS_FORMAT_H
 
@@ -846,6 +847,8 @@ static const unsigned BKEY_ALLOC_VAL_U64s_MAX =
 	DIV_ROUND_UP(offsetof(struct bch_alloc, data)
 		     BCH_ALLOC_FIELDS(), sizeof(u64));
 #undef x
+
+#define BKEY_ALLOC_U64s_MAX	(BKEY_U64s + BKEY_ALLOC_VAL_U64s_MAX)
 
 /* Quotas: */
 

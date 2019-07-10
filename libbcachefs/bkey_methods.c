@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 
 #include "bcachefs.h"
 #include "bkey_methods.h"
@@ -81,9 +82,17 @@ const char *__bch2_bkey_invalid(struct bch_fs *c, struct bkey_s_c k,
 	if (k.k->u64s < BKEY_U64s)
 		return "u64s too small";
 
+	if ((btree_node_type_is_extents(type) ||
+	     type == BKEY_TYPE_BTREE) &&
+	    bkey_val_u64s(k.k) > BKEY_EXTENT_VAL_U64s_MAX)
+		return "value too big";
+
 	if (btree_node_type_is_extents(type)) {
 		if ((k.k->size == 0) != bkey_deleted(k.k))
 			return "bad size field";
+
+		if (k.k->size > k.k->p.offset)
+			return "size greater than offset";
 	} else {
 		if (k.k->size)
 			return "nonzero size field";
@@ -198,22 +207,22 @@ bool bch2_bkey_normalize(struct bch_fs *c, struct bkey_s k)
 }
 
 enum merge_result bch2_bkey_merge(struct bch_fs *c,
-				  struct bkey_i *l, struct bkey_i *r)
+				  struct bkey_s l, struct bkey_s r)
 {
-	const struct bkey_ops *ops = &bch2_bkey_ops[l->k.type];
+	const struct bkey_ops *ops = &bch2_bkey_ops[l.k->type];
 	enum merge_result ret;
 
 	if (key_merging_disabled(c) ||
 	    !ops->key_merge ||
-	    l->k.type != r->k.type ||
-	    bversion_cmp(l->k.version, r->k.version) ||
-	    bkey_cmp(l->k.p, bkey_start_pos(&r->k)))
+	    l.k->type != r.k->type ||
+	    bversion_cmp(l.k->version, r.k->version) ||
+	    bkey_cmp(l.k->p, bkey_start_pos(r.k)))
 		return BCH_MERGE_NOMERGE;
 
 	ret = ops->key_merge(c, l, r);
 
 	if (ret != BCH_MERGE_NOMERGE)
-		l->k.needs_whiteout |= r->k.needs_whiteout;
+		l.k->needs_whiteout |= r.k->needs_whiteout;
 	return ret;
 }
 

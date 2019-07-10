@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 
 #include "bcachefs.h"
 #include "alloc_foreground.h"
@@ -300,12 +301,13 @@ static void move_free(struct closure *cl)
 {
 	struct moving_io *io = container_of(cl, struct moving_io, cl);
 	struct moving_context *ctxt = io->write.ctxt;
+	struct bvec_iter_all iter;
 	struct bio_vec *bv;
 	int i;
 
 	bch2_disk_reservation_put(io->write.op.c, &io->write.op.res);
 
-	bio_for_each_segment_all(bv, &io->write.op.wbio.bio, i)
+	bio_for_each_segment_all(bv, &io->write.op.wbio.bio, i, iter)
 		if (bv->bv_page)
 			__free_page(bv->bv_page);
 
@@ -428,10 +430,9 @@ static int bch2_move_extent(struct bch_fs *c,
 	bio_init(&io->write.op.wbio.bio, io->bi_inline_vecs, pages);
 	bio_set_prio(&io->write.op.wbio.bio,
 		     IOPRIO_PRIO_VALUE(IOPRIO_CLASS_IDLE, 0));
-	io->write.op.wbio.bio.bi_iter.bi_size = sectors << 9;
 
-	bch2_bio_map(&io->write.op.wbio.bio, NULL);
-	if (bch2_bio_alloc_pages(&io->write.op.wbio.bio, GFP_KERNEL))
+	if (bch2_bio_alloc_pages(&io->write.op.wbio.bio, sectors << 9,
+				 GFP_KERNEL))
 		goto err_free;
 
 	io->rbio.opts = io_opts;

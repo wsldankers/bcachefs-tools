@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * bcachefs setup/teardown code, and some metadata io - read a superblock and
  * figure out what to do with it.
@@ -396,6 +397,8 @@ static int bch2_fs_read_write_late(struct bch_fs *c)
 	}
 
 	schedule_delayed_work(&c->pd_controllers_update, 5 * HZ);
+
+	schedule_work(&c->ec_stripe_delete_work);
 
 	return 0;
 }

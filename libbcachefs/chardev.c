@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #ifndef NO_BCACHEFS_CHARDEV
 
 #include "bcachefs.h"
@@ -405,7 +406,7 @@ static long bch2_ioctl_usage(struct bch_fs *c,
 		dst.used		= bch2_fs_sectors_used(c, src);
 		dst.online_reserved	= src->online_reserved;
 
-		percpu_up_read_preempt_enable(&c->mark_lock);
+		percpu_up_read(&c->mark_lock);
 
 		for (i = 0; i < BCH_REPLICAS_MAX; i++) {
 			dst.persistent_reserved[i] =

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Some low level IO code, and hacks for various block layer limitations
  *
@@ -121,23 +122,23 @@ void bch2_latency_acct(struct bch_dev *ca, u64 submit_time, int rw)
 
 void bch2_bio_free_pages_pool(struct bch_fs *c, struct bio *bio)
 {
+	struct bvec_iter_all iter;
 	struct bio_vec *bv;
 	unsigned i;
 
-	bio_for_each_segment_all(bv, bio, i)
+	bio_for_each_segment_all(bv, bio, i, iter)
 		if (bv->bv_page != ZERO_PAGE(0))
 			mempool_free(bv->bv_page, &c->bio_bounce_pages);
 	bio->bi_vcnt = 0;
 }
 
-static void bch2_bio_alloc_page_pool(struct bch_fs *c, struct bio *bio,
-				    bool *using_mempool)
+static struct page *__bio_alloc_page_pool(struct bch_fs *c, bool *using_mempool)
 {
-	struct bio_vec *bv = &bio->bi_io_vec[bio->bi_vcnt++];
+	struct page *page;
 
 	if (likely(!*using_mempool)) {
-		bv->bv_page = alloc_page(GFP_NOIO);
-		if (unlikely(!bv->bv_page)) {
+		page = alloc_page(GFP_NOIO);
+		if (unlikely(!page)) {
 			mutex_lock(&c->bio_bounce_pages_lock);
 			*using_mempool = true;
 			goto pool_alloc;
@@ -145,55 +146,27 @@ static void bch2_bio_alloc_page_pool(struct bch_fs *c, struct bio *bio,
 		}
 	} else {
 pool_alloc:
-		bv->bv_page = mempool_alloc(&c->bio_bounce_pages, GFP_NOIO);
+		page = mempool_alloc(&c->bio_bounce_pages, GFP_NOIO);
 	}
 
-	bv->bv_len = PAGE_SIZE;
-	bv->bv_offset = 0;
+	return page;
 }
 
 void bch2_bio_alloc_pages_pool(struct bch_fs *c, struct bio *bio,
-			       size_t bytes)
+			       size_t size)
 {
 	bool using_mempool = false;
 
-	BUG_ON(DIV_ROUND_UP(bytes, PAGE_SIZE) > bio->bi_max_vecs);
+	while (size) {
+		struct page *page = __bio_alloc_page_pool(c, &using_mempool);
+		unsigned len = min(PAGE_SIZE, size);
 
-	bio->bi_iter.bi_size = bytes;
-
-	while (bio->bi_vcnt < DIV_ROUND_UP(bytes, PAGE_SIZE))
-		bch2_bio_alloc_page_pool(c, bio, &using_mempool);
+		BUG_ON(!bio_add_page(bio, page, len, 0));
+		size -= len;
+	}
 
 	if (using_mempool)
 		mutex_unlock(&c->bio_bounce_pages_lock);
-}
-
-void bch2_bio_alloc_more_pages_pool(struct bch_fs *c, struct bio *bio,
-				    size_t bytes)
-{
-	while (bio->bi_vcnt < DIV_ROUND_UP(bytes, PAGE_SIZE)) {
-		struct bio_vec *bv = &bio->bi_io_vec[bio->bi_vcnt];
-
-		BUG_ON(bio->bi_vcnt >= bio->bi_max_vecs);
-
-		bv->bv_page = alloc_page(GFP_NOIO);
-		if (!bv->bv_page) {
-			/*
-			 * We already allocated from mempool, we can't allocate from it again
-			 * without freeing the pages we already allocated or else we could
-			 * deadlock:
-			 */
-			bch2_bio_free_pages_pool(c, bio);
-			bch2_bio_alloc_pages_pool(c, bio, bytes);
-			return;
-		}
-
-		bv->bv_len = PAGE_SIZE;
-		bv->bv_offset = 0;
-		bio->bi_vcnt++;
-	}
-
-	bio->bi_iter.bi_size = bytes;
 }
 
 /* Writes */
@@ -481,8 +454,7 @@ static struct bio *bch2_write_bio_alloc(struct bch_fs *c,
 	wbio->bio.bi_opf	= src->bi_opf;
 
 	if (buf) {
-		bio->bi_iter.bi_size = output_available;
-		bch2_bio_map(bio, buf);
+		bch2_bio_map(bio, buf, output_available);
 		return bio;
 	}
 
@@ -492,31 +464,17 @@ static struct bio *bch2_write_bio_alloc(struct bch_fs *c,
 	 * We can't use mempool for more than c->sb.encoded_extent_max
 	 * worth of pages, but we'd like to allocate more if we can:
 	 */
-	while (bio->bi_iter.bi_size < output_available) {
-		unsigned len = min_t(unsigned, PAGE_SIZE,
-				     output_available - bio->bi_iter.bi_size);
-		struct page *p;
+	bch2_bio_alloc_pages_pool(c, bio,
+				  min_t(unsigned, output_available,
+					c->sb.encoded_extent_max << 9));
 
-		p = alloc_page(GFP_NOIO);
-		if (!p) {
-			unsigned pool_max =
-				min_t(unsigned, output_available,
-				      c->sb.encoded_extent_max << 9);
+	if (bio->bi_iter.bi_size < output_available)
+		*page_alloc_failed =
+			bch2_bio_alloc_pages(bio,
+					     output_available -
+					     bio->bi_iter.bi_size,
+					     GFP_NOFS) != 0;
 
-			if (bio_sectors(bio) < pool_max)
-				bch2_bio_alloc_pages_pool(c, bio, pool_max);
-			break;
-		}
-
-		bio->bi_io_vec[bio->bi_vcnt++] = (struct bio_vec) {
-			.bv_page	= p,
-			.bv_len		= len,
-			.bv_offset	= 0,
-		};
-		bio->bi_iter.bi_size += len;
-	}
-
-	*page_alloc_failed = bio->bi_vcnt < pages;
 	return bio;
 }
 
@@ -820,12 +778,6 @@ static int bch2_write_extent(struct bch_write_op *op, struct write_point *wp)
 	}
 
 	dst->bi_iter.bi_size = total_output;
-
-	/* Free unneeded pages after compressing: */
-	if (to_wbio(dst)->bounce)
-		while (dst->bi_vcnt > DIV_ROUND_UP(dst->bi_iter.bi_size, PAGE_SIZE))
-			mempool_free(dst->bi_io_vec[--dst->bi_vcnt].bv_page,
-				     &c->bio_bounce_pages);
 do_write:
 	/* might have done a realloc... */
 
@@ -956,7 +908,6 @@ void bch2_write(struct closure *cl)
 	BUG_ON(!op->nr_replicas);
 	BUG_ON(!op->write_point.v);
 	BUG_ON(!bkey_cmp(op->pos, POS_MAX));
-	BUG_ON(bio_sectors(&op->wbio.bio) > U16_MAX);
 
 	op->start_time = local_clock();
 
@@ -1003,23 +954,23 @@ static inline bool should_promote(struct bch_fs *c, struct bkey_s_c k,
 				  struct bch_io_opts opts,
 				  unsigned flags)
 {
-	if (!opts.promote_target)
+	if (!bkey_extent_is_data(k.k))
 		return false;
 
 	if (!(flags & BCH_READ_MAY_PROMOTE))
 		return false;
 
-	if (percpu_ref_is_dying(&c->writes))
+	if (!opts.promote_target)
 		return false;
 
-	if (!bkey_extent_is_data(k.k))
+	if (bch2_extent_has_target(c, bkey_s_c_to_extent(k),
+				   opts.promote_target))
 		return false;
 
-	if (bch2_extent_has_target(c, bkey_s_c_to_extent(k), opts.promote_target))
+	if (bch2_target_congested(c, opts.promote_target)) {
+		/* XXX trace this */
 		return false;
-
-	if (bch2_target_congested(c, opts.promote_target))
-		return false;
+	}
 
 	if (rhashtable_lookup_fast(&c->promote_table, &pos,
 				   bch_promote_params))
@@ -1080,22 +1031,18 @@ static struct promote_op *__promote_alloc(struct bch_fs *c,
 					  struct bpos pos,
 					  struct extent_ptr_decoded *pick,
 					  struct bch_io_opts opts,
-					  unsigned rbio_sectors,
+					  unsigned sectors,
 					  struct bch_read_bio **rbio)
 {
 	struct promote_op *op = NULL;
 	struct bio *bio;
-	unsigned rbio_pages = DIV_ROUND_UP(rbio_sectors, PAGE_SECTORS);
-	/* data might have to be decompressed in the write path: */
-	unsigned wbio_pages = DIV_ROUND_UP(pick->crc.uncompressed_size,
-					   PAGE_SECTORS);
+	unsigned pages = DIV_ROUND_UP(sectors, PAGE_SECTORS);
 	int ret;
 
 	if (!percpu_ref_tryget(&c->writes))
 		return NULL;
 
-	op = kzalloc(sizeof(*op) + sizeof(struct bio_vec) * wbio_pages,
-		     GFP_NOIO);
+	op = kzalloc(sizeof(*op) + sizeof(struct bio_vec) * pages, GFP_NOIO);
 	if (!op)
 		goto err;
 
@@ -1103,37 +1050,32 @@ static struct promote_op *__promote_alloc(struct bch_fs *c,
 	op->pos = pos;
 
 	/*
-	 * promotes require bouncing, but if the extent isn't
-	 * checksummed/compressed it might be too big for the mempool:
+	 * We don't use the mempool here because extents that aren't
+	 * checksummed or compressed can be too big for the mempool:
 	 */
-	if (rbio_sectors > c->sb.encoded_extent_max) {
-		*rbio = kzalloc(sizeof(struct bch_read_bio) +
-				sizeof(struct bio_vec) * rbio_pages,
-				GFP_NOIO);
-		if (!*rbio)
-			goto err;
+	*rbio = kzalloc(sizeof(struct bch_read_bio) +
+			sizeof(struct bio_vec) * pages,
+			GFP_NOIO);
+	if (!*rbio)
+		goto err;
 
-		rbio_init(&(*rbio)->bio, opts);
-		bio_init(&(*rbio)->bio, (*rbio)->bio.bi_inline_vecs,
-			 rbio_pages);
+	rbio_init(&(*rbio)->bio, opts);
+	bio_init(&(*rbio)->bio, (*rbio)->bio.bi_inline_vecs, pages);
 
-		(*rbio)->bio.bi_iter.bi_size = rbio_sectors << 9;
-		bch2_bio_map(&(*rbio)->bio, NULL);
+	if (bch2_bio_alloc_pages(&(*rbio)->bio, sectors << 9,
+				 GFP_NOIO))
+		goto err;
 
-		if (bch2_bio_alloc_pages(&(*rbio)->bio, GFP_NOIO))
-			goto err;
-
-		(*rbio)->bounce		= true;
-		(*rbio)->split		= true;
-		(*rbio)->kmalloc	= true;
-	}
+	(*rbio)->bounce		= true;
+	(*rbio)->split		= true;
+	(*rbio)->kmalloc	= true;
 
 	if (rhashtable_lookup_insert_fast(&c->promote_table, &op->hash,
 					  bch_promote_params))
 		goto err;
 
 	bio = &op->write.op.wbio.bio;
-	bio_init(bio, bio->bi_inline_vecs, wbio_pages);
+	bio_init(bio, bio->bi_inline_vecs, pages);
 
 	ret = bch2_migrate_write_init(c, &op->write,
 			writepoint_hashed((unsigned long) current),
@@ -1167,8 +1109,9 @@ static inline struct promote_op *promote_alloc(struct bch_fs *c,
 					       bool *read_full)
 {
 	bool promote_full = *read_full || READ_ONCE(c->promote_whole_extents);
+	/* data might have to be decompressed in the write path: */
 	unsigned sectors = promote_full
-		? pick->crc.compressed_size
+		? max(pick->crc.compressed_size, pick->crc.live_size)
 		: bvec_iter_sectors(iter);
 	struct bpos pos = promote_full
 		? bkey_start_pos(k.k)
@@ -1703,7 +1646,16 @@ int __bch2_read_extent(struct bch_fs *c, struct bch_read_bio *orig,
 	}
 
 	if (rbio) {
-		/* promote already allocated bounce rbio */
+		/*
+		 * promote already allocated bounce rbio:
+		 * promote needs to allocate a bio big enough for uncompressing
+		 * data in the write path, but we're not going to use it all
+		 * here:
+		 */
+		BUG_ON(rbio->bio.bi_iter.bi_size <
+		       pick.crc.compressed_size << 9);
+		rbio->bio.bi_iter.bi_size =
+			pick.crc.compressed_size << 9;
 	} else if (bounce) {
 		unsigned sectors = pick.crc.compressed_size;
 
@@ -1767,9 +1719,9 @@ noclone:
 
 	bch2_increment_clock(c, bio_sectors(&rbio->bio), READ);
 
-	percpu_down_read_preempt_disable(&c->mark_lock);
+	percpu_down_read(&c->mark_lock);
 	bucket_io_clock_reset(c, ca, PTR_BUCKET_NR(ca, &pick.ptr), READ);
-	percpu_up_read_preempt_enable(&c->mark_lock);
+	percpu_up_read(&c->mark_lock);
 
 	if (likely(!(flags & (BCH_READ_IN_RETRY|BCH_READ_LAST_FRAGMENT)))) {
 		bio_inc_remaining(&orig->bio);

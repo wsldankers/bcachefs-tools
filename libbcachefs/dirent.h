@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _BCACHEFS_DIRENT_H
 #define _BCACHEFS_DIRENT_H
 

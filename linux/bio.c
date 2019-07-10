@@ -165,10 +165,11 @@ struct bio *bio_split(struct bio *bio, int sectors,
 
 void bio_free_pages(struct bio *bio)
 {
+	struct bvec_iter_all iter;
 	struct bio_vec *bvec;
 	int i;
 
-	bio_for_each_segment_all(bvec, bio, i)
+	bio_for_each_segment_all(bvec, bio, i, iter)
 		__free_page(bvec->bv_page);
 }
 
@@ -197,6 +198,23 @@ void bio_put(struct bio *bio)
 		if (atomic_dec_and_test(&bio->__bi_cnt))
 			bio_free(bio);
 	}
+}
+
+int bio_add_page(struct bio *bio, struct page *page,
+		 unsigned int len, unsigned int off)
+{
+	struct bio_vec *bv = &bio->bi_io_vec[bio->bi_vcnt];
+
+	WARN_ON_ONCE(bio_flagged(bio, BIO_CLONED));
+	WARN_ON_ONCE(bio->bi_vcnt >= bio->bi_max_vecs);
+
+	bv->bv_page = page;
+	bv->bv_offset = off;
+	bv->bv_len = len;
+
+	bio->bi_iter.bi_size += len;
+	bio->bi_vcnt++;
+	return len;
 }
 
 static inline bool bio_remaining_done(struct bio *bio)

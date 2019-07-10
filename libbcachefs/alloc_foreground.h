@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _BCACHEFS_ALLOC_FOREGROUND_H
 #define _BCACHEFS_ALLOC_FOREGROUND_H
 

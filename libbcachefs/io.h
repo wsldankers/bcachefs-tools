@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _BCACHEFS_IO_H
 #define _BCACHEFS_IO_H
 
@@ -12,7 +13,6 @@
 
 void bch2_bio_free_pages_pool(struct bch_fs *, struct bio *);
 void bch2_bio_alloc_pages_pool(struct bch_fs *, struct bio *, size_t);
-void bch2_bio_alloc_more_pages_pool(struct bch_fs *, struct bio *, size_t);
 
 void bch2_latency_acct(struct bch_dev *, u64, int);
 

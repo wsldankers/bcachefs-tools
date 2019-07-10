@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _BCACHEFS_FS_IO_H
 #define _BCACHEFS_FS_IO_H
 
@@ -7,8 +8,6 @@
 #include "io_types.h"
 
 #include <linux/uio.h>
-
-int bch2_set_page_dirty(struct page *);
 
 int bch2_writepage(struct page *, struct writeback_control *);
 int bch2_readpage(struct file *, struct page *);
@@ -33,7 +32,7 @@ long bch2_fallocate_dispatch(struct file *, int, loff_t, loff_t);
 
 loff_t bch2_llseek(struct file *, loff_t, int);
 
-int bch2_page_mkwrite(struct vm_fault *);
+vm_fault_t bch2_page_mkwrite(struct vm_fault *);
 void bch2_invalidatepage(struct page *, unsigned int, unsigned int);
 int bch2_releasepage(struct page *, gfp_t);
 int bch2_migrate_page(struct address_space *, struct page *,

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _BCACHEFS_JOURNAL_RECLAIM_H
 #define _BCACHEFS_JOURNAL_RECLAIM_H
 

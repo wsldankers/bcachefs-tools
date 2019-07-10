@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Code for working with individual keys, and sorted sets of keys with in a
  * btree node
@@ -12,7 +13,6 @@
 #include "util.h"
 
 #include <asm/unaligned.h>
-#include <linux/dynamic_fault.h>
 #include <linux/console.h>
 #include <linux/random.h>
 #include <linux/prefetch.h>

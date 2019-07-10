@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #ifndef NO_BCACHEFS_FS
 
 #include "bcachefs.h"
@@ -593,7 +594,7 @@ static int bch2_unlink(struct inode *vdir, struct dentry *dentry)
 	struct btree_trans trans;
 	int ret;
 
-	bch2_lock_inodes(dir, inode);
+	bch2_lock_inodes(INODE_UPDATE_LOCK, dir, inode);
 	bch2_trans_init(&trans, c, 4, 1024);
 retry:
 	bch2_trans_begin(&trans);
@@ -626,7 +627,7 @@ retry:
 				      ATTR_MTIME);
 err:
 	bch2_trans_exit(&trans);
-	bch2_unlock_inodes(dir, inode);
+	bch2_unlock_inodes(INODE_UPDATE_LOCK, dir, inode);
 
 	return ret;
 }
@@ -803,7 +804,8 @@ static int bch2_rename2(struct inode *src_vdir, struct dentry *src_dentry,
 
 	bch2_trans_init(&trans, c, 8, 2048);
 
-	bch2_lock_inodes(i.src_dir,
+	bch2_lock_inodes(INODE_UPDATE_LOCK,
+			 i.src_dir,
 			 i.dst_dir,
 			 i.src_inode,
 			 i.dst_inode);
@@ -901,7 +903,8 @@ err:
 				       1 << QTYP_PRJ,
 				       KEY_TYPE_QUOTA_NOCHECK);
 
-	bch2_unlock_inodes(i.src_dir,
+	bch2_unlock_inodes(INODE_UPDATE_LOCK,
+			   i.src_dir,
 			   i.dst_dir,
 			   i.src_inode,
 			   i.dst_inode);
@@ -1263,7 +1266,7 @@ static const struct address_space_operations bch_address_space_operations = {
 	.readpage	= bch2_readpage,
 	.writepages	= bch2_writepages,
 	.readpages	= bch2_readpages,
-	.set_page_dirty	= bch2_set_page_dirty,
+	.set_page_dirty	= __set_page_dirty_nobuffers,
 	.write_begin	= bch2_write_begin,
 	.write_end	= bch2_write_end,
 	.invalidatepage	= bch2_invalidatepage,
@@ -1731,7 +1734,7 @@ static struct dentry *bch2_mount(struct file_system_type *fs_type,
 
 	sb->s_bdi->congested_fn		= bch2_congested;
 	sb->s_bdi->congested_data	= c;
-	sb->s_bdi->ra_pages		= VM_MAX_READAHEAD * 1024 / PAGE_SIZE;
+	sb->s_bdi->ra_pages		= VM_READAHEAD_PAGES;
 
 	for_each_online_member(ca, c, i) {
 		struct block_device *bdev = ca->disk_sb.bdev;

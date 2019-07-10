@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Code for manipulating bucket marks for garbage collection.
  *
@@ -227,12 +228,12 @@ retry:
 	if (unlikely(!ret))
 		return NULL;
 
-	percpu_down_read_preempt_disable(&c->mark_lock);
+	percpu_down_read(&c->mark_lock);
 
 	v = fs_usage_u64s(c);
 	if (unlikely(u64s != v)) {
 		u64s = v;
-		percpu_up_read_preempt_enable(&c->mark_lock);
+		percpu_up_read(&c->mark_lock);
 		kfree(ret);
 		goto retry;
 	}
@@ -350,9 +351,9 @@ bch2_fs_usage_read_short(struct bch_fs *c)
 {
 	struct bch_fs_usage_short ret;
 
-	percpu_down_read_preempt_disable(&c->mark_lock);
+	percpu_down_read(&c->mark_lock);
 	ret = __bch2_fs_usage_read_short(c);
-	percpu_up_read_preempt_enable(&c->mark_lock);
+	percpu_up_read(&c->mark_lock);
 
 	return ret;
 }
@@ -449,6 +450,7 @@ static void bch2_dev_usage_update(struct bch_fs *c, struct bch_dev *ca,
 		bch2_data_types[old.data_type],
 		bch2_data_types[new.data_type]);
 
+	preempt_disable();
 	dev_usage = this_cpu_ptr(ca->usage[gc]);
 
 	if (bucket_type(old))
@@ -472,6 +474,7 @@ static void bch2_dev_usage_update(struct bch_fs *c, struct bch_dev *ca,
 		(int) new.cached_sectors - (int) old.cached_sectors;
 	dev_usage->sectors_fragmented +=
 		is_fragmented_bucket(new, ca) - is_fragmented_bucket(old, ca);
+	preempt_enable();
 
 	if (!is_available_bucket(old) && is_available_bucket(new))
 		bch2_wake_allocator(ca);
@@ -495,11 +498,9 @@ void bch2_dev_usage_from_buckets(struct bch_fs *c)
 
 		buckets = bucket_array(ca);
 
-		preempt_disable();
 		for_each_bucket(g, buckets)
 			bch2_dev_usage_update(c, ca, c->usage_base,
 					      old, g->mark, false);
-		preempt_enable();
 	}
 }
 
@@ -681,8 +682,12 @@ void bch2_mark_alloc_bucket(struct bch_fs *c, struct bch_dev *ca,
 			    size_t b, bool owned_by_allocator,
 			    struct gc_pos pos, unsigned flags)
 {
+	preempt_disable();
+
 	do_mark_fn(__bch2_mark_alloc_bucket, c, pos, flags,
 		   ca, b, owned_by_allocator);
+
+	preempt_enable();
 }
 
 static int bch2_mark_alloc(struct bch_fs *c, struct bkey_s_c k,
@@ -792,12 +797,16 @@ void bch2_mark_metadata_bucket(struct bch_fs *c, struct bch_dev *ca,
 	BUG_ON(type != BCH_DATA_SB &&
 	       type != BCH_DATA_JOURNAL);
 
+	preempt_disable();
+
 	if (likely(c)) {
 		do_mark_fn(__bch2_mark_metadata_bucket, c, pos, flags,
 			   ca, b, type, sectors);
 	} else {
 		__bch2_mark_metadata_bucket(c, ca, b, type, sectors, 0);
 	}
+
+	preempt_enable();
 }
 
 static s64 ptr_disk_sectors_delta(struct extent_ptr_decoded p,
@@ -1148,10 +1157,10 @@ int bch2_mark_key(struct bch_fs *c, struct bkey_s_c k,
 {
 	int ret;
 
-	percpu_down_read_preempt_disable(&c->mark_lock);
+	percpu_down_read(&c->mark_lock);
 	ret = bch2_mark_key_locked(c, k, sectors,
 				   fs_usage, journal_seq, flags);
-	percpu_up_read_preempt_enable(&c->mark_lock);
+	percpu_up_read(&c->mark_lock);
 
 	return ret;
 }
@@ -1309,22 +1318,18 @@ void bch2_trans_fs_usage_apply(struct btree_trans *trans,
 
 static int trans_get_key(struct btree_trans *trans,
 			 enum btree_id btree_id, struct bpos pos,
-			 struct btree_insert_entry **insert,
 			 struct btree_iter **iter,
 			 struct bkey_s_c *k)
 {
 	unsigned i;
 	int ret;
 
-	*insert = NULL;
-
 	for (i = 0; i < trans->nr_updates; i++)
 		if (!trans->updates[i].deferred &&
 		    trans->updates[i].iter->btree_id == btree_id &&
 		    !bkey_cmp(pos, trans->updates[i].iter->pos)) {
-			*insert = &trans->updates[i];
-			*iter	= (*insert)->iter;
-			*k	= bkey_i_to_s_c((*insert)->k);
+			*iter	= trans->updates[i].iter;
+			*k	= bkey_i_to_s_c(trans->updates[i].k);
 			return 0;
 		}
 
@@ -1340,30 +1345,34 @@ static int trans_get_key(struct btree_trans *trans,
 	return ret;
 }
 
-static int trans_update_key(struct btree_trans *trans,
-			    struct btree_insert_entry **insert,
-			    struct btree_iter *iter,
-			    struct bkey_s_c k,
-			    unsigned extra_u64s)
+static void *trans_update_key(struct btree_trans *trans,
+			      struct btree_iter *iter,
+			      unsigned u64s)
 {
 	struct bkey_i *new_k;
+	unsigned i;
 
-	if (*insert)
-		return 0;
-
-	new_k = bch2_trans_kmalloc(trans, bkey_bytes(k.k) +
-				   extra_u64s * sizeof(u64));
+	new_k = bch2_trans_kmalloc(trans, u64s * sizeof(u64));
 	if (IS_ERR(new_k))
-		return PTR_ERR(new_k);
+		return new_k;
 
-	*insert = bch2_trans_update(trans, ((struct btree_insert_entry) {
-				.iter = iter,
-				.k = new_k,
-				.triggered = true,
+	bkey_init(&new_k->k);
+	new_k->k.p = iter->pos;
+
+	for (i = 0; i < trans->nr_updates; i++)
+		if (!trans->updates[i].deferred &&
+		    trans->updates[i].iter == iter) {
+			trans->updates[i].k = new_k;
+			return new_k;
+		}
+
+	bch2_trans_update(trans, ((struct btree_insert_entry) {
+		.iter = iter,
+		.k = new_k,
+		.triggered = true,
 	}));
 
-	bkey_reassemble((*insert)->k, k);
-	return 0;
+	return new_k;
 }
 
 static int bch2_trans_mark_pointer(struct btree_trans *trans,
@@ -1372,7 +1381,6 @@ static int bch2_trans_mark_pointer(struct btree_trans *trans,
 {
 	struct bch_fs *c = trans->c;
 	struct bch_dev *ca = bch_dev_bkey_exists(c, p.ptr.dev);
-	struct btree_insert_entry *insert;
 	struct btree_iter *iter;
 	struct bkey_s_c k;
 	struct bkey_alloc_unpacked u;
@@ -1382,7 +1390,7 @@ static int bch2_trans_mark_pointer(struct btree_trans *trans,
 
 	ret = trans_get_key(trans, BTREE_ID_ALLOC,
 			    POS(p.ptr.dev, PTR_BUCKET_NR(ca, &p.ptr)),
-			    &insert, &iter, &k);
+			    &iter, &k);
 	if (ret)
 		return ret;
 
@@ -1415,11 +1423,12 @@ static int bch2_trans_mark_pointer(struct btree_trans *trans,
 		? u.dirty_sectors
 		: u.cached_sectors, sectors);
 
-	ret = trans_update_key(trans, &insert, iter, k, 1);
+	a = trans_update_key(trans, iter, BKEY_ALLOC_U64s_MAX);
+	ret = PTR_ERR_OR_ZERO(a);
 	if (ret)
 		goto out;
 
-	a = bkey_alloc_init(insert->k);
+	bkey_alloc_init(&a->k_i);
 	a->k.p = iter->pos;
 	bch2_alloc_pack(a, u);
 out:
@@ -1432,8 +1441,8 @@ static int bch2_trans_mark_stripe_ptr(struct btree_trans *trans,
 			s64 sectors, enum bch_data_type data_type)
 {
 	struct bch_replicas_padded r;
-	struct btree_insert_entry *insert;
 	struct btree_iter *iter;
+	struct bkey_i *new_k;
 	struct bkey_s_c k;
 	struct bkey_s_stripe s;
 	unsigned nr_data;
@@ -1442,8 +1451,7 @@ static int bch2_trans_mark_stripe_ptr(struct btree_trans *trans,
 
 	BUG_ON(!sectors);
 
-	ret = trans_get_key(trans, BTREE_ID_EC, POS(0, p.idx),
-			    &insert, &iter, &k);
+	ret = trans_get_key(trans, BTREE_ID_EC, POS(0, p.idx), &iter, &k);
 	if (ret)
 		return ret;
 
@@ -1455,11 +1463,13 @@ static int bch2_trans_mark_stripe_ptr(struct btree_trans *trans,
 		goto out;
 	}
 
-	ret = trans_update_key(trans, &insert, iter, k, 1);
+	new_k = trans_update_key(trans, iter, k.k->u64s);
+	ret = PTR_ERR_OR_ZERO(new_k);
 	if (ret)
 		goto out;
 
-	s = bkey_i_to_s_stripe(insert->k);
+	bkey_reassemble(new_k, k);
+	s = bkey_i_to_s_stripe(new_k);
 
 	nr_data = s.v->nr_blocks - s.v->nr_redundant;
 
@@ -1580,9 +1590,9 @@ int bch2_trans_mark_key(struct btree_trans *trans, struct bkey_s_c k,
 }
 
 int bch2_trans_mark_update(struct btree_trans *trans,
-			   struct btree_insert_entry *insert)
+			   struct btree_iter *iter,
+			   struct bkey_i *insert)
 {
-	struct btree_iter	*iter = insert->iter;
 	struct btree		*b = iter->l[0].b;
 	struct btree_node_iter	node_iter = iter->l[0].iter;
 	struct bkey_packed	*_k;
@@ -1592,9 +1602,9 @@ int bch2_trans_mark_update(struct btree_trans *trans,
 		return 0;
 
 	ret = bch2_trans_mark_key(trans,
-			bkey_i_to_s_c(insert->k),
-			bpos_min(insert->k->k.p, b->key.k.p).offset -
-			bkey_start_offset(&insert->k->k),
+			bkey_i_to_s_c(insert),
+			bpos_min(insert->k.p, b->key.k.p).offset -
+			bkey_start_offset(&insert->k),
 			BCH_BUCKET_MARK_INSERT);
 	if (ret)
 		return ret;
@@ -1608,25 +1618,25 @@ int bch2_trans_mark_update(struct btree_trans *trans,
 		k = bkey_disassemble(b, _k, &unpacked);
 
 		if (btree_node_is_extents(b)
-		    ? bkey_cmp(insert->k->k.p, bkey_start_pos(k.k)) <= 0
-		    : bkey_cmp(insert->k->k.p, k.k->p))
+		    ? bkey_cmp(insert->k.p, bkey_start_pos(k.k)) <= 0
+		    : bkey_cmp(insert->k.p, k.k->p))
 			break;
 
 		if (btree_node_is_extents(b)) {
-			switch (bch2_extent_overlap(&insert->k->k, k.k)) {
+			switch (bch2_extent_overlap(&insert->k, k.k)) {
 			case BCH_EXTENT_OVERLAP_ALL:
 				sectors = -((s64) k.k->size);
 				break;
 			case BCH_EXTENT_OVERLAP_BACK:
-				sectors = bkey_start_offset(&insert->k->k) -
+				sectors = bkey_start_offset(&insert->k) -
 					k.k->p.offset;
 				break;
 			case BCH_EXTENT_OVERLAP_FRONT:
 				sectors = bkey_start_offset(k.k) -
-					insert->k->k.p.offset;
+					insert->k.p.offset;
 				break;
 			case BCH_EXTENT_OVERLAP_MIDDLE:
-				sectors = k.k->p.offset - insert->k->k.p.offset;
+				sectors = k.k->p.offset - insert->k.p.offset;
 				BUG_ON(sectors <= 0);
 
 				ret = bch2_trans_mark_key(trans, k, sectors,
@@ -1634,7 +1644,7 @@ int bch2_trans_mark_update(struct btree_trans *trans,
 				if (ret)
 					return ret;
 
-				sectors = bkey_start_offset(&insert->k->k) -
+				sectors = bkey_start_offset(&insert->k) -
 					k.k->p.offset;
 				break;
 			}
@@ -1664,10 +1674,10 @@ static u64 bch2_recalc_sectors_available(struct bch_fs *c)
 
 void __bch2_disk_reservation_put(struct bch_fs *c, struct disk_reservation *res)
 {
-	percpu_down_read_preempt_disable(&c->mark_lock);
+	percpu_down_read(&c->mark_lock);
 	this_cpu_sub(c->usage[0]->online_reserved,
 		     res->sectors);
-	percpu_up_read_preempt_enable(&c->mark_lock);
+	percpu_up_read(&c->mark_lock);
 
 	res->sectors = 0;
 }
@@ -1682,7 +1692,8 @@ int bch2_disk_reservation_add(struct bch_fs *c, struct disk_reservation *res,
 	s64 sectors_available;
 	int ret;
 
-	percpu_down_read_preempt_disable(&c->mark_lock);
+	percpu_down_read(&c->mark_lock);
+	preempt_disable();
 	pcpu = this_cpu_ptr(c->pcpu);
 
 	if (sectors <= pcpu->sectors_available)
@@ -1694,7 +1705,8 @@ int bch2_disk_reservation_add(struct bch_fs *c, struct disk_reservation *res,
 		get = min((u64) sectors + SECTORS_CACHE, old);
 
 		if (get < sectors) {
-			percpu_up_read_preempt_enable(&c->mark_lock);
+			preempt_enable();
+			percpu_up_read(&c->mark_lock);
 			goto recalculate;
 		}
 	} while ((v = atomic64_cmpxchg(&c->sectors_available,
@@ -1707,7 +1719,8 @@ out:
 	this_cpu_add(c->usage[0]->online_reserved, sectors);
 	res->sectors			+= sectors;
 
-	percpu_up_read_preempt_enable(&c->mark_lock);
+	preempt_enable();
+	percpu_up_read(&c->mark_lock);
 	return 0;
 
 recalculate:

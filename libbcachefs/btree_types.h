@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _BCACHEFS_BTREE_TYPES_H
 #define _BCACHEFS_BTREE_TYPES_H
 
@@ -261,6 +262,7 @@ struct btree_insert_entry {
 
 	bool			deferred;
 	bool			triggered;
+	bool			marked;
 };
 
 #define BTREE_ITER_MAX		64

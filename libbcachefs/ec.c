@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 
 /* erasure coding */
 
@@ -398,11 +399,10 @@ static void ec_block_io(struct bch_fs *c, struct ec_stripe_buf *buf,
 		bio_set_op_attrs(&ec_bio->bio, rw, 0);
 
 		ec_bio->bio.bi_iter.bi_sector	= ptr->offset + buf->offset + (offset >> 9);
-		ec_bio->bio.bi_iter.bi_size	= b;
 		ec_bio->bio.bi_end_io		= ec_block_endio;
 		ec_bio->bio.bi_private		= cl;
 
-		bch2_bio_map(&ec_bio->bio, buf->data[idx] + offset);
+		bch2_bio_map(&ec_bio->bio, buf->data[idx] + offset, b);
 
 		closure_get(cl);
 		percpu_ref_get(&ca->io_ref);
@@ -626,7 +626,8 @@ void bch2_stripes_heap_update(struct bch_fs *c,
 		bch2_stripes_heap_insert(c, m, idx);
 	}
 
-	if (stripe_idx_to_delete(c) >= 0)
+	if (stripe_idx_to_delete(c) >= 0 &&
+	    !percpu_ref_is_dying(&c->writes))
 		schedule_work(&c->ec_stripe_delete_work);
 }
 
@@ -684,7 +685,8 @@ static void ec_stripe_delete_work(struct work_struct *work)
 		if (idx < 0)
 			break;
 
-		ec_stripe_delete(c, idx);
+		if (ec_stripe_delete(c, idx))
+			break;
 	}
 
 	mutex_unlock(&c->ec_stripe_create_lock);

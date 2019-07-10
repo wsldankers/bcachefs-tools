@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 
 #include "bcachefs.h"
 #include "btree_cache.h"
@@ -7,6 +8,7 @@
 #include "debug.h"
 
 #include <linux/prefetch.h>
+#include <linux/sched/mm.h>
 #include <trace/events/bcachefs.h>
 
 const char * const bch2_btree_ids[] = {
@@ -507,7 +509,9 @@ struct btree *bch2_btree_node_mem_alloc(struct bch_fs *c)
 	struct btree_cache *bc = &c->btree_cache;
 	struct btree *b;
 	u64 start_time = local_clock();
+	unsigned flags;
 
+	flags = memalloc_nofs_save();
 	mutex_lock(&bc->lock);
 
 	/*
@@ -545,6 +549,7 @@ out_unlock:
 
 	list_del_init(&b->list);
 	mutex_unlock(&bc->lock);
+	memalloc_nofs_restore(flags);
 out:
 	b->flags		= 0;
 	b->written		= 0;

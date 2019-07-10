@@ -113,8 +113,13 @@ static inline void *bio_data(struct bio *bio)
 
 #define __bio_kunmap_atomic(addr)	kunmap_atomic(addr)
 
-#define bio_for_each_segment_all(bvl, bio, i)				\
-	for (i = 0, bvl = (bio)->bi_io_vec; i < (bio)->bi_vcnt; i++, bvl++)
+struct bvec_iter_all {
+	unsigned	done;
+};
+
+#define bio_for_each_segment_all(bvl, bio, i, iter)			\
+	for (i = 0, bvl = (bio)->bi_io_vec, iter = (struct bvec_iter_all) { 0 };		\
+	     i < (bio)->bi_vcnt; i++, bvl++)
 
 static inline void bio_advance_iter(struct bio *bio, struct bvec_iter *iter,
 				    unsigned bytes)
@@ -135,6 +140,9 @@ static inline void bio_advance_iter(struct bio *bio, struct bvec_iter *iter,
 
 #define bio_for_each_segment(bvl, bio, iter)				\
 	__bio_for_each_segment(bvl, bio, iter, (bio)->bi_iter)
+
+#define __bio_for_each_bvec(bvl, bio, iter, start)			\
+	__bio_for_each_segment(bvl, bio, iter, start)
 
 #define bio_iter_last(bvec, iter) ((iter).bi_size == (bvec).bv_len)
 
@@ -227,6 +235,8 @@ enum {
 
 extern struct bio *bio_alloc_bioset(gfp_t, int, struct bio_set *);
 extern void bio_put(struct bio *);
+
+int bio_add_page(struct bio *, struct page *, unsigned, unsigned);
 
 extern void __bio_clone_fast(struct bio *, struct bio *);
 extern struct bio *bio_clone_fast(struct bio *, gfp_t, struct bio_set *);

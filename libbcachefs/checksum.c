@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #include "bcachefs.h"
 #include "checksum.h"
 #include "super.h"
@@ -60,7 +61,7 @@ static u64 bch2_checksum_update(unsigned type, u64 crc, const void *data, size_t
 		return crc32c(crc, data, len);
 	case BCH_CSUM_CRC64_NONZERO:
 	case BCH_CSUM_CRC64:
-		return bch2_crc64_update(crc, data, len);
+		return crc64_be(crc, data, len);
 	default:
 		BUG();
 	}
@@ -199,7 +200,7 @@ static struct bch_csum __bch2_checksum_bio(struct bch_fs *c, unsigned type,
 			kunmap_atomic(p);
 		}
 #else
-		__bio_for_each_contig_segment(bv, bio, *iter, *iter)
+		__bio_for_each_bvec(bv, bio, *iter, *iter)
 			crc = bch2_checksum_update(type, crc,
 				page_address(bv.bv_page) + bv.bv_offset,
 				bv.bv_len);
@@ -224,7 +225,7 @@ static struct bch_csum __bch2_checksum_bio(struct bch_fs *c, unsigned type,
 			kunmap_atomic(p);
 		}
 #else
-		__bio_for_each_contig_segment(bv, bio, *iter, *iter)
+		__bio_for_each_bvec(bv, bio, *iter, *iter)
 			crypto_shash_update(desc,
 				page_address(bv.bv_page) + bv.bv_offset,
 				bv.bv_len);

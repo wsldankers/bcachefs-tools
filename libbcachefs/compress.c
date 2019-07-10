@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #include "bcachefs.h"
 #include "checksum.h"
 #include "compress.h"
@@ -5,7 +6,6 @@
 #include "io.h"
 #include "super-io.h"
 
-#include "lz4.h"
 #include <linux/lz4.h>
 #include <linux/zlib.h>
 #include <linux/zstd.h>
@@ -66,7 +66,7 @@ static struct bbuf __bio_map_or_bounce(struct bch_fs *c, struct bio *bio,
 	BUG_ON(bvec_iter_sectors(start) > c->sb.encoded_extent_max);
 
 #ifndef CONFIG_HIGHMEM
-	__bio_for_each_contig_segment(bv, bio, iter, start) {
+	__bio_for_each_bvec(bv, bio, iter, start) {
 		if (bv.bv_len == start.bi_size)
 			return (struct bbuf) {
 				.b = page_address(bv.bv_page) + bv.bv_offset,
@@ -159,11 +159,6 @@ static int __bio_uncompress(struct bch_fs *c, struct bio *src,
 
 	switch (crc.compression_type) {
 	case BCH_COMPRESSION_LZ4_OLD:
-		ret = bch2_lz4_decompress(src_data.b, &src_len,
-				     dst_data, dst_len);
-		if (ret)
-			goto err;
-		break;
 	case BCH_COMPRESSION_LZ4:
 		ret = LZ4_decompress_safe_partial(src_data.b, dst_data,
 						  src_len, dst_len, dst_len);
@@ -246,10 +241,10 @@ int bch2_bio_uncompress_inplace(struct bch_fs *c, struct bio *bio,
 	}
 
 	/*
-	 * might have to free existing pages and retry allocation from mempool -
-	 * do this _after_ decompressing:
+	 * XXX: don't have a good way to assert that the bio was allocated with
+	 * enough space, we depend on bch2_move_extent doing the right thing
 	 */
-	bch2_bio_alloc_more_pages_pool(c, bio, crc->live_size << 9);
+	bio->bi_iter.bi_size = crc->live_size << 9;
 
 	memcpy_to_bio(bio, bio->bi_iter, data.b + (crc->offset << 9));
 

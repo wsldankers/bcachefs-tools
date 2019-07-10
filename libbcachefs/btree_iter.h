@@ -1,7 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _BCACHEFS_BTREE_ITER_H
 #define _BCACHEFS_BTREE_ITER_H
-
-#include <linux/dynamic_fault.h>
 
 #include "bset.h"
 #include "btree_types.h"

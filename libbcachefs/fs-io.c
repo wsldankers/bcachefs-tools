@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #ifndef NO_BCACHEFS_FS
 
 #include "bcachefs.h"
@@ -500,184 +501,263 @@ static inline struct bch_io_opts io_opts(struct bch_fs *c, struct bch_inode_info
 
 /* stored in page->private: */
 
-/*
- * bch_page_state has to (unfortunately) be manipulated with cmpxchg - we could
- * almost protected it with the page lock, except that bch2_writepage_io_done has
- * to update the sector counts (and from interrupt/bottom half context).
- */
-struct bch_page_state {
-union { struct {
-	/* existing data: */
-	unsigned		sectors:PAGE_SECTOR_SHIFT + 1;
-
+struct bch_page_sector {
 	/* Uncompressed, fully allocated replicas: */
-	unsigned		nr_replicas:4;
+	unsigned		nr_replicas:3;
 
 	/* Owns PAGE_SECTORS * replicas_reserved sized reservation: */
-	unsigned		replicas_reserved:4;
+	unsigned		replicas_reserved:3;
 
-	/* Owns PAGE_SECTORS sized quota reservation: */
-	unsigned		quota_reserved:1;
+	/* i_sectors: */
+	enum {
+		SECTOR_UNALLOCATED,
+		SECTOR_QUOTA_RESERVED,
+		SECTOR_DIRTY,
+		SECTOR_ALLOCATED,
+	}			state:2;
+};
+
+struct bch_page_state {
+	struct bch_page_sector	s[PAGE_SECTORS];
+};
+
+static inline struct bch_page_state *__bch2_page_state(struct page *page)
+{
+	return page_has_private(page)
+		? (struct bch_page_state *) page_private(page)
+		: NULL;
+}
+
+static inline struct bch_page_state *bch2_page_state(struct page *page)
+{
+	EBUG_ON(!PageLocked(page));
+
+	return __bch2_page_state(page);
+}
+
+/* for newly allocated pages: */
+static void __bch2_page_state_release(struct page *page)
+{
+	struct bch_page_state *s = __bch2_page_state(page);
+
+	if (!s)
+		return;
+
+	ClearPagePrivate(page);
+	set_page_private(page, 0);
+	put_page(page);
+	kfree(s);
+}
+
+static void bch2_page_state_release(struct page *page)
+{
+	struct bch_page_state *s = bch2_page_state(page);
+
+	if (!s)
+		return;
+
+	ClearPagePrivate(page);
+	set_page_private(page, 0);
+	put_page(page);
+	kfree(s);
+}
+
+/* for newly allocated pages: */
+static struct bch_page_state *__bch2_page_state_create(struct page *page,
+						       gfp_t gfp)
+{
+	struct bch_page_state *s;
+
+	s = kzalloc(sizeof(*s), GFP_NOFS|gfp);
+	if (!s)
+		return NULL;
 
 	/*
-	 * Number of sectors on disk - for i_blocks
-	 * Uncompressed size, not compressed size:
+	 * migrate_page_move_mapping() assumes that pages with private data
+	 * have their count elevated by 1.
 	 */
-	unsigned		dirty_sectors:PAGE_SECTOR_SHIFT + 1;
-};
-	/* for cmpxchg: */
-	unsigned long		v;
-};
-};
-
-#define page_state_cmpxchg(_ptr, _new, _expr)				\
-({									\
-	unsigned long _v = READ_ONCE((_ptr)->v);			\
-	struct bch_page_state _old;					\
-									\
-	do {								\
-		_old.v = _new.v = _v;					\
-		_expr;							\
-									\
-		EBUG_ON(_new.sectors + _new.dirty_sectors > PAGE_SECTORS);\
-	} while (_old.v != _new.v &&					\
-		 (_v = cmpxchg(&(_ptr)->v, _old.v, _new.v)) != _old.v);	\
-									\
-	_old;								\
-})
-
-static inline struct bch_page_state *page_state(struct page *page)
-{
-	struct bch_page_state *s = (void *) &page->private;
-
-	BUILD_BUG_ON(sizeof(*s) > sizeof(page->private));
-
-	if (!PagePrivate(page))
-		SetPagePrivate(page);
-
+	get_page(page);
+	set_page_private(page, (unsigned long) s);
+	SetPagePrivate(page);
 	return s;
 }
 
-static inline unsigned page_res_sectors(struct bch_page_state s)
+static struct bch_page_state *bch2_page_state_create(struct page *page,
+						     gfp_t gfp)
 {
-
-	return s.replicas_reserved * PAGE_SECTORS;
-}
-
-static void __bch2_put_page_reservation(struct bch_fs *c, struct bch_inode_info *inode,
-					struct bch_page_state s)
-{
-	struct disk_reservation res = { .sectors = page_res_sectors(s) };
-	struct quota_res quota_res = { .sectors = s.quota_reserved ? PAGE_SECTORS : 0 };
-
-	bch2_quota_reservation_put(c, inode, &quota_res);
-	bch2_disk_reservation_put(c, &res);
+	return bch2_page_state(page) ?: __bch2_page_state_create(page, gfp);
 }
 
 static void bch2_put_page_reservation(struct bch_fs *c, struct bch_inode_info *inode,
 				      struct page *page)
 {
-	struct bch_page_state s;
+	struct bch_page_state *s = bch2_page_state(page);
+	struct disk_reservation disk_res = { 0 };
+	struct quota_res quota_res = { 0 };
+	unsigned i;
 
-	EBUG_ON(!PageLocked(page));
+	if (!s)
+		return;
 
-	s = page_state_cmpxchg(page_state(page), s, {
-		s.replicas_reserved	= 0;
-		s.quota_reserved	= 0;
-	});
+	for (i = 0; i < ARRAY_SIZE(s->s); i++) {
+		disk_res.sectors += s->s[i].replicas_reserved;
+		s->s[i].replicas_reserved = 0;
 
-	__bch2_put_page_reservation(c, inode, s);
+		if (s->s[i].state == SECTOR_QUOTA_RESERVED) {
+			quota_res.sectors++;
+			s->s[i].state = SECTOR_UNALLOCATED;
+		}
+	}
+
+	bch2_quota_reservation_put(c, inode, &quota_res);
+	bch2_disk_reservation_put(c, &disk_res);
+}
+
+static inline unsigned inode_nr_replicas(struct bch_fs *c, struct bch_inode_info *inode)
+{
+	/* XXX: this should not be open coded */
+	return inode->ei_inode.bi_data_replicas
+		? inode->ei_inode.bi_data_replicas - 1
+		: c->opts.data_replicas;
+}
+
+static inline unsigned sectors_to_reserve(struct bch_page_sector *s,
+						  unsigned nr_replicas)
+{
+	return max(0, (int) nr_replicas -
+		   s->nr_replicas -
+		   s->replicas_reserved);
+}
+
+static int bch2_get_page_disk_reservation(struct bch_fs *c,
+				struct bch_inode_info *inode,
+				struct page *page, bool check_enospc)
+{
+	struct bch_page_state *s = bch2_page_state_create(page, 0);
+	unsigned nr_replicas = inode_nr_replicas(c, inode);
+	struct disk_reservation disk_res = { 0 };
+	unsigned i, disk_res_sectors = 0;
+	int ret;
+
+	if (!s)
+		return -ENOMEM;
+
+	for (i = 0; i < ARRAY_SIZE(s->s); i++)
+		disk_res_sectors += sectors_to_reserve(&s->s[i], nr_replicas);
+
+	if (!disk_res_sectors)
+		return 0;
+
+	ret = bch2_disk_reservation_get(c, &disk_res,
+					disk_res_sectors, 1,
+					!check_enospc
+					? BCH_DISK_RESERVATION_NOFAIL
+					: 0);
+	if (unlikely(ret))
+		return ret;
+
+	for (i = 0; i < ARRAY_SIZE(s->s); i++)
+		s->s[i].replicas_reserved +=
+			sectors_to_reserve(&s->s[i], nr_replicas);
+
+	return 0;
+}
+
+static int bch2_get_page_quota_reservation(struct bch_fs *c,
+			struct bch_inode_info *inode,
+			struct page *page, bool check_enospc)
+{
+	struct bch_page_state *s = bch2_page_state_create(page, 0);
+	struct quota_res quota_res = { 0 };
+	unsigned i, quota_res_sectors = 0;
+	int ret;
+
+	if (!s)
+		return -ENOMEM;
+
+	for (i = 0; i < ARRAY_SIZE(s->s); i++)
+		quota_res_sectors += s->s[i].state == SECTOR_UNALLOCATED;
+
+	if (!quota_res_sectors)
+		return 0;
+
+	ret = bch2_quota_reservation_add(c, inode, &quota_res,
+					 quota_res_sectors,
+					 check_enospc);
+	if (unlikely(ret))
+		return ret;
+
+	for (i = 0; i < ARRAY_SIZE(s->s); i++)
+		if (s->s[i].state == SECTOR_UNALLOCATED)
+			s->s[i].state = SECTOR_QUOTA_RESERVED;
+
+	return 0;
 }
 
 static int bch2_get_page_reservation(struct bch_fs *c, struct bch_inode_info *inode,
 				     struct page *page, bool check_enospc)
 {
-	struct bch_page_state *s = page_state(page), new;
-
-	/* XXX: this should not be open coded */
-	unsigned nr_replicas = inode->ei_inode.bi_data_replicas
-		? inode->ei_inode.bi_data_replicas - 1
-		: c->opts.data_replicas;
-	struct disk_reservation disk_res;
-	struct quota_res quota_res = { 0 };
-	int ret;
-
-	EBUG_ON(!PageLocked(page));
-
-	if (s->replicas_reserved < nr_replicas) {
-		ret = bch2_disk_reservation_get(c, &disk_res, PAGE_SECTORS,
-				nr_replicas - s->replicas_reserved,
-				!check_enospc ? BCH_DISK_RESERVATION_NOFAIL : 0);
-		if (unlikely(ret))
-			return ret;
-
-		page_state_cmpxchg(s, new, ({
-			BUG_ON(new.replicas_reserved +
-			       disk_res.nr_replicas != nr_replicas);
-			new.replicas_reserved += disk_res.nr_replicas;
-		}));
-	}
-
-	if (!s->quota_reserved &&
-	    s->sectors + s->dirty_sectors < PAGE_SECTORS) {
-		ret = bch2_quota_reservation_add(c, inode, &quota_res,
-						 PAGE_SECTORS,
-						 check_enospc);
-		if (unlikely(ret))
-			return ret;
-
-		page_state_cmpxchg(s, new, ({
-			BUG_ON(new.quota_reserved);
-			new.quota_reserved = 1;
-		}));
-	}
-
-	return ret;
+	return bch2_get_page_disk_reservation(c, inode, page, check_enospc) ?:
+		bch2_get_page_quota_reservation(c, inode, page, check_enospc);
 }
 
 static void bch2_clear_page_bits(struct page *page)
 {
 	struct bch_inode_info *inode = to_bch_ei(page->mapping->host);
 	struct bch_fs *c = inode->v.i_sb->s_fs_info;
-	struct bch_page_state s;
+	struct bch_page_state *s = bch2_page_state(page);
+	int i, dirty_sectors = 0;
 
-	EBUG_ON(!PageLocked(page));
-
-	if (!PagePrivate(page))
+	if (!s)
 		return;
 
-	s.v = xchg(&page_state(page)->v, 0);
-	ClearPagePrivate(page);
+	for (i = 0; i < ARRAY_SIZE(s->s); i++) {
+		if (s->s[i].state == SECTOR_DIRTY) {
+			dirty_sectors++;
+			s->s[i].state = SECTOR_UNALLOCATED;
+		}
+	}
 
-	if (s.dirty_sectors)
-		i_sectors_acct(c, inode, NULL, -s.dirty_sectors);
+	if (dirty_sectors)
+		i_sectors_acct(c, inode, NULL, -dirty_sectors);
+	bch2_put_page_reservation(c, inode, page);
 
-	__bch2_put_page_reservation(c, inode, s);
+	bch2_page_state_release(page);
 }
 
-int bch2_set_page_dirty(struct page *page)
+static void __bch2_set_page_dirty(struct page *page)
 {
 	struct bch_inode_info *inode = to_bch_ei(page->mapping->host);
 	struct bch_fs *c = inode->v.i_sb->s_fs_info;
+	struct bch_page_state *s = bch2_page_state(page);
 	struct quota_res quota_res = { 0 };
-	struct bch_page_state old, new;
+	unsigned i, dirty_sectors = 0;
 
-	old = page_state_cmpxchg(page_state(page), new,
-		new.dirty_sectors = PAGE_SECTORS - new.sectors;
-		new.quota_reserved = 0;
-	);
+	BUG_ON(!s);
 
-	quota_res.sectors += old.quota_reserved * PAGE_SECTORS;
+	for (i = 0; i < ARRAY_SIZE(s->s); i++) {
+		if (s->s[i].state == SECTOR_QUOTA_RESERVED)
+			quota_res.sectors++;
 
-	if (old.dirty_sectors != new.dirty_sectors)
-		i_sectors_acct(c, inode, &quota_res,
-			       new.dirty_sectors - old.dirty_sectors);
+		if (s->s[i].state == SECTOR_UNALLOCATED ||
+		    s->s[i].state == SECTOR_QUOTA_RESERVED) {
+			s->s[i].state = SECTOR_DIRTY;
+			dirty_sectors++;
+		}
+	}
+
+	if (dirty_sectors)
+		i_sectors_acct(c, inode, &quota_res, dirty_sectors);
 	bch2_quota_reservation_put(c, inode, &quota_res);
-
-	return __set_page_dirty_nobuffers(page);
 }
 
-int bch2_page_mkwrite(struct vm_fault *vmf)
+static void bch2_set_page_dirty(struct page *page)
+{
+	__bch2_set_page_dirty(page);
+	__set_page_dirty_nobuffers(page);
+}
+
+vm_fault_t bch2_page_mkwrite(struct vm_fault *vmf)
 {
 	struct page *page = vmf->page;
 	struct file *file = vmf->vma->vm_file;
@@ -713,7 +793,7 @@ int bch2_page_mkwrite(struct vm_fault *vmf)
 	}
 
 	if (!PageDirty(page))
-		set_page_dirty(page);
+		bch2_set_page_dirty(page);
 	wait_for_stable_page(page);
 out:
 	if (current->pagecache_lock != &mapping->add_lock)
@@ -761,11 +841,18 @@ int bch2_migrate_page(struct address_space *mapping, struct page *newpage,
 		return ret;
 
 	if (PagePrivate(page)) {
-		*page_state(newpage) = *page_state(page);
 		ClearPagePrivate(page);
+		get_page(newpage);
+		set_page_private(newpage, page_private(page));
+		set_page_private(page, 0);
+		put_page(page);
+		SetPagePrivate(newpage);
 	}
 
-	migrate_page_copy(newpage, page);
+	if (mode != MIGRATE_SYNC_NO_COPY)
+		migrate_page_copy(newpage, page);
+	else
+		migrate_page_states(newpage, page);
 	return MIGRATEPAGE_SUCCESS;
 }
 #endif
@@ -791,7 +878,7 @@ static int bio_add_page_contig(struct bio *bio, struct page *page)
 	else if (!bio_can_add_page_contig(bio, page))
 		return -1;
 
-	__bio_add_page(bio, page, PAGE_SIZE, 0);
+	BUG_ON(!bio_add_page(bio, page, PAGE_SIZE, 0));
 	return 0;
 }
 
@@ -799,10 +886,11 @@ static int bio_add_page_contig(struct bio *bio, struct page *page)
 
 static void bch2_readpages_end_io(struct bio *bio)
 {
+	struct bvec_iter_all iter;
 	struct bio_vec *bv;
 	int i;
 
-	bio_for_each_segment_all(bv, bio, i) {
+	bio_for_each_segment_all(bv, bio, i, iter) {
 		struct page *page = bv->bv_page;
 
 		if (!bio->bi_status) {
@@ -848,7 +936,8 @@ static int readpages_iter_init(struct readpages_iter *iter,
 	while (!list_empty(pages)) {
 		struct page *page = list_last_entry(pages, struct page, lru);
 
-		prefetchw(&page->flags);
+		__bch2_page_state_create(page, __GFP_NOFAIL);
+
 		iter->pages[iter->nr_pages++] = page;
 		list_del(&page->lru);
 	}
@@ -884,6 +973,7 @@ static inline struct page *readpage_iter_next(struct readpages_iter *iter)
 		iter->idx++;
 		iter->nr_added++;
 
+		__bch2_page_state_release(page);
 		put_page(page);
 	}
 
@@ -894,7 +984,6 @@ static inline struct page *readpage_iter_next(struct readpages_iter *iter)
 out:
 	EBUG_ON(iter->pages[iter->idx]->index != iter->offset + iter->idx);
 
-	page_state_init_for_read(iter->pages[iter->idx]);
 	return iter->pages[iter->idx];
 }
 
@@ -904,21 +993,20 @@ static void bch2_add_page_sectors(struct bio *bio, struct bkey_s_c k)
 	struct bio_vec bv;
 	unsigned nr_ptrs = bch2_bkey_nr_ptrs_allocated(k);
 
+	BUG_ON(bio->bi_iter.bi_sector	< bkey_start_offset(k.k));
+	BUG_ON(bio_end_sector(bio)	> k.k->p.offset);
+
+
 	bio_for_each_segment(bv, bio, iter) {
-		/* brand new pages, don't need to be locked: */
+		struct bch_page_state *s = bch2_page_state(bv.bv_page);
+		unsigned i;
 
-		struct bch_page_state *s = page_state(bv.bv_page);
-
-		/* sectors in @k from the start of this page: */
-		unsigned k_sectors = k.k->size - (iter.bi_sector - k.k->p.offset);
-
-		unsigned page_sectors = min(bv.bv_len >> 9, k_sectors);
-
-		s->nr_replicas = page_sectors == PAGE_SECTORS
-			? nr_ptrs : 0;
-
-		BUG_ON(s->sectors + page_sectors > PAGE_SECTORS);
-		s->sectors += page_sectors;
+		for (i = bv.bv_offset >> 9;
+		     i < (bv.bv_offset + bv.bv_len) >> 9;
+		     i++) {
+			s->s[i].nr_replicas = nr_ptrs;
+			s->s[i].state = SECTOR_ALLOCATED;
+		}
 	}
 }
 
@@ -949,12 +1037,15 @@ static void readpage_bio_extend(struct readpages_iter *iter,
 			if (!page)
 				break;
 
-			page_state_init_for_read(page);
+			if (!__bch2_page_state_create(page, 0)) {
+				put_page(page);
+				break;
+			}
 
 			ret = add_to_page_cache_lru(page, iter->mapping,
 						    page_offset, GFP_NOFS);
 			if (ret) {
-				ClearPagePrivate(page);
+				__bch2_page_state_release(page);
 				put_page(page);
 				break;
 			}
@@ -962,7 +1053,7 @@ static void readpage_bio_extend(struct readpages_iter *iter,
 			put_page(page);
 		}
 
-		__bio_add_page(bio, page, PAGE_SIZE, 0);
+		BUG_ON(!bio_add_page(bio, page, PAGE_SIZE, 0));
 	}
 }
 
@@ -1076,7 +1167,7 @@ int bch2_readpages(struct file *file, struct address_space *mapping,
 		bio_set_op_attrs(&rbio->bio, REQ_OP_READ, 0);
 		rbio->bio.bi_iter.bi_sector = (sector_t) index << PAGE_SECTOR_SHIFT;
 		rbio->bio.bi_end_io = bch2_readpages_end_io;
-		__bio_add_page(&rbio->bio, page, PAGE_SIZE, 0);
+		BUG_ON(!bio_add_page(&rbio->bio, page, PAGE_SIZE, 0));
 
 		bchfs_read(&trans, iter, rbio, inode->v.i_ino,
 			   &readpages_iter);
@@ -1097,7 +1188,7 @@ static void __bchfs_readpage(struct bch_fs *c, struct bch_read_bio *rbio,
 	struct btree_trans trans;
 	struct btree_iter *iter;
 
-	page_state_init_for_read(page);
+	bch2_page_state_create(page, __GFP_NOFAIL);
 
 	bio_set_op_attrs(&rbio->bio, REQ_OP_READ, REQ_SYNC);
 	bio_add_page_contig(&rbio->bio, page);
@@ -1184,11 +1275,12 @@ static void bch2_writepage_io_done(struct closure *cl)
 					struct bch_writepage_io, cl);
 	struct bch_fs *c = io->op.op.c;
 	struct bio *bio = &io->op.op.wbio.bio;
+	struct bvec_iter_all iter;
 	struct bio_vec *bvec;
 	unsigned i;
 
 	if (io->op.op.error) {
-		bio_for_each_segment_all(bvec, bio, i) {
+		bio_for_each_segment_all(bvec, bio, i, iter) {
 			SetPageError(bvec->bv_page);
 			mapping_set_error(bvec->bv_page->mapping, -EIO);
 		}
@@ -1215,7 +1307,7 @@ static void bch2_writepage_io_done(struct closure *cl)
 		i_sectors_acct(c, io->op.inode, NULL,
 			       io->op.sectors_added - (s64) io->new_sectors);
 
-	bio_for_each_segment_all(bvec, bio, i)
+	bio_for_each_segment_all(bvec, bio, i, iter)
 		end_page_writeback(bvec->bv_page);
 
 	closure_return_with_destructor(&io->cl, bch2_writepage_io_free);
@@ -1266,10 +1358,13 @@ static int __bch2_writepage(struct page *page,
 	struct bch_inode_info *inode = to_bch_ei(page->mapping->host);
 	struct bch_fs *c = inode->v.i_sb->s_fs_info;
 	struct bch_writepage_state *w = data;
-	struct bch_page_state new, old;
-	unsigned offset, nr_replicas_this_write;
+	struct bch_page_state *s;
+	unsigned offset, nr_replicas_this_write = U32_MAX;
+	unsigned dirty_sectors = 0, reserved_sectors = 0;
 	loff_t i_size = i_size_read(&inode->v);
 	pgoff_t end_index = i_size >> PAGE_SHIFT;
+	unsigned i;
+	int ret;
 
 	EBUG_ON(!PageUptodate(page));
 
@@ -1293,33 +1388,34 @@ static int __bch2_writepage(struct page *page,
 	 */
 	zero_user_segment(page, offset, PAGE_SIZE);
 do_io:
-	EBUG_ON(!PageLocked(page));
+	s = bch2_page_state_create(page, __GFP_NOFAIL);
+
+	ret = bch2_get_page_disk_reservation(c, inode, page, true);
+	if (ret) {
+		SetPageError(page);
+		mapping_set_error(page->mapping, ret);
+		unlock_page(page);
+		return 0;
+	}
+
+	for (i = 0; i < PAGE_SECTORS; i++)
+		nr_replicas_this_write =
+			min_t(unsigned, nr_replicas_this_write,
+			      s->s[i].nr_replicas +
+			      s->s[i].replicas_reserved);
 
 	/* Before unlocking the page, transfer reservation to w->io: */
-	old = page_state_cmpxchg(page_state(page), new, {
-		/*
-		 * If we didn't get a reservation, we can only write out the
-		 * number of (fully allocated) replicas that currently exist,
-		 * and only if the entire page has been written:
-		 */
-		nr_replicas_this_write =
-			max_t(unsigned,
-			      new.replicas_reserved,
-			      (new.sectors == PAGE_SECTORS
-			       ? new.nr_replicas : 0));
 
-		BUG_ON(!nr_replicas_this_write);
+	for (i = 0; i < PAGE_SECTORS; i++) {
+		s->s[i].nr_replicas = w->opts.compression
+			? 0 : nr_replicas_this_write;
 
-		new.nr_replicas = w->opts.compression
-			? 0
-			: nr_replicas_this_write;
+		reserved_sectors += s->s[i].replicas_reserved;
+		s->s[i].replicas_reserved = 0;
 
-		new.replicas_reserved = 0;
-
-		new.sectors += new.dirty_sectors;
-		BUG_ON(new.sectors != PAGE_SECTORS);
-		new.dirty_sectors = 0;
-	});
+		dirty_sectors += s->s[i].state == SECTOR_DIRTY;
+		s->s[i].state = SECTOR_ALLOCATED;
+	}
 
 	BUG_ON(PageWriteback(page));
 	set_page_writeback(page);
@@ -1334,12 +1430,12 @@ do_io:
 		bch2_writepage_io_alloc(c, w, inode, page,
 					nr_replicas_this_write);
 
-	w->io->new_sectors += new.sectors - old.sectors;
+	w->io->new_sectors += dirty_sectors;
 
 	BUG_ON(inode != w->io->op.inode);
 	BUG_ON(bio_add_page_contig(&w->io->op.op.wbio.bio, page));
 
-	w->io->op.op.res.sectors += old.replicas_reserved * PAGE_SECTORS;
+	w->io->op.op.res.sectors += reserved_sectors;
 	w->io->op.new_i_size = i_size;
 
 	if (wbc->sync_mode == WB_SYNC_ALL)
@@ -1478,7 +1574,7 @@ int bch2_write_end(struct file *file, struct address_space *mapping,
 		if (!PageUptodate(page))
 			SetPageUptodate(page);
 		if (!PageDirty(page))
-			set_page_dirty(page);
+			bch2_set_page_dirty(page);
 
 		inode->ei_last_dirtied = (unsigned long) current;
 	} else {
@@ -1596,7 +1692,7 @@ out:
 		if (!PageUptodate(pages[i]))
 			SetPageUptodate(pages[i]);
 		if (!PageDirty(pages[i]))
-			set_page_dirty(pages[i]);
+			bch2_set_page_dirty(pages[i]);
 		unlock_page(pages[i]);
 		put_page(pages[i]);
 	}
@@ -1812,6 +1908,7 @@ static long bch2_dio_write_loop(struct dio_write *dio)
 	struct address_space *mapping = req->ki_filp->f_mapping;
 	struct bch_inode_info *inode = dio->iop.inode;
 	struct bio *bio = &dio->iop.op.wbio.bio;
+	struct bvec_iter_all iter;
 	struct bio_vec *bv;
 	loff_t offset;
 	bool sync;
@@ -1889,7 +1986,7 @@ err_wait_io:
 
 		closure_sync(&dio->cl);
 loop:
-		bio_for_each_segment_all(bv, bio, i)
+		bio_for_each_segment_all(bv, bio, i, iter)
 			put_page(bv->bv_page);
 		if (!dio->iter.count || dio->iop.op.error)
 			break;
@@ -2223,7 +2320,7 @@ static int __bch2_truncate_page(struct bch_inode_info *inode,
 		zero_user_segment(page, 0, end_offset);
 
 	if (!PageDirty(page))
-		set_page_dirty(page);
+		bch2_set_page_dirty(page);
 unlock:
 	unlock_page(page);
 	put_page(page);
@@ -2677,12 +2774,17 @@ long bch2_fallocate_dispatch(struct file *file, int mode,
 
 static bool page_is_data(struct page *page)
 {
-	EBUG_ON(!PageLocked(page));
+	struct bch_page_state *s = bch2_page_state(page);
+	unsigned i;
 
-	/* XXX: should only have to check PageDirty */
-	return PagePrivate(page) &&
-		(page_state(page)->sectors ||
-		 page_state(page)->dirty_sectors);
+	if (!s)
+		return false;
+
+	for (i = 0; i < PAGE_SECTORS; i++)
+		if (s->s[i].state >= SECTOR_DIRTY)
+			return true;
+
+	return false;
 }
 
 static loff_t bch2_next_pagecache_data(struct inode *vinode,

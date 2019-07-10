@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 
 #include "bcachefs.h"
 #include "alloc_background.h"
@@ -378,7 +379,15 @@ static int journal_replay_entry_early(struct bch_fs *c,
 
 	switch (entry->type) {
 	case BCH_JSET_ENTRY_btree_root: {
-		struct btree_root *r = &c->btree_roots[entry->btree_id];
+		struct btree_root *r;
+
+		if (entry->btree_id >= BTREE_ID_NR) {
+			bch_err(c, "filesystem has unknown btree type %u",
+				entry->btree_id);
+			return -EINVAL;
+		}
+
+		r = &c->btree_roots[entry->btree_id];
 
 		if (entry->u64s) {
 			r->level = entry->level;
@@ -720,10 +729,12 @@ int bch2_fs_recovery(struct bch_fs *c)
 
 	ret = bch2_blacklist_table_initialize(c);
 
-	ret = verify_journal_entries_not_blacklisted_or_missing(c,
-						&journal_entries);
-	if (ret)
-		goto err;
+	if (!list_empty(&journal_entries)) {
+		ret = verify_journal_entries_not_blacklisted_or_missing(c,
+							&journal_entries);
+		if (ret)
+			goto err;
+	}
 
 	ret = bch2_fs_journal_start(&c->journal, journal_seq,
 				    &journal_entries);
