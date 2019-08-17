@@ -120,9 +120,12 @@ int cmd_device_add(int argc, char *argv[])
 static void device_remove_usage(void)
 {
 	puts("bcachefs device_remove - remove a device from a filesystem\n"
-	     "Usage: bcachefs device remove device\n"
+	     "Usage:\n"
+	     "  bcachefs device remove device\n"
+	     "  bcachefs device remove --by-id path devid\n"
 	     "\n"
 	     "Options:\n"
+	     "  -i, --by-id                 Remove device by device id\n"
 	     "  -f, --force		    Force removal, even if some data\n"
 	     "                              couldn't be migrated\n"
 	     "  -F, --force-metadata	    Force removal, even if some metadata\n"
@@ -135,15 +138,22 @@ static void device_remove_usage(void)
 int cmd_device_remove(int argc, char *argv[])
 {
 	static const struct option longopts[] = {
+		{ "by-id",              0, NULL, 'i' },
 		{ "force",		0, NULL, 'f' },
 		{ "force-metadata",	0, NULL, 'F' },
 		{ "help",		0, NULL, 'h' },
 		{ NULL }
 	};
+	struct bchfs_handle fs;
+	bool by_id = false;
 	int opt, flags = BCH_FORCE_IF_DEGRADED;
+	unsigned dev_idx;
 
 	while ((opt = getopt_long(argc, argv, "fh", longopts, NULL)) != -1)
 		switch (opt) {
+		case 'i':
+			by_id = true;
+			break;
 		case 'f':
 			flags |= BCH_FORCE_IF_DATA_LOST;
 			break;
@@ -155,15 +165,27 @@ int cmd_device_remove(int argc, char *argv[])
 		}
 	args_shift(optind);
 
-	char *dev = arg_pop();
-	if (!dev)
-		die("Please supply a device to remove");
+	if (by_id) {
+		char *path = arg_pop();
+		if (!path)
+			die("Please supply filesystem to remove device from");
+
+		dev_idx = (intptr_t) arg_pop();
+		if (!dev_idx)
+			die("Please supply device id");
+
+		fs = bcache_fs_open(path);
+	} else {
+		char *dev = arg_pop();
+		if (!dev)
+			die("Please supply a device to remove");
+
+		fs = bchu_fs_open_by_dev(dev, &dev_idx);
+	}
 
 	if (argc)
 		die("too many arguments");
 
-	unsigned dev_idx;
-	struct bchfs_handle fs = bchu_fs_open_by_dev(dev, &dev_idx);
 	bchu_disk_remove(fs, dev_idx, flags);
 	return 0;
 }
