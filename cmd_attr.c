@@ -80,7 +80,7 @@ static void do_setattr(char *path, struct bch_opt_strs opts)
 
 static void setattr_usage(void)
 {
-	puts("bcachefs setattr - set attributes on files in a bcachefs filessytem\n"
+	puts("bcachefs setattr - set attributes on files in a bcachefs filesystem\n"
 	     "Usage: bcachefs setattr [OPTIONS]... <files>\n"
 	     "\n"
 	     "Options:");
