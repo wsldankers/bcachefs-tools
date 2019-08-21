@@ -236,7 +236,8 @@ static void replay_now_at(struct journal *j, u64 seq)
 		bch2_journal_pin_put(j, j->replay_journal_seq++);
 }
 
-static int bch2_extent_replay_key(struct bch_fs *c, struct bkey_i *k)
+static int bch2_extent_replay_key(struct bch_fs *c, enum btree_id btree_id,
+				  struct bkey_i *k)
 {
 	struct btree_trans trans;
 	struct btree_iter *iter, *split_iter;
@@ -247,6 +248,7 @@ static int bch2_extent_replay_key(struct bch_fs *c, struct bkey_i *k)
 	struct disk_reservation disk_res =
 		bch2_disk_reservation_init(c, 0);
 	struct bkey_i *split;
+	struct bpos atomic_end;
 	bool split_compressed = false;
 	int ret;
 
@@ -254,7 +256,7 @@ static int bch2_extent_replay_key(struct bch_fs *c, struct bkey_i *k)
 retry:
 	bch2_trans_begin(&trans);
 
-	iter = bch2_trans_get_iter(&trans, BTREE_ID_EXTENTS,
+	iter = bch2_trans_get_iter(&trans, btree_id,
 				   bkey_start_pos(&k->k),
 				   BTREE_ITER_INTENT);
 
@@ -273,9 +275,14 @@ retry:
 		if (ret)
 			goto err;
 
+		ret = bch2_extent_atomic_end(&trans, split_iter,
+					     k, &atomic_end);
+		if (ret)
+			goto err;
+
 		if (!split_compressed &&
 		    bch2_extent_is_compressed(bkey_i_to_s_c(k)) &&
-		    !bch2_extent_is_atomic(k, split_iter)) {
+		    bkey_cmp(atomic_end, k->k.p) < 0) {
 			ret = bch2_disk_reservation_add(c, &disk_res,
 					k->k.size *
 					bch2_bkey_nr_dirty_ptrs(bkey_i_to_s_c(k)),
@@ -287,7 +294,7 @@ retry:
 
 		bkey_copy(split, k);
 		bch2_cut_front(split_iter->pos, split);
-		bch2_extent_trim_atomic(split, split_iter);
+		bch2_cut_back(atomic_end, &split->k);
 
 		bch2_trans_update(&trans, BTREE_INSERT_ENTRY(split_iter, split));
 		bch2_btree_iter_set_pos(iter, split->k.p);
@@ -295,7 +302,7 @@ retry:
 
 	if (split_compressed) {
 		ret = bch2_trans_mark_key(&trans, bkey_i_to_s_c(k),
-					  -((s64) k->k.size),
+					  0, -((s64) k->k.size),
 					  BCH_BUCKET_MARK_OVERWRITE) ?:
 		      bch2_trans_commit(&trans, &disk_res, NULL,
 					BTREE_INSERT_ATOMIC|
@@ -335,22 +342,17 @@ static int bch2_journal_replay(struct bch_fs *c,
 	for_each_journal_key(keys, i) {
 		replay_now_at(j, keys.journal_seq_base + i->journal_seq);
 
-		switch (i->btree_id) {
-		case BTREE_ID_ALLOC:
+		if (i->btree_id == BTREE_ID_ALLOC)
 			ret = bch2_alloc_replay_key(c, i->k);
-			break;
-		case BTREE_ID_EXTENTS:
-			ret = bch2_extent_replay_key(c, i->k);
-			break;
-		default:
+		else if (btree_node_type_is_extents(i->btree_id))
+			ret = bch2_extent_replay_key(c, i->btree_id, i->k);
+		else
 			ret = bch2_btree_insert(c, i->btree_id, i->k,
 						NULL, NULL,
 						BTREE_INSERT_NOFAIL|
 						BTREE_INSERT_LAZY_RW|
 						BTREE_INSERT_JOURNAL_REPLAY|
 						BTREE_INSERT_NOMARK);
-			break;
-		}
 
 		if (ret) {
 			bch_err(c, "journal replay: error %d while replaying key",

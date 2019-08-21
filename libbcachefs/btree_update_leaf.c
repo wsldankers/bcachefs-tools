@@ -400,8 +400,7 @@ static inline void btree_insert_entry_checks(struct btree_trans *trans,
 		BUG_ON(i->iter->level);
 		BUG_ON(bkey_cmp(bkey_start_pos(&i->k->k), i->iter->pos));
 		EBUG_ON((i->iter->flags & BTREE_ITER_IS_EXTENTS) &&
-			!bch2_extent_is_atomic(i->k, i->iter));
-
+			bkey_cmp(i->k->k.p, i->iter->l[0].b->key.k.p) > 0);
 		EBUG_ON((i->iter->flags & BTREE_ITER_IS_EXTENTS) &&
 			!(trans->flags & BTREE_INSERT_ATOMIC));
 	}
@@ -522,7 +521,8 @@ static inline bool update_triggers_transactional(struct btree_trans *trans,
 {
 	return likely(!(trans->flags & BTREE_INSERT_MARK_INMEM)) &&
 		(i->iter->btree_id == BTREE_ID_EXTENTS ||
-		 i->iter->btree_id == BTREE_ID_INODES);
+		 i->iter->btree_id == BTREE_ID_INODES ||
+		 i->iter->btree_id == BTREE_ID_REFLINK);
 }
 
 static inline bool update_has_triggers(struct btree_trans *trans,
@@ -923,8 +923,6 @@ out_noupdates:
 		bch2_trans_unlink_iters(trans, ~trans->iters_touched|
 					trans->iters_unlink_on_commit);
 		trans->iters_touched = 0;
-	} else {
-		bch2_trans_unlink_iters(trans, trans->iters_unlink_on_commit);
 	}
 	trans->nr_updates	= 0;
 	trans->mem_top		= 0;
@@ -1033,7 +1031,10 @@ retry:
 			/* create the biggest key we can */
 			bch2_key_resize(&delete.k, max_sectors);
 			bch2_cut_back(end, &delete.k);
-			bch2_extent_trim_atomic(&delete, iter);
+
+			ret = bch2_extent_trim_atomic(&delete, iter);
+			if (ret)
+				break;
 		}
 
 		bch2_trans_update(trans, BTREE_INSERT_ENTRY(iter, &delete));
