@@ -5,6 +5,7 @@ INSTALL=install
 CFLAGS+=-std=gnu89 -O2 -g -MMD -Wall				\
 	-Wno-pointer-sign					\
 	-fno-strict-aliasing					\
+	-fno-delete-null-pointer-checks				\
 	-I. -Iinclude -Iraid					\
 	-D_FILE_OFFSET_BITS=64					\
 	-D_GNU_SOURCE						\
