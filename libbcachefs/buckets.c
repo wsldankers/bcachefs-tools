@@ -1361,7 +1361,7 @@ static int trans_get_key(struct btree_trans *trans,
 		     : !bkey_cmp(pos, i->iter->pos))) {
 			*iter	= i->iter;
 			*k	= bkey_i_to_s_c(i->k);
-			return 0;
+			return 1;
 		}
 
 	*iter = __bch2_trans_get_iter(trans, btree_id, pos,
@@ -1416,6 +1416,8 @@ static int bch2_trans_mark_pointer(struct btree_trans *trans,
 	struct bch_dev *ca = bch_dev_bkey_exists(c, p.ptr.dev);
 	struct btree_iter *iter;
 	struct bkey_s_c k;
+	struct bucket *g;
+	struct bucket_mark m;
 	struct bkey_alloc_unpacked u;
 	struct bkey_i_alloc *a;
 	bool overflow;
@@ -1424,18 +1426,18 @@ static int bch2_trans_mark_pointer(struct btree_trans *trans,
 	ret = trans_get_key(trans, BTREE_ID_ALLOC,
 			    POS(p.ptr.dev, PTR_BUCKET_NR(ca, &p.ptr)),
 			    &iter, &k);
-	if (ret)
+	if (ret < 0)
 		return ret;
 
-	if (k.k->type != KEY_TYPE_alloc) {
-		bch_err_ratelimited(c, "pointer to nonexistent bucket %u:%zu",
-				    p.ptr.dev,
-				    PTR_BUCKET_NR(ca, &p.ptr));
-		ret = -1;
-		goto out;
+	if (!ret) {
+		percpu_down_read(&c->mark_lock);
+		g	= bucket(ca, iter->pos.offset);
+		m	= READ_ONCE(g->mark);
+		u	= alloc_mem_to_key(g, m);
+		percpu_up_read(&c->mark_lock);
+	} else {
+		u = bch2_alloc_unpack(k);
 	}
-
-	u = bch2_alloc_unpack(k);
 
 	if (gen_after(u.gen, p.ptr.gen)) {
 		ret = 1;
@@ -1484,7 +1486,7 @@ static int bch2_trans_mark_stripe_ptr(struct btree_trans *trans,
 	int ret = 0;
 
 	ret = trans_get_key(trans, BTREE_ID_EC, POS(0, p.idx), &iter, &k);
-	if (ret)
+	if (ret < 0)
 		return ret;
 
 	if (k.k->type != KEY_TYPE_stripe) {
@@ -1599,7 +1601,7 @@ static int __bch2_trans_mark_reflink_p(struct btree_trans *trans,
 
 	ret = trans_get_key(trans, BTREE_ID_REFLINK,
 			    POS(0, idx), &iter, &k);
-	if (ret)
+	if (ret < 0)
 		return ret;
 
 	if (k.k->type != KEY_TYPE_reflink_v) {
