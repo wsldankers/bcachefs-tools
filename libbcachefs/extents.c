@@ -46,7 +46,8 @@ unsigned bch2_bkey_nr_dirty_ptrs(struct bkey_s_c k)
 
 	switch (k.k->type) {
 	case KEY_TYPE_btree_ptr:
-	case KEY_TYPE_extent: {
+	case KEY_TYPE_extent:
+	case KEY_TYPE_reflink_v: {
 		struct bkey_ptrs_c p = bch2_bkey_ptrs_c(k);
 		const struct bch_extent_ptr *ptr;
 
@@ -309,20 +310,15 @@ bch2_extent_has_group(struct bch_fs *c, struct bkey_s_c_extent e, unsigned group
 
 unsigned bch2_extent_is_compressed(struct bkey_s_c k)
 {
+	struct bkey_ptrs_c ptrs = bch2_bkey_ptrs_c(k);
+	const union bch_extent_entry *entry;
+	struct extent_ptr_decoded p;
 	unsigned ret = 0;
 
-	switch (k.k->type) {
-	case KEY_TYPE_extent: {
-		struct bkey_s_c_extent e = bkey_s_c_to_extent(k);
-		const union bch_extent_entry *entry;
-		struct extent_ptr_decoded p;
-
-		extent_for_each_ptr_decode(e, p, entry)
-			if (!p.ptr.cached &&
-			    p.crc.compression_type != BCH_COMPRESSION_NONE)
-				ret += p.crc.compressed_size;
-	}
-	}
+	bkey_for_each_ptr_decode(k.k, ptrs, p, entry)
+		if (!p.ptr.cached &&
+		    p.crc.compression_type != BCH_COMPRESSION_NONE)
+			ret += p.crc.compressed_size;
 
 	return ret;
 }
@@ -455,6 +451,8 @@ found:
 	BUG_ON(n.live_size != k->k.size);
 
 restart_narrow_pointers:
+	ptrs = bch2_bkey_ptrs(bkey_i_to_s(k));
+
 	bkey_for_each_ptr_decode(&k->k, ptrs, p, i)
 		if (can_narrow_crc(p.crc, n)) {
 			bch2_bkey_drop_ptr(bkey_i_to_s(k), &i->ptr);
@@ -809,19 +807,6 @@ bool bch2_cut_back(struct bpos where, struct bkey *k)
 	return true;
 }
 
-/**
- * bch_key_resize - adjust size of @k
- *
- * bkey_start_offset(k) will be preserved, modifies where the extent ends
- */
-void bch2_key_resize(struct bkey *k,
-		    unsigned new_size)
-{
-	k->p.offset -= k->size;
-	k->p.offset += new_size;
-	k->size = new_size;
-}
-
 static bool extent_i_save(struct btree *b, struct bkey_packed *dst,
 			  struct bkey_i *src)
 {
@@ -968,6 +953,7 @@ static int __bch2_extent_atomic_end(struct btree_trans *trans,
 
 	switch (k.k->type) {
 	case KEY_TYPE_extent:
+	case KEY_TYPE_reflink_v:
 		*nr_iters += bch2_bkey_nr_alloc_ptrs(k);
 
 		if (*nr_iters >= max_iters) {
@@ -1372,12 +1358,11 @@ void bch2_insert_fixup_extent(struct btree_trans *trans,
 
 		if (s.deleting)
 			tmp.k.k.type = KEY_TYPE_discard;
-#if 0
-		/* disabled due to lock recursion - mark_lock: */
+
 		if (debug_check_bkeys(c))
 			bch2_bkey_debugcheck(c, iter->l[0].b,
 					     bkey_i_to_s_c(&tmp.k));
-#endif
+
 		EBUG_ON(bkey_deleted(&tmp.k.k) || !tmp.k.k.size);
 
 		extent_bset_insert(c, iter, &tmp.k);
@@ -1419,11 +1404,13 @@ void bch2_extent_debugcheck(struct bch_fs *c, struct btree *b,
 	 * going to get overwritten during replay)
 	 */
 
-	bch2_fs_bug_on(!test_bit(BCH_FS_REBUILD_REPLICAS, &c->flags) &&
-		       !bch2_bkey_replicas_marked(c, e.s_c, false), c,
-		       "extent key bad (replicas not marked in superblock):\n%s",
-		       (bch2_bkey_val_to_text(&PBUF(buf), c, e.s_c), buf));
-
+	if (percpu_down_read_trylock(&c->mark_lock)) {
+		bch2_fs_bug_on(!test_bit(BCH_FS_REBUILD_REPLICAS, &c->flags) &&
+			       !bch2_bkey_replicas_marked_locked(c, e.s_c, false), c,
+			       "extent key bad (replicas not marked in superblock):\n%s",
+			       (bch2_bkey_val_to_text(&PBUF(buf), c, e.s_c), buf));
+		percpu_up_read(&c->mark_lock);
+	}
 	/*
 	 * If journal replay hasn't finished, we might be seeing keys
 	 * that will be overwritten by the time journal replay is done:
@@ -1591,9 +1578,9 @@ bool bch2_extent_normalize(struct bch_fs *c, struct bkey_s k)
 
 	/* will only happen if all pointers were cached: */
 	if (!bkey_val_u64s(k.k))
-		k.k->type = KEY_TYPE_deleted;
+		k.k->type = KEY_TYPE_discard;
 
-	return false;
+	return bkey_whiteout(k.k);
 }
 
 void bch2_bkey_mark_replicas_cached(struct bch_fs *c, struct bkey_s k,

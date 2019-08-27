@@ -20,6 +20,11 @@ static inline void percpu_down_read(struct percpu_rw_semaphore *sem)
 	pthread_mutex_lock(&sem->lock);
 }
 
+static inline int percpu_down_read_trylock(struct percpu_rw_semaphore *sem)
+{
+	return !pthread_mutex_trylock(&sem->lock);
+}
+
 static inline void percpu_up_read_preempt_enable(struct percpu_rw_semaphore *sem)
 {
 	pthread_mutex_unlock(&sem->lock);

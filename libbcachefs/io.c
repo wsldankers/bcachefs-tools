@@ -454,7 +454,10 @@ static struct bio *bch2_write_bio_alloc(struct bch_fs *c,
 	struct bio *bio;
 	unsigned output_available =
 		min(wp->sectors_free << 9, src->bi_iter.bi_size);
-	unsigned pages = DIV_ROUND_UP(output_available, PAGE_SIZE);
+	unsigned pages = DIV_ROUND_UP(output_available +
+				      (buf
+				       ? ((unsigned long) buf & (PAGE_SIZE - 1))
+				       : 0), PAGE_SIZE);
 
 	bio = bio_alloc_bioset(GFP_NOIO, pages, &c->bio_write);
 	wbio			= wbio_init(bio);
@@ -912,30 +915,39 @@ flush_io:
 void bch2_write(struct closure *cl)
 {
 	struct bch_write_op *op = container_of(cl, struct bch_write_op, cl);
+	struct bio *bio = &op->wbio.bio;
 	struct bch_fs *c = op->c;
 
 	BUG_ON(!op->nr_replicas);
 	BUG_ON(!op->write_point.v);
 	BUG_ON(!bkey_cmp(op->pos, POS_MAX));
 
+	if (bio_sectors(bio) & (c->opts.block_size - 1)) {
+		__bcache_io_error(c, "misaligned write");
+		op->error = -EIO;
+		goto err;
+	}
+
 	op->start_time = local_clock();
 
 	bch2_keylist_init(&op->insert_keys, op->inline_keys);
-	wbio_init(&op->wbio.bio)->put_bio = false;
+	wbio_init(bio)->put_bio = false;
 
 	if (c->opts.nochanges ||
 	    !percpu_ref_tryget(&c->writes)) {
 		__bcache_io_error(c, "read only");
 		op->error = -EROFS;
-		if (!(op->flags & BCH_WRITE_NOPUT_RESERVATION))
-			bch2_disk_reservation_put(c, &op->res);
-		closure_return(cl);
-		return;
+		goto err;
 	}
 
-	bch2_increment_clock(c, bio_sectors(&op->wbio.bio), WRITE);
+	bch2_increment_clock(c, bio_sectors(bio), WRITE);
 
 	continue_at_nobarrier(cl, __bch2_write, NULL);
+	return;
+err:
+	if (!(op->flags & BCH_WRITE_NOPUT_RESERVATION))
+		bch2_disk_reservation_put(c, &op->res);
+	closure_return(cl);
 }
 
 /* Cache promotion on read */
@@ -1285,7 +1297,7 @@ retry:
 			bkey_start_offset(k.k);
 		sectors = k.k->size - offset_into_extent;
 
-		ret = bch2_read_indirect_extent(&trans, iter,
+		ret = bch2_read_indirect_extent(&trans,
 					&offset_into_extent, &tmp.k);
 		if (ret)
 			break;
@@ -1574,18 +1586,14 @@ static void bch2_read_endio(struct bio *bio)
 	bch2_rbio_punt(rbio, __bch2_read_endio, context, wq);
 }
 
-int bch2_read_indirect_extent(struct btree_trans *trans,
-			      struct btree_iter *extent_iter,
-			      unsigned *offset_into_extent,
-			      struct bkey_i *orig_k)
+int __bch2_read_indirect_extent(struct btree_trans *trans,
+				unsigned *offset_into_extent,
+				struct bkey_i *orig_k)
 {
 	struct btree_iter *iter;
 	struct bkey_s_c k;
 	u64 reflink_offset;
 	int ret;
-
-	if (orig_k->k.type != KEY_TYPE_reflink_p)
-		return 0;
 
 	reflink_offset = le64_to_cpu(bkey_i_to_reflink_p(orig_k)->v.idx) +
 		*offset_into_extent;
@@ -1893,7 +1901,7 @@ void bch2_read(struct bch_fs *c, struct bch_read_bio *rbio, u64 inode)
 			bkey_start_offset(k.k);
 		sectors = k.k->size - offset_into_extent;
 
-		ret = bch2_read_indirect_extent(&trans, iter,
+		ret = bch2_read_indirect_extent(&trans,
 					&offset_into_extent, &tmp.k);
 		if (ret)
 			goto err;
