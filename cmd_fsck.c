@@ -30,7 +30,7 @@ int cmd_fsck(int argc, char *argv[])
 	opt_set(opts, fsck, true);
 	opt_set(opts, fix_errors, FSCK_OPT_ASK);
 
-	while ((opt = getopt(argc, argv, "apynfvh")) != -1)
+	while ((opt = getopt(argc, argv, "apynfo:vh")) != -1)
 		switch (opt) {
 		case 'a': /* outdated alias for -p */
 		case 'p':
@@ -45,6 +45,11 @@ int cmd_fsck(int argc, char *argv[])
 			break;
 		case 'f':
 			/* force check, even if filesystem marked clean: */
+			break;
+		case 'o':
+			ret = bch2_parse_mount_opts(&opts, optarg);
+			if (ret)
+				return ret;
 			break;
 		case 'v':
 			opt_set(opts, verbose, true);
