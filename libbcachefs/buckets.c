@@ -634,7 +634,6 @@ static int __bch2_invalidate_bucket(struct bch_fs *c, struct bch_dev *ca,
 		BUG_ON(!is_available_bucket(new));
 
 		new.owned_by_allocator	= true;
-		new.dirty		= true;
 		new.data_type		= 0;
 		new.cached_sectors	= 0;
 		new.dirty_sectors	= 0;
@@ -774,7 +773,6 @@ static int __bch2_mark_metadata_bucket(struct bch_fs *c, struct bch_dev *ca,
 	       type != BCH_DATA_JOURNAL);
 
 	old = bucket_cmpxchg(g, new, ({
-		new.dirty	= true;
 		new.data_type	= type;
 		overflow = checked_add(new.dirty_sectors, sectors);
 	}));
@@ -849,7 +847,6 @@ static void bucket_set_stripe(struct bch_fs *c,
 		struct bucket_mark new, old;
 
 		old = bucket_data_cmpxchg(c, ca, fs_usage, g, new, ({
-			new.dirty			= true;
 			new.stripe			= enabled;
 			if (journal_seq) {
 				new.journal_seq_valid	= 1;
@@ -895,8 +892,6 @@ static bool bch2_mark_pointer(struct bch_fs *c,
 	v = atomic64_read(&g->_mark.v);
 	do {
 		new.v.counter = old.v.counter = v;
-
-		new.dirty = true;
 
 		/*
 		 * Check this after reading bucket mark to guard against
@@ -1416,8 +1411,6 @@ static int bch2_trans_mark_pointer(struct btree_trans *trans,
 	struct bch_dev *ca = bch_dev_bkey_exists(c, p.ptr.dev);
 	struct btree_iter *iter;
 	struct bkey_s_c k;
-	struct bucket *g;
-	struct bucket_mark m;
 	struct bkey_alloc_unpacked u;
 	struct bkey_i_alloc *a;
 	bool overflow;
@@ -1430,12 +1423,31 @@ static int bch2_trans_mark_pointer(struct btree_trans *trans,
 		return ret;
 
 	if (!ret) {
+		/*
+		 * During journal replay, and if gc repairs alloc info at
+		 * runtime, the alloc info in the btree might not be up to date
+		 * yet - so, trust the in memory mark:
+		 */
+		struct bucket *g;
+		struct bucket_mark m;
+
 		percpu_down_read(&c->mark_lock);
 		g	= bucket(ca, iter->pos.offset);
 		m	= READ_ONCE(g->mark);
 		u	= alloc_mem_to_key(g, m);
 		percpu_up_read(&c->mark_lock);
 	} else {
+		/*
+		 * Unless we're already updating that key:
+		 */
+		if (k.k->type != KEY_TYPE_alloc) {
+			bch_err_ratelimited(c, "pointer to nonexistent bucket %u:%zu",
+					    p.ptr.dev,
+					    PTR_BUCKET_NR(ca, &p.ptr));
+			ret = -1;
+			goto out;
+		}
+
 		u = bch2_alloc_unpack(k);
 	}
 
@@ -1881,7 +1893,6 @@ int bch2_dev_buckets_resize(struct bch_fs *c, struct bch_dev *ca, u64 nbuckets)
 {
 	struct bucket_array *buckets = NULL, *old_buckets = NULL;
 	unsigned long *buckets_nouse = NULL;
-	unsigned long *buckets_written = NULL;
 	alloc_fifo	free[RESERVE_NR];
 	alloc_fifo	free_inc;
 	alloc_heap	alloc_heap;
@@ -1908,9 +1919,6 @@ int bch2_dev_buckets_resize(struct bch_fs *c, struct bch_dev *ca, u64 nbuckets)
 					    nbuckets * sizeof(struct bucket),
 					    GFP_KERNEL|__GFP_ZERO)) ||
 	    !(buckets_nouse	= kvpmalloc(BITS_TO_LONGS(nbuckets) *
-					    sizeof(unsigned long),
-					    GFP_KERNEL|__GFP_ZERO)) ||
-	    !(buckets_written	= kvpmalloc(BITS_TO_LONGS(nbuckets) *
 					    sizeof(unsigned long),
 					    GFP_KERNEL|__GFP_ZERO)) ||
 	    !init_fifo(&free[RESERVE_BTREE], btree_reserve, GFP_KERNEL) ||
@@ -1944,16 +1952,12 @@ int bch2_dev_buckets_resize(struct bch_fs *c, struct bch_dev *ca, u64 nbuckets)
 		memcpy(buckets_nouse,
 		       ca->buckets_nouse,
 		       BITS_TO_LONGS(n) * sizeof(unsigned long));
-		memcpy(buckets_written,
-		       ca->buckets_written,
-		       BITS_TO_LONGS(n) * sizeof(unsigned long));
 	}
 
 	rcu_assign_pointer(ca->buckets[0], buckets);
 	buckets = old_buckets;
 
 	swap(ca->buckets_nouse, buckets_nouse);
-	swap(ca->buckets_written, buckets_written);
 
 	if (resize)
 		percpu_up_write(&c->mark_lock);
@@ -1993,8 +1997,6 @@ err:
 		free_fifo(&free[i]);
 	kvpfree(buckets_nouse,
 		BITS_TO_LONGS(nbuckets) * sizeof(unsigned long));
-	kvpfree(buckets_written,
-		BITS_TO_LONGS(nbuckets) * sizeof(unsigned long));
 	if (buckets)
 		call_rcu(&old_buckets->rcu, buckets_free_rcu);
 
@@ -2010,8 +2012,6 @@ void bch2_dev_buckets_free(struct bch_dev *ca)
 	free_fifo(&ca->free_inc);
 	for (i = 0; i < RESERVE_NR; i++)
 		free_fifo(&ca->free[i]);
-	kvpfree(ca->buckets_written,
-		BITS_TO_LONGS(ca->mi.nbuckets) * sizeof(unsigned long));
 	kvpfree(ca->buckets_nouse,
 		BITS_TO_LONGS(ca->mi.nbuckets) * sizeof(unsigned long));
 	kvpfree(rcu_dereference_protected(ca->buckets[0], 1),

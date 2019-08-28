@@ -318,7 +318,6 @@ static void link_data(struct bch_fs *c, struct bch_inode_unpacked *dst,
 		struct bkey_i_extent *e;
 		BKEY_PADDED(k) k;
 		u64 b = sector_to_bucket(ca, physical);
-		struct bucket_mark m;
 		struct disk_reservation res;
 		unsigned sectors;
 		int ret;
@@ -336,8 +335,6 @@ static void link_data(struct bch_fs *c, struct bch_inode_unpacked *dst,
 					.dev = 0,
 					.gen = bucket(ca, b)->mark.gen,
 				  });
-
-		bucket_cmpxchg(bucket(ca, b), m, m.dirty = true);
 
 		ret = bch2_disk_reservation_get(c, &res, sectors, 1,
 						BCH_DISK_RESERVATION_NOFAIL);
