@@ -521,7 +521,6 @@ static inline void update_replicas(struct bch_fs *c,
 	int idx = bch2_replicas_entry_idx(c, r);
 
 	BUG_ON(idx < 0);
-	BUG_ON(!sectors);
 
 	switch (r->data_type) {
 	case BCH_DATA_BTREE:
@@ -570,8 +569,12 @@ static inline void update_replicas_list(struct btree_trans *trans,
 {
 	struct replicas_delta_list *d;
 	struct replicas_delta *n;
-	unsigned b = replicas_entry_bytes(r) + 8;
+	unsigned b;
 
+	if (!sectors)
+		return;
+
+	b = replicas_entry_bytes(r) + 8;
 	d = replicas_deltas_realloc(trans, b);
 
 	n = (void *) d->d + d->used;
@@ -1029,7 +1032,7 @@ static int bch2_mark_extent(struct bch_fs *c, struct bkey_s_c k,
 					fs_usage, journal_seq, flags);
 
 		if (p.ptr.cached) {
-			if (disk_sectors && !stale)
+			if (!stale)
 				update_cached_sectors(c, fs_usage, p.ptr.dev,
 						      disk_sectors);
 		} else if (!p.ec_nr) {
@@ -1048,8 +1051,7 @@ static int bch2_mark_extent(struct bch_fs *c, struct bkey_s_c k,
 		}
 	}
 
-	if (dirty_sectors)
-		update_replicas(c, fs_usage, &r.e, dirty_sectors);
+	update_replicas(c, fs_usage, &r.e, dirty_sectors);
 
 	return 0;
 }
@@ -1413,6 +1415,7 @@ static int bch2_trans_mark_pointer(struct btree_trans *trans,
 	struct bkey_s_c k;
 	struct bkey_alloc_unpacked u;
 	struct bkey_i_alloc *a;
+	unsigned old;
 	bool overflow;
 	int ret;
 
@@ -1441,9 +1444,9 @@ static int bch2_trans_mark_pointer(struct btree_trans *trans,
 		 * Unless we're already updating that key:
 		 */
 		if (k.k->type != KEY_TYPE_alloc) {
-			bch_err_ratelimited(c, "pointer to nonexistent bucket %u:%zu",
-					    p.ptr.dev,
-					    PTR_BUCKET_NR(ca, &p.ptr));
+			bch_err_ratelimited(c, "pointer to nonexistent bucket %llu:%llu",
+					    iter->pos.inode,
+					    iter->pos.offset);
 			ret = -1;
 			goto out;
 		}
@@ -1456,19 +1459,20 @@ static int bch2_trans_mark_pointer(struct btree_trans *trans,
 		goto out;
 	}
 
-	if (!p.ptr.cached)
+	if (!p.ptr.cached) {
+		old = u.dirty_sectors;
 		overflow = checked_add(u.dirty_sectors, sectors);
-	else
+	} else {
+		old = u.cached_sectors;
 		overflow = checked_add(u.cached_sectors, sectors);
+	}
 
 	u.data_type = u.dirty_sectors || u.cached_sectors
 		? data_type : 0;
 
 	bch2_fs_inconsistent_on(overflow, c,
 		"bucket sector count overflow: %u + %lli > U16_MAX",
-		!p.ptr.cached
-		? u.dirty_sectors
-		: u.cached_sectors, sectors);
+		old, sectors);
 
 	a = trans_update_key(trans, iter, BKEY_ALLOC_U64s_MAX);
 	ret = PTR_ERR_OR_ZERO(a);
@@ -1561,12 +1565,6 @@ static int bch2_trans_mark_extent(struct btree_trans *trans,
 			? sectors
 			: ptr_disk_sectors_delta(p, offset, sectors, flags);
 
-		/*
-		 * can happen due to rounding with compressed extents:
-		 */
-		if (!disk_sectors)
-			continue;
-
 		ret = bch2_trans_mark_pointer(trans, p, disk_sectors,
 					      data_type);
 		if (ret < 0)
@@ -1575,7 +1573,7 @@ static int bch2_trans_mark_extent(struct btree_trans *trans,
 		stale = ret > 0;
 
 		if (p.ptr.cached) {
-			if (disk_sectors && !stale)
+			if (!stale)
 				update_cached_sectors_list(trans, p.ptr.dev,
 							   disk_sectors);
 		} else if (!p.ec_nr) {
@@ -1593,8 +1591,7 @@ static int bch2_trans_mark_extent(struct btree_trans *trans,
 		}
 	}
 
-	if (dirty_sectors)
-		update_replicas_list(trans, &r.e, dirty_sectors);
+	update_replicas_list(trans, &r.e, dirty_sectors);
 
 	return 0;
 }
