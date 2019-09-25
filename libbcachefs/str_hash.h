@@ -42,7 +42,6 @@ bch2_hash_info_init(struct bch_fs *c,
 		u8 digest[SHA256_DIGEST_SIZE];
 
 		desc->tfm = c->sha256;
-		desc->flags = 0;
 
 		crypto_shash_digest(desc, (void *) &bi->bi_hash_seed,
 				    sizeof(bi->bi_hash_seed), digest);

@@ -167,9 +167,8 @@ void bio_free_pages(struct bio *bio)
 {
 	struct bvec_iter_all iter;
 	struct bio_vec *bvec;
-	int i;
 
-	bio_for_each_segment_all(bvec, bio, i, iter)
+	bio_for_each_segment_all(bvec, bio, iter)
 		__free_page(bvec->bv_page);
 }
 

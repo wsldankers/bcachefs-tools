@@ -389,8 +389,7 @@ const char *bch2_bkey_ptrs_invalid(const struct bch_fs *, struct bkey_s_c);
 /* bch_btree_ptr: */
 
 const char *bch2_btree_ptr_invalid(const struct bch_fs *, struct bkey_s_c);
-void bch2_btree_ptr_debugcheck(struct bch_fs *, struct btree *,
-			       struct bkey_s_c);
+void bch2_btree_ptr_debugcheck(struct bch_fs *, struct bkey_s_c);
 void bch2_btree_ptr_to_text(struct printbuf *, struct bch_fs *,
 			    struct bkey_s_c);
 void bch2_ptr_swab(const struct bkey_format *, struct bkey_packed *);
@@ -405,7 +404,7 @@ void bch2_ptr_swab(const struct bkey_format *, struct bkey_packed *);
 /* bch_extent: */
 
 const char *bch2_extent_invalid(const struct bch_fs *, struct bkey_s_c);
-void bch2_extent_debugcheck(struct bch_fs *, struct btree *, struct bkey_s_c);
+void bch2_extent_debugcheck(struct bch_fs *, struct bkey_s_c);
 void bch2_extent_to_text(struct printbuf *, struct bch_fs *, struct bkey_s_c);
 bool bch2_extent_normalize(struct bch_fs *, struct bkey_s);
 enum merge_result bch2_extent_merge(struct bch_fs *,
@@ -433,8 +432,8 @@ enum merge_result bch2_reservation_merge(struct bch_fs *,
 	.key_merge	= bch2_reservation_merge,		\
 }
 
-int bch2_extent_atomic_end(struct btree_trans *, struct btree_iter *,
-			   struct bkey_i *, struct bpos *);
+int bch2_extent_atomic_end(struct btree_iter *, struct bkey_i *,
+			   struct bpos *);
 int bch2_extent_trim_atomic(struct bkey_i *, struct btree_iter *);
 int bch2_extent_is_atomic(struct bkey_i *, struct btree_iter *);
 
@@ -455,17 +454,22 @@ unsigned bch2_extent_is_compressed(struct bkey_s_c);
 bool bch2_bkey_matches_ptr(struct bch_fs *, struct bkey_s_c,
 			   struct bch_extent_ptr, u64);
 
-static inline bool bkey_extent_is_data(const struct bkey *k)
+static inline bool bkey_extent_is_direct_data(const struct bkey *k)
 {
 	switch (k->type) {
 	case KEY_TYPE_btree_ptr:
 	case KEY_TYPE_extent:
-	case KEY_TYPE_reflink_p:
 	case KEY_TYPE_reflink_v:
 		return true;
 	default:
 		return false;
 	}
+}
+
+static inline bool bkey_extent_is_data(const struct bkey *k)
+{
+	return bkey_extent_is_direct_data(k) ||
+		k->type == KEY_TYPE_reflink_p;
 }
 
 /*

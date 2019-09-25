@@ -304,11 +304,10 @@ static void move_free(struct closure *cl)
 	struct moving_context *ctxt = io->write.ctxt;
 	struct bvec_iter_all iter;
 	struct bio_vec *bv;
-	int i;
 
 	bch2_disk_reservation_put(io->write.op.c, &io->write.op.res);
 
-	bio_for_each_segment_all(bv, &io->write.op.wbio.bio, i, iter)
+	bio_for_each_segment_all(bv, &io->write.op.wbio.bio, iter)
 		if (bv->bv_page)
 			__free_page(bv->bv_page);
 
@@ -438,7 +437,8 @@ static int bch2_move_extent(struct bch_fs *c,
 				 GFP_KERNEL))
 		goto err_free;
 
-	io->rbio.opts = io_opts;
+	io->rbio.c		= c;
+	io->rbio.opts		= io_opts;
 	bio_init(&io->rbio.bio, io->bi_inline_vecs, pages);
 	io->rbio.bio.bi_vcnt = pages;
 	bio_set_prio(&io->rbio.bio, IOPRIO_PRIO_VALUE(IOPRIO_CLASS_IDLE, 0));
@@ -548,7 +548,7 @@ peek:
 		if (bkey_cmp(bkey_start_pos(k.k), end) >= 0)
 			break;
 
-		if (!bkey_extent_is_data(k.k))
+		if (!bkey_extent_is_direct_data(k.k))
 			goto next_nondata;
 
 		if (cur_inum != k.k->p.inode) {

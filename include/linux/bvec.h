@@ -43,6 +43,10 @@ struct bvec_iter {
 						   current bvec */
 };
 
+struct bvec_iter_all {
+	int		idx;
+};
+
 /*
  * various member access, note that bio_data should of course not be used
  * on highmem page vectors

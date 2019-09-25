@@ -127,7 +127,6 @@ static void gen_poly_key(struct bch_fs *c, struct shash_desc *desc,
 	do_encrypt(c->chacha20, nonce, key, sizeof(key));
 
 	desc->tfm = c->poly1305;
-	desc->flags = 0;
 	crypto_shash_init(desc);
 	crypto_shash_update(desc, key, sizeof(key));
 }

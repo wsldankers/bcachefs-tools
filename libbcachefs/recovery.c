@@ -281,8 +281,7 @@ retry:
 		if (ret)
 			goto err;
 
-		ret = bch2_extent_atomic_end(&trans, split_iter,
-					     k, &atomic_end);
+		ret = bch2_extent_atomic_end(split_iter, k, &atomic_end);
 		if (ret)
 			goto err;
 
@@ -936,7 +935,9 @@ out:
 	ret = 0;
 err:
 fsck_err:
+	set_bit(BCH_FS_FSCK_DONE, &c->flags);
 	bch2_flush_fsck_errs(c);
+
 	journal_keys_free(&journal_keys);
 	journal_entries_free(&journal_entries);
 	kfree(clean);

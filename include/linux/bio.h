@@ -113,13 +113,17 @@ static inline void *bio_data(struct bio *bio)
 
 #define __bio_kunmap_atomic(addr)	kunmap_atomic(addr)
 
-struct bvec_iter_all {
-	unsigned	done;
-};
+static inline struct bio_vec *bio_next_segment(const struct bio *bio,
+					       struct bvec_iter_all *iter)
+{
+	if (iter->idx >= bio->bi_vcnt)
+		return NULL;
 
-#define bio_for_each_segment_all(bvl, bio, i, iter)			\
-	for (i = 0, bvl = (bio)->bi_io_vec, iter = (struct bvec_iter_all) { 0 };		\
-	     i < (bio)->bi_vcnt; i++, bvl++)
+	return &bio->bi_io_vec[iter->idx];
+}
+
+#define bio_for_each_segment_all(bvl, bio, iter) \
+	for ((iter).idx = 0; (bvl = bio_next_segment((bio), &(iter))); (iter).idx++)
 
 static inline void bio_advance_iter(struct bio *bio, struct bvec_iter *iter,
 				    unsigned bytes)
