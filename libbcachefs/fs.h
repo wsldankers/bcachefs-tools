@@ -14,7 +14,6 @@ struct bch_inode_info {
 	struct inode		v;
 
 	struct mutex		ei_update_lock;
-	struct deferred_update	*ei_inode_update;
 	u64			ei_journal_seq;
 	u64			ei_quota_reserved;
 	unsigned long		ei_last_dirtied;
@@ -81,11 +80,6 @@ static inline struct bch_inode_info *file_bch_inode(struct file *file)
 static inline u8 mode_to_type(umode_t mode)
 {
 	return (mode >> 12) & 15;
-}
-
-static inline unsigned nlink_bias(umode_t mode)
-{
-	return S_ISDIR(mode) ? 2 : 1;
 }
 
 static inline bool inode_attr_changing(struct bch_inode_info *dir,

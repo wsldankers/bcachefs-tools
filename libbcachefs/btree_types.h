@@ -180,20 +180,21 @@ struct btree_node_iter {
 
 enum btree_iter_type {
 	BTREE_ITER_KEYS,
-	BTREE_ITER_SLOTS,
 	BTREE_ITER_NODES,
 };
 
 #define BTREE_ITER_TYPE			((1 << 2) - 1)
 
-#define BTREE_ITER_INTENT		(1 << 2)
-#define BTREE_ITER_PREFETCH		(1 << 3)
+#define BTREE_ITER_SLOTS		(1 << 2)
+#define BTREE_ITER_INTENT		(1 << 3)
+#define BTREE_ITER_PREFETCH		(1 << 4)
+#define BTREE_ITER_KEEP_UNTIL_COMMIT	(1 << 5)
 /*
  * Used in bch2_btree_iter_traverse(), to indicate whether we're searching for
  * @pos or the first key strictly greater than @pos
  */
-#define BTREE_ITER_IS_EXTENTS		(1 << 4)
-#define BTREE_ITER_ERROR		(1 << 5)
+#define BTREE_ITER_IS_EXTENTS		(1 << 6)
+#define BTREE_ITER_ERROR		(1 << 7)
 
 enum btree_iter_uptodate {
 	BTREE_ITER_UPTODATE		= 0,
@@ -234,33 +235,16 @@ struct btree_iter {
 	 * bch2_btree_iter_next_slot() can correctly advance pos.
 	 */
 	struct bkey		k;
-
-	u64			id;
 };
 
-struct deferred_update {
-	struct journal_preres	res;
-	struct journal_entry_pin journal;
-
-	spinlock_t		lock;
-	unsigned		dirty:1;
-
-	u8			allocated_u64s;
-	enum btree_id		btree_id;
-
-	/* must be last: */
-	struct bkey_i		k;
-};
+static inline enum btree_iter_type btree_iter_type(struct btree_iter *iter)
+{
+	return iter->flags & BTREE_ITER_TYPE;
+}
 
 struct btree_insert_entry {
 	struct bkey_i		*k;
-
-	union {
 	struct btree_iter	*iter;
-	struct deferred_update	*d;
-	};
-
-	bool			deferred;
 };
 
 #define BTREE_ITER_MAX		64
@@ -273,8 +257,6 @@ struct btree_trans {
 	u64			iters_linked;
 	u64			iters_live;
 	u64			iters_touched;
-	u64			iters_unlink_on_restart;
-	u64			iters_unlink_on_commit;
 
 	u8			nr_iters;
 	u8			nr_updates;

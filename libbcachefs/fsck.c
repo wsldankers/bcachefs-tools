@@ -248,7 +248,7 @@ static int hash_check_duplicates(struct btree_trans *trans,
 	iter = bch2_trans_copy_iter(trans, h->chain);
 	BUG_ON(IS_ERR(iter));
 
-	for_each_btree_key_continue(iter, 0, k2) {
+	for_each_btree_key_continue(iter, 0, k2, ret) {
 		if (bkey_cmp(k2.k->p, k.k->p) >= 0)
 			break;
 
@@ -393,7 +393,7 @@ static int check_dirent_hash(struct btree_trans *trans, struct hash_check *h,
 
 	if (fsck_err(c, "dirent with junk at end, was %s (%zu) now %s (%u)",
 		     buf, strlen(buf), d->v.d_name, len)) {
-		bch2_trans_update(trans, BTREE_INSERT_ENTRY(iter, &d->k_i));
+		bch2_trans_update(trans, iter, &d->k_i);
 
 		ret = bch2_trans_commit(trans, NULL, NULL,
 					BTREE_INSERT_NOFAIL|
@@ -458,7 +458,7 @@ static int check_extents(struct bch_fs *c)
 	iter = bch2_trans_get_iter(&trans, BTREE_ID_EXTENTS,
 				   POS(BCACHEFS_ROOT_INO, 0), 0);
 retry:
-	for_each_btree_key_continue(iter, 0, k) {
+	for_each_btree_key_continue(iter, 0, k, ret) {
 		ret = walk_inode(&trans, &w, k.k->p.inode);
 		if (ret)
 			break;
@@ -553,7 +553,7 @@ static int check_dirents(struct bch_fs *c)
 	iter = bch2_trans_get_iter(&trans, BTREE_ID_DIRENTS,
 				   POS(BCACHEFS_ROOT_INO, 0), 0);
 retry:
-	for_each_btree_key_continue(iter, 0, k) {
+	for_each_btree_key_continue(iter, 0, k, ret) {
 		struct bkey_s_c_dirent d;
 		struct bch_inode_unpacked target;
 		bool have_target;
@@ -663,8 +663,7 @@ retry:
 			bkey_reassemble(&n->k_i, d.s_c);
 			n->v.d_type = mode_to_type(target.bi_mode);
 
-			bch2_trans_update(&trans,
-				BTREE_INSERT_ENTRY(iter, &n->k_i));
+			bch2_trans_update(&trans, iter, &n->k_i);
 
 			ret = bch2_trans_commit(&trans, NULL, NULL,
 						BTREE_INSERT_NOFAIL|
@@ -707,7 +706,7 @@ static int check_xattrs(struct bch_fs *c)
 	iter = bch2_trans_get_iter(&trans, BTREE_ID_XATTRS,
 				   POS(BCACHEFS_ROOT_INO, 0), 0);
 retry:
-	for_each_btree_key_continue(iter, 0, k) {
+	for_each_btree_key_continue(iter, 0, k, ret) {
 		ret = walk_inode(&trans, &w, k.k->p.inode);
 		if (ret)
 			break;
@@ -995,7 +994,7 @@ up:
 
 	iter = bch2_trans_get_iter(&trans, BTREE_ID_INODES, POS_MIN, 0);
 retry:
-	for_each_btree_key_continue(iter, 0, k) {
+	for_each_btree_key_continue(iter, 0, k, ret) {
 		if (k.k->type != KEY_TYPE_inode)
 			continue;
 
@@ -1021,7 +1020,7 @@ retry:
 			had_unreachable = true;
 		}
 	}
-	ret = bch2_trans_iter_free(&trans, iter);
+	bch2_trans_iter_free(&trans, iter);
 	if (ret)
 		goto err;
 
@@ -1116,9 +1115,7 @@ static int check_inode_nlink(struct bch_fs *c,
 			     struct nlink *link,
 			     bool *do_update)
 {
-	u32 i_nlink = u->bi_flags & BCH_INODE_UNLINKED
-		? 0
-		: u->bi_nlink + nlink_bias(u->bi_mode);
+	u32 i_nlink = bch2_inode_nlink_get(u);
 	u32 real_i_nlink =
 		link->count * nlink_bias(u->bi_mode) +
 		link->dir_count;
@@ -1197,14 +1194,7 @@ static int check_inode_nlink(struct bch_fs *c,
 			    u->bi_inum, i_nlink, real_i_nlink);
 set_i_nlink:
 	if (i_nlink != real_i_nlink) {
-		if (real_i_nlink) {
-			u->bi_nlink = real_i_nlink - nlink_bias(u->bi_mode);
-			u->bi_flags &= ~BCH_INODE_UNLINKED;
-		} else {
-			u->bi_nlink = 0;
-			u->bi_flags |= BCH_INODE_UNLINKED;
-		}
-
+		bch2_inode_nlink_set(u, real_i_nlink);
 		*do_update = true;
 	}
 fsck_err:
@@ -1302,7 +1292,7 @@ static int check_inode(struct btree_trans *trans,
 		struct bkey_inode_buf p;
 
 		bch2_inode_pack(&p, &u);
-		bch2_trans_update(trans, BTREE_INSERT_ENTRY(iter, &p.inode.k_i));
+		bch2_trans_update(trans, iter, &p.inode.k_i);
 
 		ret = bch2_trans_commit(trans, NULL, NULL,
 					BTREE_INSERT_NOFAIL|

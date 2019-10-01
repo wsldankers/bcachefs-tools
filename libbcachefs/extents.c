@@ -974,11 +974,11 @@ static int count_iters_for_insert(struct btree_trans *trans,
 			*nr_iters += 1;
 
 			if (overwrite &&
-			    k.k->type == KEY_TYPE_reflink_v) {
-				struct bkey_s_c_reflink_v r = bkey_s_c_to_reflink_v(k);
+			    r_k.k->type == KEY_TYPE_reflink_v) {
+				struct bkey_s_c_reflink_v r = bkey_s_c_to_reflink_v(r_k);
 
 				if (le64_to_cpu(r.v->refcount) == 1)
-					*nr_iters += bch2_bkey_nr_alloc_ptrs(k);
+					*nr_iters += bch2_bkey_nr_alloc_ptrs(r_k);
 			}
 
 			/*

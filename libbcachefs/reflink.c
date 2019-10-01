@@ -120,7 +120,7 @@ static int bch2_make_extent_indirect(struct btree_trans *trans,
 	r_v->v.refcount	= 0;
 	memcpy(r_v->v.start, e->v.start, bkey_val_bytes(&e->k));
 
-	bch2_trans_update(trans, BTREE_INSERT_ENTRY(reflink_iter, &r_v->k_i));
+	bch2_trans_update(trans, reflink_iter, &r_v->k_i);
 
 	r_p = bch2_trans_kmalloc(trans, sizeof(*r_p));
 	if (IS_ERR(r_p))
@@ -131,7 +131,7 @@ static int bch2_make_extent_indirect(struct btree_trans *trans,
 	set_bkey_val_bytes(&r_p->k, sizeof(r_p->v));
 	r_p->v.idx = cpu_to_le64(bkey_start_offset(&r_v->k));
 
-	bch2_trans_update(trans, BTREE_INSERT_ENTRY(extent_iter, &r_p->k_i));
+	bch2_trans_update(trans, extent_iter, &r_p->k_i);
 err:
 	if (!IS_ERR(reflink_iter)) {
 		c->reflink_hint = reflink_iter->pos.offset;
@@ -190,10 +190,10 @@ s64 bch2_remap_range(struct bch_fs *c,
 
 	bch2_trans_init(&trans, c, BTREE_ITER_MAX, 4096);
 
-	src_iter = __bch2_trans_get_iter(&trans, BTREE_ID_EXTENTS, src_start,
-					 BTREE_ITER_INTENT, 1);
-	dst_iter = __bch2_trans_get_iter(&trans, BTREE_ID_EXTENTS, dst_start,
-					 BTREE_ITER_INTENT, 2);
+	src_iter = bch2_trans_get_iter(&trans, BTREE_ID_EXTENTS, src_start,
+				       BTREE_ITER_INTENT);
+	dst_iter = bch2_trans_get_iter(&trans, BTREE_ID_EXTENTS, dst_start,
+				       BTREE_ITER_INTENT);
 
 	while (1) {
 		bch2_trans_begin_updates(&trans);

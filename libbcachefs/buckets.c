@@ -1316,7 +1316,7 @@ void bch2_trans_fs_usage_apply(struct btree_trans *trans,
 	bch_err(c, "disk usage increased more than %llu sectors reserved",
 		disk_res_sectors);
 
-	trans_for_each_update_iter(trans, i) {
+	trans_for_each_update(trans, i) {
 		struct btree_iter	*iter = i->iter;
 		struct btree		*b = iter->l[0].b;
 		struct btree_node_iter	node_iter = iter->l[0].iter;
@@ -1358,7 +1358,7 @@ static int trans_get_key(struct btree_trans *trans,
 	struct btree_insert_entry *i;
 	int ret;
 
-	trans_for_each_update_iter(trans, i)
+	trans_for_each_update(trans, i)
 		if (i->iter->btree_id == btree_id &&
 		    (btree_node_type_is_extents(btree_id)
 		     ? bkey_cmp(pos, bkey_start_pos(&i->k->k)) >= 0 &&
@@ -1369,12 +1369,10 @@ static int trans_get_key(struct btree_trans *trans,
 			return 1;
 		}
 
-	*iter = __bch2_trans_get_iter(trans, btree_id, pos,
-				   BTREE_ITER_SLOTS|BTREE_ITER_INTENT, 0);
+	*iter = bch2_trans_get_iter(trans, btree_id, pos,
+				    BTREE_ITER_SLOTS|BTREE_ITER_INTENT);
 	if (IS_ERR(*iter))
 		return PTR_ERR(*iter);
-
-	bch2_trans_iter_free_on_commit(trans, *iter);
 
 	*k = bch2_btree_iter_peek_slot(*iter);
 	ret = bkey_err(*k);
@@ -1397,13 +1395,13 @@ static void *trans_update_key(struct btree_trans *trans,
 	bkey_init(&new_k->k);
 	new_k->k.p = iter->pos;
 
-	trans_for_each_update_iter(trans, i)
+	trans_for_each_update(trans, i)
 		if (i->iter == iter) {
 			i->k = new_k;
 			return new_k;
 		}
 
-	bch2_trans_update(trans, BTREE_INSERT_ENTRY(iter, new_k));
+	bch2_trans_update(trans, iter, new_k);
 	return new_k;
 }
 

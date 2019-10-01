@@ -473,7 +473,7 @@ static void __bch2_btree_iter_verify(struct btree_iter *iter,
 	}
 
 	BUG_ON(iter->uptodate == BTREE_ITER_UPTODATE &&
-	       (iter->flags & BTREE_ITER_TYPE) == BTREE_ITER_KEYS &&
+	       btree_iter_type(iter) == BTREE_ITER_KEYS &&
 	       !bkey_whiteout(&iter->k) &&
 	       bch2_btree_node_iter_end(&l->iter));
 }
@@ -1152,6 +1152,7 @@ static inline void bch2_btree_iter_checks(struct btree_iter *iter,
 	EBUG_ON(!!(iter->flags & BTREE_ITER_IS_EXTENTS) !=
 		(btree_node_type_is_extents(iter->btree_id) &&
 		 type != BTREE_ITER_NODES));
+	EBUG_ON(btree_iter_type(iter) != type);
 
 	bch2_btree_trans_verify_locks(iter->trans);
 }
@@ -1661,7 +1662,7 @@ struct bkey_s_c bch2_btree_iter_peek_slot(struct btree_iter *iter)
 {
 	int ret;
 
-	bch2_btree_iter_checks(iter, BTREE_ITER_SLOTS);
+	bch2_btree_iter_checks(iter, BTREE_ITER_KEYS);
 
 	if (iter->uptodate == BTREE_ITER_UPTODATE)
 		return btree_iter_peek_uptodate(iter);
@@ -1675,7 +1676,7 @@ struct bkey_s_c bch2_btree_iter_peek_slot(struct btree_iter *iter)
 
 struct bkey_s_c bch2_btree_iter_next_slot(struct btree_iter *iter)
 {
-	bch2_btree_iter_checks(iter, BTREE_ITER_SLOTS);
+	bch2_btree_iter_checks(iter, BTREE_ITER_KEYS);
 
 	iter->pos = btree_type_successor(iter->btree_id, iter->k.p);
 
@@ -1729,15 +1730,6 @@ static inline void bch2_btree_iter_init(struct btree_trans *trans,
 
 /* new transactional stuff: */
 
-int bch2_trans_iter_put(struct btree_trans *trans,
-			struct btree_iter *iter)
-{
-	int ret = btree_iter_err(iter);
-
-	trans->iters_live	&= ~(1ULL << iter->idx);
-	return ret;
-}
-
 static inline void __bch2_trans_iter_free(struct btree_trans *trans,
 					  unsigned idx)
 {
@@ -1745,26 +1737,27 @@ static inline void __bch2_trans_iter_free(struct btree_trans *trans,
 	trans->iters_linked		&= ~(1ULL << idx);
 	trans->iters_live		&= ~(1ULL << idx);
 	trans->iters_touched		&= ~(1ULL << idx);
-	trans->iters_unlink_on_restart	&= ~(1ULL << idx);
-	trans->iters_unlink_on_commit	&= ~(1ULL << idx);
+}
+
+int bch2_trans_iter_put(struct btree_trans *trans,
+			struct btree_iter *iter)
+{
+	int ret = btree_iter_err(iter);
+
+	if (!(trans->iters_touched & (1ULL << iter->idx)) &&
+	    !(iter->flags & BTREE_ITER_KEEP_UNTIL_COMMIT))
+		__bch2_trans_iter_free(trans, iter->idx);
+
+	trans->iters_live	&= ~(1ULL << iter->idx);
+	return ret;
 }
 
 int bch2_trans_iter_free(struct btree_trans *trans,
 			 struct btree_iter *iter)
 {
-	int ret = btree_iter_err(iter);
+	trans->iters_touched &= ~(1ULL << iter->idx);
 
-	__bch2_trans_iter_free(trans, iter->idx);
-	return ret;
-}
-
-int bch2_trans_iter_free_on_commit(struct btree_trans *trans,
-				   struct btree_iter *iter)
-{
-	int ret = btree_iter_err(iter);
-
-	trans->iters_unlink_on_commit |= 1ULL << iter->idx;
-	return ret;
+	return bch2_trans_iter_put(trans, iter);
 }
 
 static int bch2_trans_realloc_iters(struct btree_trans *trans,
@@ -1830,7 +1823,7 @@ success:
 	return 0;
 }
 
-static int btree_trans_iter_alloc(struct btree_trans *trans)
+static struct btree_iter *btree_trans_iter_alloc(struct btree_trans *trans)
 {
 	unsigned idx = __ffs64(~trans->iters_linked);
 
@@ -1838,9 +1831,27 @@ static int btree_trans_iter_alloc(struct btree_trans *trans)
 		goto got_slot;
 
 	if (trans->nr_iters == trans->size) {
-		int ret = bch2_trans_realloc_iters(trans, trans->size * 2);
+		int ret;
+
+		if (trans->nr_iters >= BTREE_ITER_MAX) {
+			struct btree_iter *iter;
+
+			trans_for_each_iter(trans, iter) {
+				pr_err("iter: btree %s pos %llu:%llu%s%s%s",
+				       bch2_btree_ids[iter->btree_id],
+				       iter->pos.inode,
+				       iter->pos.offset,
+				       (trans->iters_live & (1ULL << iter->idx)) ? " live" : "",
+				       (trans->iters_touched & (1ULL << iter->idx)) ? " touched" : "",
+				       iter->flags & BTREE_ITER_KEEP_UNTIL_COMMIT ? " keep" : "");
+			}
+
+			panic("trans iter oveflow\n");
+		}
+
+		ret = bch2_trans_realloc_iters(trans, trans->size * 2);
 		if (ret)
-			return ret;
+			return ERR_PTR(ret);
 	}
 
 	idx = trans->nr_iters++;
@@ -1850,71 +1861,97 @@ static int btree_trans_iter_alloc(struct btree_trans *trans)
 got_slot:
 	BUG_ON(trans->iters_linked & (1ULL << idx));
 	trans->iters_linked |= 1ULL << idx;
-	return idx;
+	return &trans->iters[idx];
+}
+
+static inline void btree_iter_copy(struct btree_iter *dst,
+				   struct btree_iter *src)
+{
+	unsigned i, idx = dst->idx;
+
+	*dst = *src;
+	dst->idx = idx;
+
+	for (i = 0; i < BTREE_MAX_DEPTH; i++)
+		if (btree_node_locked(dst, i))
+			six_lock_increment(&dst->l[i].b->lock,
+					   __btree_lock_want(dst, i));
+}
+
+static inline struct bpos bpos_diff(struct bpos l, struct bpos r)
+{
+	if (bkey_cmp(l, r) > 0)
+		swap(l, r);
+
+	return POS(r.inode - l.inode, r.offset - l.offset);
 }
 
 static struct btree_iter *__btree_trans_get_iter(struct btree_trans *trans,
 						 unsigned btree_id, struct bpos pos,
-						 unsigned flags, u64 iter_id)
+						 unsigned flags)
 {
-	struct btree_iter *iter;
-	int idx;
+	struct btree_iter *iter, *best = NULL;
 
 	BUG_ON(trans->nr_iters > BTREE_ITER_MAX);
 
-	for (idx = 0; idx < trans->nr_iters; idx++) {
-		if (!(trans->iters_linked & (1ULL << idx)))
+	trans_for_each_iter(trans, iter) {
+		if (btree_iter_type(iter) != (flags & BTREE_ITER_TYPE))
 			continue;
 
-		iter = &trans->iters[idx];
-		if (iter_id
-		    ? iter->id == iter_id
-		    : (iter->btree_id == btree_id &&
-		       !bkey_cmp(iter->pos, pos)))
-			goto found;
-	}
-	idx = -1;
-found:
-	if (idx < 0) {
-		idx = btree_trans_iter_alloc(trans);
-		if (idx < 0)
-			return ERR_PTR(idx);
+		if (iter->btree_id != btree_id)
+			continue;
 
-		iter = &trans->iters[idx];
-		iter->id = iter_id;
+		if (best &&
+		    bkey_cmp(bpos_diff(best->pos, pos),
+			     bpos_diff(iter->pos, pos)) < 0)
+			continue;
+
+		best = iter;
+	}
+
+	if (!best) {
+		iter = btree_trans_iter_alloc(trans);
+		if (IS_ERR(iter))
+			return iter;
 
 		bch2_btree_iter_init(trans, iter, btree_id, pos, flags);
+	} else if ((trans->iters_live & (1ULL << best->idx)) ||
+		   (best->flags & BTREE_ITER_KEEP_UNTIL_COMMIT)) {
+		iter = btree_trans_iter_alloc(trans);
+		if (IS_ERR(iter))
+			return iter;
+
+		btree_iter_copy(iter, best);
 	} else {
-		iter = &trans->iters[idx];
-
-		iter->flags &= ~(BTREE_ITER_INTENT|BTREE_ITER_PREFETCH);
-		iter->flags |= flags & (BTREE_ITER_INTENT|BTREE_ITER_PREFETCH);
-
-		if ((iter->flags & BTREE_ITER_INTENT) &&
-		    !bch2_btree_iter_upgrade(iter, 1)) {
-			trace_trans_restart_upgrade(trans->ip);
-			return ERR_PTR(-EINTR);
-		}
+		iter = best;
 	}
 
-	BUG_ON(iter->btree_id != btree_id);
-	BUG_ON(trans->iters_live & (1ULL << idx));
-	trans->iters_live	|= 1ULL << idx;
-	trans->iters_touched	|= 1ULL << idx;
+	iter->flags &= ~BTREE_ITER_KEEP_UNTIL_COMMIT;
+	iter->flags &= ~(BTREE_ITER_SLOTS|BTREE_ITER_INTENT|BTREE_ITER_PREFETCH);
+	iter->flags |= flags & (BTREE_ITER_SLOTS|BTREE_ITER_INTENT|BTREE_ITER_PREFETCH);
+
+	if (iter->flags & BTREE_ITER_INTENT)
+		bch2_btree_iter_upgrade(iter, 1);
+	else
+		bch2_btree_iter_downgrade(iter);
 
 	BUG_ON(iter->btree_id != btree_id);
 	BUG_ON((iter->flags ^ flags) & BTREE_ITER_TYPE);
+	BUG_ON(iter->flags & BTREE_ITER_KEEP_UNTIL_COMMIT);
+	BUG_ON(trans->iters_live & (1ULL << iter->idx));
+
+	trans->iters_live	|= 1ULL << iter->idx;
+	trans->iters_touched	|= 1ULL << iter->idx;
 
 	return iter;
 }
 
-struct btree_iter *__bch2_trans_get_iter(struct btree_trans *trans,
-					 enum btree_id btree_id,
-					 struct bpos pos, unsigned flags,
-					 u64 iter_id)
+struct btree_iter *bch2_trans_get_iter(struct btree_trans *trans,
+				       enum btree_id btree_id,
+				       struct bpos pos, unsigned flags)
 {
 	struct btree_iter *iter =
-		__btree_trans_get_iter(trans, btree_id, pos, flags, iter_id);
+		__btree_trans_get_iter(trans, btree_id, pos, flags);
 
 	if (!IS_ERR(iter))
 		bch2_btree_iter_set_pos(iter, pos);
@@ -1930,7 +1967,7 @@ struct btree_iter *bch2_trans_get_node_iter(struct btree_trans *trans,
 {
 	struct btree_iter *iter =
 		__btree_trans_get_iter(trans, btree_id, pos,
-				       flags|BTREE_ITER_NODES, 0);
+				       flags|BTREE_ITER_NODES);
 	unsigned i;
 
 	BUG_ON(IS_ERR(iter));
@@ -1950,28 +1987,22 @@ struct btree_iter *bch2_trans_copy_iter(struct btree_trans *trans,
 					struct btree_iter *src)
 {
 	struct btree_iter *iter;
-	int i, idx;
 
-	idx = btree_trans_iter_alloc(trans);
-	if (idx < 0)
-		return ERR_PTR(idx);
+	iter = btree_trans_iter_alloc(trans);
+	if (IS_ERR(iter))
+		return iter;
 
-	trans->iters_live		|= 1ULL << idx;
-	trans->iters_touched		|= 1ULL << idx;
-	trans->iters_unlink_on_restart	|= 1ULL << idx;
+	btree_iter_copy(iter, src);
 
-	iter = &trans->iters[idx];
+	trans->iters_live |= 1ULL << iter->idx;
+	/*
+	 * Don't mark it as touched, we don't need to preserve this iter since
+	 * it's cheap to copy it again:
+	 */
+	trans->iters_touched &= ~(1ULL << iter->idx);
+	iter->flags &= ~BTREE_ITER_KEEP_UNTIL_COMMIT;
 
-	memcpy(&iter->trans,
-	       &src->trans,
-	       (void *) &iter[1] - (void *) &iter->trans);
-
-	for (i = 0; i < BTREE_MAX_DEPTH; i++)
-		if (btree_node_locked(iter, i))
-			six_lock_increment(&iter->l[i].b->lock,
-					   __btree_lock_want(iter, i));
-
-	return &trans->iters[idx];
+	return iter;
 }
 
 static int bch2_trans_preload_mem(struct btree_trans *trans, size_t size)
@@ -2010,10 +2041,11 @@ void *bch2_trans_kmalloc(struct btree_trans *trans, size_t size)
 	return p;
 }
 
-inline void bch2_trans_unlink_iters(struct btree_trans *trans, u64 iters)
+inline void bch2_trans_unlink_iters(struct btree_trans *trans)
 {
-	iters &= trans->iters_linked;
-	iters &= ~trans->iters_live;
+	u64 iters = trans->iters_linked &
+		~trans->iters_touched &
+		~trans->iters_live;
 
 	while (iters) {
 		unsigned idx = __ffs64(iters);
@@ -2023,33 +2055,24 @@ inline void bch2_trans_unlink_iters(struct btree_trans *trans, u64 iters)
 	}
 }
 
-void bch2_trans_begin(struct btree_trans *trans)
+void bch2_trans_reset(struct btree_trans *trans, unsigned flags)
 {
-	u64 iters_to_unlink;
+	struct btree_iter *iter;
 
-	/*
-	 * On transaction restart, the transaction isn't required to allocate
-	 * all the same iterators it on the last iteration:
-	 *
-	 * Unlink any iterators it didn't use this iteration, assuming it got
-	 * further (allocated an iter with a higher idx) than where the iter
-	 * was originally allocated:
-	 */
-	iters_to_unlink = ~trans->iters_live &
-		((1ULL << fls64(trans->iters_live)) - 1);
+	trans_for_each_iter(trans, iter)
+		iter->flags &= ~BTREE_ITER_KEEP_UNTIL_COMMIT;
 
-	iters_to_unlink |= trans->iters_unlink_on_restart;
-	iters_to_unlink |= trans->iters_unlink_on_commit;
+	bch2_trans_unlink_iters(trans);
 
-	trans->iters_live		= 0;
+	if (flags & TRANS_RESET_ITERS)
+		trans->iters_live = 0;
 
-	bch2_trans_unlink_iters(trans, iters_to_unlink);
+	trans->iters_touched &= trans->iters_live;
 
-	trans->iters_touched		= 0;
-	trans->iters_unlink_on_restart	= 0;
-	trans->iters_unlink_on_commit	= 0;
 	trans->nr_updates		= 0;
-	trans->mem_top			= 0;
+
+	if (flags & TRANS_RESET_MEM)
+		trans->mem_top		= 0;
 
 	bch2_btree_iter_traverse_all(trans);
 }
