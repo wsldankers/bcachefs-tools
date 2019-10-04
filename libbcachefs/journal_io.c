@@ -934,6 +934,8 @@ out:
 	/* also must come before signalling write completion: */
 	closure_debug_destroy(cl);
 
+	DEBUG_MEMORY_FREED(w->data, w->buf_size);
+
 	BUG_ON(!j->reservations.prev_buf_unwritten);
 	atomic64_sub(((union journal_res_state) { .prev_buf_unwritten = 1 }).v,
 		     &j->reservations.counter);
