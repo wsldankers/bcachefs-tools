@@ -44,6 +44,7 @@ static struct stat inode_to_stat(struct bch_fs *c,
 				 struct bch_inode_unpacked *bi)
 {
 	return (struct stat) {
+		.st_ino		= bi->bi_inum,
 		.st_size	= bi->bi_size,
 		.st_mode	= bi->bi_mode,
 		.st_uid		= bi->bi_uid,
