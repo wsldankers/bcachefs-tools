@@ -10,6 +10,8 @@
 
 #include <libaio.h>
 
+#include <valgrind/memcheck.h>
+
 #include <linux/bio.h>
 #include <linux/blkdev.h>
 #include <linux/completion.h>
@@ -45,11 +47,19 @@ void generic_make_request(struct bio *bio)
 	iov = alloca(sizeof(*iov) * i);
 
 	i = 0;
-	bio_for_each_segment(bv, bio, iter)
+	bio_for_each_segment(bv, bio, iter) {
+		void *start = page_address(bv.bv_page) + bv.bv_offset;
+		size_t len = bv.bv_len;
+
 		iov[i++] = (struct iovec) {
-			.iov_base = page_address(bv.bv_page) + bv.bv_offset,
-			.iov_len = bv.bv_len,
+			.iov_base = start,
+			.iov_len = len,
 		};
+
+		/* To be pedantic it should only be on IO completion. */
+		if (bio_op(bio) == REQ_OP_READ)
+			VALGRIND_MAKE_MEM_DEFINED(start, len);
+	}
 
 	struct iocb iocb = {
 		.data		= bio,
