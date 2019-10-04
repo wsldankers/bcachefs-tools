@@ -30,13 +30,16 @@
 #include "libbcachefs/btree_update.h"
 #include "libbcachefs/buckets.h"
 #include "libbcachefs/dirent.h"
-#include "libbcachefs/fs.h"
+#include "libbcachefs/fs-common.h"
 #include "libbcachefs/inode.h"
 #include "libbcachefs/io.h"
 #include "libbcachefs/replicas.h"
 #include "libbcachefs/str_hash.h"
 #include "libbcachefs/super.h"
 #include "libbcachefs/xattr.h"
+
+/* XXX cut and pasted from fsck.c */
+#define QSTR(n) { { { .len = strlen(n) } }, .name = n }
 
 static char *dev_t_to_path(dev_t dev)
 {
@@ -123,39 +126,21 @@ static void update_inode(struct bch_fs *c,
 	ret = bch2_btree_insert(c, BTREE_ID_INODES, &packed.inode.k_i,
 				NULL, NULL, 0);
 	if (ret)
-		die("error creating file: %s", strerror(-ret));
-}
-
-static void create_dirent(struct bch_fs *c,
-			  struct bch_inode_unpacked *parent,
-			  const char *name, u64 inum, mode_t mode)
-{
-	struct bch_hash_info parent_hash_info = bch2_hash_info_init(c, parent);
-	struct qstr qname = { { { .len = strlen(name), } }, .name = name };
-
-	int ret = bch2_dirent_create(c, parent->bi_inum, &parent_hash_info,
-				     mode_to_type(mode), &qname,
-				     inum, NULL, BCH_HASH_SET_MUST_CREATE);
-	if (ret)
-		die("error creating file: %s", strerror(-ret));
-
-	if (S_ISDIR(mode))
-		parent->bi_nlink++;
+		die("error updating inode: %s", strerror(-ret));
 }
 
 static void create_link(struct bch_fs *c,
 			struct bch_inode_unpacked *parent,
 			const char *name, u64 inum, mode_t mode)
 {
+	struct qstr qstr = QSTR(name);
 	struct bch_inode_unpacked inode;
-	int ret = bch2_inode_find_by_inum(c, inum, &inode);
+
+	int ret = bch2_trans_do(c, NULL, BTREE_INSERT_ATOMIC,
+		bch2_link_trans(&trans, parent->bi_inum,
+				inum, &inode, &qstr));
 	if (ret)
-		die("error looking up hardlink: %s", strerror(-ret));
-
-	inode.bi_nlink++;
-	update_inode(c, &inode);
-
-	create_dirent(c, parent, name, inum, mode);
+		die("error creating hardlink: %s", strerror(-ret));
 }
 
 static struct bch_inode_unpacked create_file(struct bch_fs *c,
@@ -164,17 +149,16 @@ static struct bch_inode_unpacked create_file(struct bch_fs *c,
 					     uid_t uid, gid_t gid,
 					     mode_t mode, dev_t rdev)
 {
+	struct qstr qstr = QSTR(name);
 	struct bch_inode_unpacked new_inode;
-	int ret;
 
-	bch2_inode_init(c, &new_inode, uid, gid, mode, rdev, parent);
-
-	ret = bch2_inode_create(c, &new_inode, BLOCKDEV_INODE_MAX, 0,
-				&c->unused_inode_hint);
+	int ret = bch2_trans_do(c, NULL, BTREE_INSERT_ATOMIC,
+		bch2_create_trans(&trans,
+				  parent->bi_inum, parent,
+				  &new_inode, &qstr,
+				  uid, gid, mode, rdev, NULL, NULL));
 	if (ret)
 		die("error creating file: %s", strerror(-ret));
-
-	create_dirent(c, parent, name, new_inode.bi_inum, mode);
 
 	return new_inode;
 }
