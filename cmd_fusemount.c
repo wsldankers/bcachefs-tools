@@ -446,10 +446,10 @@ static void bcachefs_fuse_write(fuse_req_t req, fuse_ino_t inum,
 	op.write_point	= writepoint_hashed(0);
 	op.nr_replicas	= io_opts.data_replicas;
 	op.target	= io_opts.foreground_target;
+	op.pos		= POS(inum, offset >> 9);
 
 	userbio_init(&op.wbio.bio, &bv, (void *) buf, size);
 	bio_set_op_attrs(&op.wbio.bio, REQ_OP_WRITE, REQ_SYNC);
-	op.wbio.bio.bi_iter.bi_sector = offset >> 9;
 
 	if (bch2_disk_reservation_get(c, &op.res, size >> 9,
 				      op.nr_replicas, 0)) {
