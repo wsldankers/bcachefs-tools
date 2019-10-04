@@ -11,12 +11,14 @@
 #include "tools-util.h"
 
 #include "libbcachefs/bcachefs.h"
+#include "libbcachefs/alloc_foreground.h"
 #include "libbcachefs/btree_iter.h"
 #include "libbcachefs/buckets.h"
 #include "libbcachefs/dirent.h"
 #include "libbcachefs/error.h"
 #include "libbcachefs/fs-common.h"
 #include "libbcachefs/inode.h"
+#include "libbcachefs/io.h"
 #include "libbcachefs/opts.h"
 #include "libbcachefs/super.h"
 
@@ -68,6 +70,13 @@ static struct fuse_entry_param inode_to_entry(struct bch_fs *c,
 	};
 }
 
+static void bcachefs_fuse_init(void *arg, struct fuse_conn_info *conn)
+{
+	conn->want |= FUSE_CAP_WRITEBACK_CACHE;
+
+	//conn->want |= FUSE_CAP_POSIX_ACL;
+}
+
 static void bcachefs_fuse_destroy(void *arg)
 {
 	struct bch_fs *c = arg;
@@ -86,9 +95,15 @@ static void bcachefs_fuse_lookup(fuse_req_t req, fuse_ino_t dir,
 
 	dir = map_root_ino(dir);
 
-	pr_info("dir %llu name %s", (u64) dir, name);
+	ret = bch2_inode_find_by_inum(c, dir, &bi);
+	if (ret) {
+		fuse_reply_err(req, -ret);
+		return;
+	}
 
-	inum = bch2_dirent_lookup(c, dir, &qstr);
+	struct bch_hash_info hash_info = bch2_hash_info_init(c, &bi);
+
+	inum = bch2_dirent_lookup(c, dir, &hash_info, &qstr);
 	if (!inum) {
 		ret = -ENOENT;
 		goto err;
@@ -116,8 +131,6 @@ static void bcachefs_fuse_getattr(fuse_req_t req, fuse_ino_t inum,
 	int ret;
 
 	inum = map_root_ino(inum);
-
-	pr_info("inum %llu", (u64) inum);
 
 	ret = bch2_inode_find_by_inum(c, inum, &bi);
 	if (ret) {
@@ -209,7 +222,7 @@ static int do_create(struct bch_fs *c, u64 dir,
 
 	bch2_inode_init_early(c, new_inode);
 
-	return bch2_trans_do(c, NULL, 0,
+	return bch2_trans_do(c, NULL, BTREE_INSERT_ATOMIC,
 			bch2_create_trans(&trans,
 				dir, &dir_u,
 				new_inode, &qstr,
@@ -321,20 +334,141 @@ static void bcachefs_fuse_link(fuse_req_t req, fuse_ino_t inum,
 	}
 }
 
-#if 0
 static void bcachefs_fuse_open(fuse_req_t req, fuse_ino_t inum,
 			       struct fuse_file_info *fi)
 {
-	struct bch_fs *c = fuse_req_userdata(req);
+	fi->direct_io		= false;
+	fi->keep_cache		= true;
+	fi->cache_readdir	= true;
+
+	fuse_reply_open(req, fi);
+}
+
+static void userbio_init(struct bio *bio, struct bio_vec *bv,
+			 void *buf, size_t size)
+{
+	bio_init(bio, bv, 1);
+	bio->bi_iter.bi_size	= size;
+	bv->bv_page		= buf;
+	bv->bv_len		= size;
+	bv->bv_offset		= 0;
+}
+
+static int get_inode_io_opts(struct bch_fs *c, u64 inum,
+			     struct bch_io_opts *opts)
+{
+	struct bch_inode_unpacked inode;
+	if (bch2_inode_find_by_inum(c, inum, &inode))
+		return -EINVAL;
+
+	*opts = bch2_opts_to_inode_opts(c->opts);
+	bch2_io_opts_apply(opts, bch2_inode_opts_get(&inode));
+	return 0;
+}
+
+static void bcachefs_fuse_read_endio(struct bio *bio)
+{
+	closure_put(bio->bi_private);
 }
 
 static void bcachefs_fuse_read(fuse_req_t req, fuse_ino_t inum,
-			       size_t size, off_t off,
+			       size_t size, off_t offset,
 			       struct fuse_file_info *fi)
 {
 	struct bch_fs *c = fuse_req_userdata(req);
+
+	if ((size|offset) & block_bytes(c)) {
+		fuse_reply_err(req, EINVAL);
+		return;
+	}
+
+	struct bch_io_opts io_opts;
+	if (get_inode_io_opts(c, inum, &io_opts)) {
+		fuse_reply_err(req, ENOENT);
+		return;
+	}
+
+	void *buf = aligned_alloc(max(PAGE_SIZE, size), size);
+	if (!buf) {
+		fuse_reply_err(req, ENOMEM);
+		return;
+	}
+
+	struct bch_read_bio	rbio;
+	struct bio_vec		bv;
+	struct closure		cl;
+
+	closure_init_stack(&cl);
+	userbio_init(&rbio.bio, &bv, buf, size);
+	bio_set_op_attrs(&rbio.bio, REQ_OP_READ, REQ_SYNC);
+	rbio.bio.bi_iter.bi_sector	= offset >> 9;
+	rbio.bio.bi_end_io		= bcachefs_fuse_read_endio;
+	rbio.bio.bi_private		= &cl;
+
+	bch2_read(c, rbio_init(&rbio.bio, io_opts), inum);
+
+	closure_sync(&cl);
+
+	if (likely(!rbio.bio.bi_status)) {
+		fuse_reply_buf(req, buf, size);
+	} else {
+		fuse_reply_err(req, -blk_status_to_errno(rbio.bio.bi_status));
+	}
+
+	free(buf);
 }
 
+static void bcachefs_fuse_write(fuse_req_t req, fuse_ino_t inum,
+				const char *buf, size_t size,
+				off_t offset,
+				struct fuse_file_info *fi)
+{
+	struct bch_fs *c	= fuse_req_userdata(req);
+	struct bch_io_opts	io_opts;
+	struct bch_write_op	op;
+	struct bio_vec		bv;
+	struct closure		cl;
+
+	if ((size|offset) & block_bytes(c)) {
+		fuse_reply_err(req, EINVAL);
+		return;
+	}
+
+	closure_init_stack(&cl);
+
+	if (get_inode_io_opts(c, inum, &io_opts)) {
+		fuse_reply_err(req, ENOENT);
+		return;
+	}
+
+	bch2_write_op_init(&op, c, io_opts);
+	op.write_point	= writepoint_hashed(0);
+	op.nr_replicas	= io_opts.data_replicas;
+	op.target	= io_opts.foreground_target;
+
+	userbio_init(&op.wbio.bio, &bv, (void *) buf, size);
+	bio_set_op_attrs(&op.wbio.bio, REQ_OP_WRITE, REQ_SYNC);
+	op.wbio.bio.bi_iter.bi_sector = offset >> 9;
+
+	if (bch2_disk_reservation_get(c, &op.res, size >> 9,
+				      op.nr_replicas, 0)) {
+		/* XXX: use check_range_allocated like dio write path */
+		fuse_reply_err(req, ENOSPC);
+		return;
+	}
+
+	closure_call(&op.cl, bch2_write, NULL, &cl);
+	closure_sync(&cl);
+
+	if (op.written) {
+		fuse_reply_write(req, (size_t) op.written << 9);
+	} else {
+		BUG_ON(!op.error);
+		fuse_reply_err(req, -op.error);
+	}
+}
+
+#if 0
 static void bcachefs_fuse_flush(fuse_req_t req, fuse_ino_t inum,
 				struct fuse_file_info *fi)
 {
@@ -514,6 +648,13 @@ reply:
 }
 
 #if 0
+static void bcachefs_fuse_readdirplus(fuse_req_t req, fuse_ino_t dir,
+				      size_t size, off_t off,
+				      struct fuse_file_info *fi)
+{
+
+}
+
 static void bcachefs_fuse_releasedir(fuse_req_t req, fuse_ino_t inum,
 				     struct fuse_file_info *fi)
 {
@@ -611,6 +752,7 @@ static void bcachefs_fuse_fallocate(fuse_req_t req, fuse_ino_t inum, int mode,
 #endif
 
 static const struct fuse_lowlevel_ops bcachefs_fuse_ops = {
+	.init		= bcachefs_fuse_init,
 	.destroy	= bcachefs_fuse_destroy,
 	.lookup		= bcachefs_fuse_lookup,
 	.getattr	= bcachefs_fuse_getattr,
@@ -623,14 +765,15 @@ static const struct fuse_lowlevel_ops bcachefs_fuse_ops = {
 	//.symlink	= bcachefs_fuse_symlink,
 	.rename		= bcachefs_fuse_rename,
 	.link		= bcachefs_fuse_link,
-	//.open		= bcachefs_fuse_open,
-	//.read		= bcachefs_fuse_read,
-	//.write	= bcachefs_fuse_write,
+	.open		= bcachefs_fuse_open,
+	.read		= bcachefs_fuse_read,
+	.write		= bcachefs_fuse_write,
 	//.flush	= bcachefs_fuse_flush,
 	//.release	= bcachefs_fuse_release,
 	//.fsync	= bcachefs_fuse_fsync,
 	//.opendir	= bcachefs_fuse_opendir,
 	.readdir	= bcachefs_fuse_readdir,
+	//.readdirplus	= bcachefs_fuse_readdirplus,
 	//.releasedir	= bcachefs_fuse_releasedir,
 	//.fsyncdir	= bcachefs_fuse_fsyncdir,
 	.statfs		= bcachefs_fuse_statfs,
