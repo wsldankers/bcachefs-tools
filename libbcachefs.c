@@ -240,6 +240,8 @@ struct bch_sb *bch2_format(struct bch_opt_strs	fs_opt_strs,
 	sb.sb->time_base_lo	= cpu_to_le64(now.tv_sec * NSEC_PER_SEC + now.tv_nsec);
 	sb.sb->time_precision	= cpu_to_le32(1);
 
+	sb.sb->features[0] |= 1ULL << BCH_FEATURE_NEW_SIPHASH;
+
 	/* Member info: */
 	mi = bch2_sb_resize_members(&sb,
 			(sizeof(*mi) + sizeof(struct bch_member) *
