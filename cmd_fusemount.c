@@ -188,6 +188,7 @@ retry:
 		inode_u.bi_atime = now;
 	if (to_set & FUSE_SET_ATTR_MTIME_NOW)
 		inode_u.bi_mtime = now;
+	/* TODO: CTIME? */
 
 	ret   = bch2_inode_write(&trans, iter, &inode_u) ?:
 		bch2_trans_commit(&trans, NULL, NULL,
@@ -409,6 +410,7 @@ static void bcachefs_fuse_read(fuse_req_t req, fuse_ino_t inum,
 	userbio_init(&rbio.bio, &bv, buf, size);
 	bio_set_op_attrs(&rbio.bio, REQ_OP_READ, REQ_SYNC);
 	rbio.bio.bi_iter.bi_sector	= offset >> 9;
+	closure_get(&cl);
 	rbio.bio.bi_end_io		= bcachefs_fuse_read_endio;
 	rbio.bio.bi_private		= &cl;
 
@@ -423,6 +425,43 @@ static void bcachefs_fuse_read(fuse_req_t req, fuse_ino_t inum,
 	}
 
 	free(buf);
+}
+
+static int write_set_inode(struct bch_fs *c, fuse_ino_t inum, off_t new_size)
+{
+	struct btree_trans trans;
+	struct btree_iter *iter;
+	struct bch_inode_unpacked inode_u;
+	int ret = 0;
+	u64 now;
+
+	bch2_trans_init(&trans, c, 0, 0);
+retry:
+	bch2_trans_begin(&trans);
+	now = bch2_current_time(c);
+
+	iter = bch2_inode_peek(&trans, &inode_u, inum, BTREE_ITER_INTENT);
+	ret = PTR_ERR_OR_ZERO(iter);
+	if (ret)
+		goto err;
+
+	inode_u.bi_size	= max_t(u64, inode_u.bi_size, new_size);
+	inode_u.bi_mtime = now;
+	inode_u.bi_ctime = now;
+
+	ret = bch2_inode_write(&trans, iter, &inode_u);
+	if (ret)
+		goto err;
+
+	ret = bch2_trans_commit(&trans, NULL, NULL,
+				BTREE_INSERT_ATOMIC|BTREE_INSERT_NOFAIL);
+
+err:
+	if (ret == -EINTR)
+		goto retry;
+
+	bch2_trans_exit(&trans);
+	return ret;
 }
 
 static void bcachefs_fuse_write(fuse_req_t req, fuse_ino_t inum,
@@ -469,7 +508,16 @@ static void bcachefs_fuse_write(fuse_req_t req, fuse_ino_t inum,
 	closure_call(&op.cl, bch2_write, NULL, &cl);
 	closure_sync(&cl);
 
-	if (op.written) {
+	/*
+	 * Update inode data.
+	 * TODO: could possibly do asynchronously.
+	 * TODO: could also possibly do atomically with the extents.
+	 */
+	if (!op.error)
+		op.error = write_set_inode(c, inum, offset + size);
+
+	if (!op.error) {
+		BUG_ON(op.written == 0);
 		fuse_reply_write(req, (size_t) op.written << 9);
 	} else {
 		BUG_ON(!op.error);
@@ -478,6 +526,13 @@ static void bcachefs_fuse_write(fuse_req_t req, fuse_ino_t inum,
 }
 
 #if 0
+/*
+ * FUSE flush is essentially the close() call, however it is not guaranteed
+ * that one flush happens per open/create.
+ *
+ * It doesn't have to do anything, and is mostly relevant for NFS-style
+ * filesystems where close has some relationship to caching.
+ */
 static void bcachefs_fuse_flush(fuse_req_t req, fuse_ino_t inum,
 				struct fuse_file_info *fi)
 {
