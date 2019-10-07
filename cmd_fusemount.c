@@ -73,7 +73,11 @@ static struct fuse_entry_param inode_to_entry(struct bch_fs *c,
 
 static void bcachefs_fuse_init(void *arg, struct fuse_conn_info *conn)
 {
-	conn->want |= FUSE_CAP_WRITEBACK_CACHE;
+	if (conn->capable & FUSE_CAP_WRITEBACK_CACHE) {
+		fuse_log(FUSE_LOG_DEBUG, "fuse_init: activating writeback\n");
+		conn->want |= FUSE_CAP_WRITEBACK_CACHE;
+	} else
+		fuse_log(FUSE_LOG_DEBUG, "fuse_init: writeback not capable\n");
 
 	//conn->want |= FUSE_CAP_POSIX_ACL;
 }
@@ -378,7 +382,9 @@ static void bcachefs_fuse_read(fuse_req_t req, fuse_ino_t inum,
 {
 	struct bch_fs *c = fuse_req_userdata(req);
 
-	if ((size|offset) & block_bytes(c)) {
+	if ((size|offset) & (block_bytes(c) - 1)) {
+		fuse_log(FUSE_LOG_DEBUG,
+			 "bcachefs_fuse_read: unaligned io not supported.\n");
 		fuse_reply_err(req, EINVAL);
 		return;
 	}
@@ -430,7 +436,9 @@ static void bcachefs_fuse_write(fuse_req_t req, fuse_ino_t inum,
 	struct bio_vec		bv;
 	struct closure		cl;
 
-	if ((size|offset) & block_bytes(c)) {
+	if ((size|offset) & (block_bytes(c) - 1)) {
+		fuse_log(FUSE_LOG_DEBUG,
+			 "bcachefs_fuse_write: unaligned io not supported.\n");
 		fuse_reply_err(req, EINVAL);
 		return;
 	}
