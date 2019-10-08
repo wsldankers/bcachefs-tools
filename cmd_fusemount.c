@@ -375,19 +375,23 @@ struct fuse_align_io {
 
 /* Handle unaligned start and end */
 /* TODO: align to block_bytes, sector size, or page size? */
-static void align_io(struct fuse_align_io *align, const struct bch_fs *c,
-		     size_t size, off_t offset)
+static struct fuse_align_io align_io(const struct bch_fs *c, size_t size,
+				     off_t offset)
 {
+	struct fuse_align_io align;
+
 	BUG_ON(offset < 0);
 
-	align->start = round_down(offset, block_bytes(c));
-	align->pad_start = offset - align->start;
+	align.start = round_down(offset, block_bytes(c));
+	align.pad_start = offset - align.start;
 
 	off_t end = offset + size;
-	align->end = round_up(end, block_bytes(c));
-	align->pad_end = align->end - end;
+	align.end = round_up(end, block_bytes(c));
+	align.pad_end = align.end - end;
 
-	align->size = align->end - align->start;
+	align.size = align.end - align.start;
+
+	return align;
 }
 
 /*
@@ -445,7 +449,6 @@ static void bcachefs_fuse_read(fuse_req_t req, fuse_ino_t inum,
 			       struct fuse_file_info *fi)
 {
 	struct bch_fs *c = fuse_req_userdata(req);
-	struct fuse_align_io align;
 
 	fuse_log(FUSE_LOG_DEBUG, "bcachefs_fuse_read(%llu, %zd, %lld)\n",
 		 inum, size, offset);
@@ -465,7 +468,7 @@ static void bcachefs_fuse_read(fuse_req_t req, fuse_ino_t inum,
 	}
 	size = end - offset;
 
-	align_io(&align, c, size, offset);
+	struct fuse_align_io align = align_io(c, size, offset);
 
 	void *buf = aligned_alloc(PAGE_SIZE, align.size);
 	if (!buf) {
@@ -567,14 +570,13 @@ static void bcachefs_fuse_write(fuse_req_t req, fuse_ino_t inum,
 {
 	struct bch_fs *c	= fuse_req_userdata(req);
 	struct bch_io_opts	io_opts;
-	struct fuse_align_io	align;
 	size_t			aligned_written;
 	int			ret = 0;
 
 	fuse_log(FUSE_LOG_DEBUG, "bcachefs_fuse_write(%llu, %zd, %lld)\n",
 		 inum, size, offset);
 
-	align_io(&align, c, size, offset);
+	struct fuse_align_io align = align_io(c, size, offset);
 
 	if (get_inode_io_opts(c, inum, &io_opts)) {
 		ret = -ENOENT;
@@ -664,8 +666,7 @@ static void bcachefs_fuse_symlink(fuse_req_t req, const char *link,
 	if (ret)
 		goto err;
 
-	struct fuse_align_io align;
-	align_io(&align, c, link_len + 1, 0);
+	struct fuse_align_io align = align_io(c, link_len + 1, 0);
 
 	void *aligned_buf = aligned_alloc(PAGE_SIZE, align.size);
 	memset(aligned_buf, 0, align.size);
@@ -706,8 +707,7 @@ static void bcachefs_fuse_readlink(fuse_req_t req, fuse_ino_t inum)
 	if (ret)
 		goto err;
 
-	struct fuse_align_io align;
-	align_io(&align, c, bi.bi_size, 0);
+	struct fuse_align_io align = align_io(c, bi.bi_size, 0);
 
 	ret = -ENOMEM;
 	buf = aligned_alloc(PAGE_SIZE, align.size);
