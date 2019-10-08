@@ -379,8 +379,9 @@ static void bcachefs_fuse_read_endio(struct bio *bio)
 
 struct fuse_align_io {
 	off_t		start;
-	unsigned	offset;
+	size_t		pad_start;
 	off_t		end;
+	size_t		pad_end;
 	size_t		size;
 };
 
@@ -392,12 +393,35 @@ static void align_io(struct fuse_align_io *align, const struct bch_fs *c,
 	BUG_ON(offset < 0);
 
 	align->start = round_down(offset, block_bytes(c));
-	align->offset = offset - align->start;
+	align->pad_start = offset - align->start;
 
-	align->end = round_up(offset + size, block_bytes(c));
+	off_t end = offset + size;
+	align->end = round_up(end, block_bytes(c));
+	align->pad_end = align->end - end;
+
 	align->size = align->end - align->start;
 }
 
+/*
+ * Given an aligned number of bytes transferred, figure out how many unaligned
+ * bytes were transferred.
+ */
+static size_t align_fix_up_bytes(const struct fuse_align_io *align,
+				 size_t align_bytes)
+{
+	size_t bytes = 0;
+
+	if (align_bytes > align->pad_start) {
+		bytes = align_bytes - align->pad_start;
+		bytes = bytes > align->pad_end ? bytes - align->pad_end : 0;
+	}
+
+	return bytes;
+}
+
+/*
+ * Read aligned data.
+ */
 static int read_aligned(struct bch_fs *c, fuse_ino_t inum, size_t aligned_size,
 			off_t aligned_offset, void *buf)
 {
@@ -435,6 +459,24 @@ static void bcachefs_fuse_read(fuse_req_t req, fuse_ino_t inum,
 	struct bch_fs *c = fuse_req_userdata(req);
 	struct fuse_align_io align;
 
+	fuse_log(FUSE_LOG_DEBUG, "bcachefs_fuse_read(%llu, %zd, %lld)\n",
+		 inum, size, offset);
+
+	/* Check inode size. */
+	struct bch_inode_unpacked bi;
+	int ret = bch2_inode_find_by_inum(c, inum, &bi);
+	if (ret) {
+		fuse_reply_err(req, -ret);
+		return;
+	}
+
+	off_t end = min_t(u64, bi.bi_size, offset + size);
+	if (end <= offset) {
+		fuse_reply_buf(req, NULL, 0);
+		return;
+	}
+	size = end - offset;
+
 	align_io(&align, c, size, offset);
 
 	void *buf = aligned_alloc(PAGE_SIZE, align.size);
@@ -443,10 +485,10 @@ static void bcachefs_fuse_read(fuse_req_t req, fuse_ino_t inum,
 		return;
 	}
 
-	int ret = read_aligned(c, inum, align.size, align.start, buf);
+	ret = read_aligned(c, inum, align.size, align.start, buf);
 
 	if (likely(!ret))
-		fuse_reply_buf(req, buf + align.offset, size);
+		fuse_reply_buf(req, buf + align.pad_start, size);
 	else
 		fuse_reply_err(req, -ret);
 
@@ -490,6 +532,46 @@ err:
 	return ret;
 }
 
+static int write_aligned(struct bch_fs *c, fuse_ino_t inum,
+			 struct bch_io_opts io_opts, void *buf,
+			 size_t aligned_size, off_t aligned_offset,
+			 size_t *written_out)
+{
+	struct bch_write_op	op = { 0 };
+	struct bio_vec		bv;
+	struct closure		cl;
+
+	BUG_ON(aligned_size & (block_bytes(c) - 1));
+	BUG_ON(aligned_offset & (block_bytes(c) - 1));
+
+	*written_out = 0;
+
+	closure_init_stack(&cl);
+
+	bch2_write_op_init(&op, c, io_opts); /* XXX reads from op?! */
+	op.write_point	= writepoint_hashed(0);
+	op.nr_replicas	= io_opts.data_replicas;
+	op.target	= io_opts.foreground_target;
+	op.pos		= POS(inum, aligned_offset >> 9);
+
+	userbio_init(&op.wbio.bio, &bv, buf, aligned_size);
+	bio_set_op_attrs(&op.wbio.bio, REQ_OP_WRITE, REQ_SYNC);
+
+	if (bch2_disk_reservation_get(c, &op.res, aligned_size >> 9,
+				      op.nr_replicas, 0)) {
+		/* XXX: use check_range_allocated like dio write path */
+		return -ENOSPC;
+	}
+
+	closure_call(&op.cl, bch2_write, NULL, &cl);
+	closure_sync(&cl);
+
+	if (!op.error)
+		*written_out = op.written << 9;
+
+	return op.error;
+}
+
 static void bcachefs_fuse_write(fuse_req_t req, fuse_ino_t inum,
 				const char *buf, size_t size,
 				off_t offset,
@@ -497,58 +579,82 @@ static void bcachefs_fuse_write(fuse_req_t req, fuse_ino_t inum,
 {
 	struct bch_fs *c	= fuse_req_userdata(req);
 	struct bch_io_opts	io_opts;
-	struct bch_write_op	op;
-	struct bio_vec		bv;
-	struct closure		cl;
+	struct fuse_align_io	align;
+	size_t			aligned_written;
+	int			ret = 0;
 
-	if ((size|offset) & (block_bytes(c) - 1)) {
-		fuse_log(FUSE_LOG_DEBUG,
-			 "bcachefs_fuse_write: unaligned io not supported.\n");
-		fuse_reply_err(req, EINVAL);
-		return;
-	}
+	fuse_log(FUSE_LOG_DEBUG, "bcachefs_fuse_write(%llu, %zd, %lld)\n",
+		 inum, size, offset);
 
-	closure_init_stack(&cl);
+	align_io(&align, c, size, offset);
 
 	if (get_inode_io_opts(c, inum, &io_opts)) {
-		fuse_reply_err(req, ENOENT);
-		return;
+		ret = -ENOENT;
+		goto err;
 	}
 
-	bch2_write_op_init(&op, c, io_opts);
-	op.write_point	= writepoint_hashed(0);
-	op.nr_replicas	= io_opts.data_replicas;
-	op.target	= io_opts.foreground_target;
-	op.pos		= POS(inum, offset >> 9);
+	/* Realign the data and read in start and end, if needed */
+	void *aligned_buf = aligned_alloc(PAGE_SIZE, align.size);
 
-	userbio_init(&op.wbio.bio, &bv, (void *) buf, size);
-	bio_set_op_attrs(&op.wbio.bio, REQ_OP_WRITE, REQ_SYNC);
+	/* Read partial start data. */
+	if (align.pad_start) {
+		memset(aligned_buf, 0, block_bytes(c));
 
-	if (bch2_disk_reservation_get(c, &op.res, size >> 9,
-				      op.nr_replicas, 0)) {
-		/* XXX: use check_range_allocated like dio write path */
-		fuse_reply_err(req, ENOSPC);
-		return;
+		ret = read_aligned(c, inum, block_bytes(c), align.start,
+				   aligned_buf);
+		if (ret)
+			goto err;
 	}
 
-	closure_call(&op.cl, bch2_write, NULL, &cl);
-	closure_sync(&cl);
+	/*
+	 * Read partial end data. If the whole write fits in one block, the
+	 * start data and the end data are the same so this isn't needed.
+	 */
+	if (align.pad_end &&
+	    !(align.pad_start && align.size == block_bytes(c))) {
+		off_t partial_end_start = align.end - block_bytes(c);
+		size_t buf_offset = align.size - block_bytes(c);
+
+		memset(aligned_buf + buf_offset, 0, block_bytes(c));
+
+		ret = read_aligned(c, inum, block_bytes(c), partial_end_start,
+				   aligned_buf + buf_offset);
+		if (ret)
+			goto err;
+	}
+
+	/* Overlay what we want to write. */
+	memcpy(aligned_buf + align.pad_start, buf, size);
+
+	/* Actually write. */
+	ret = write_aligned(c, inum, io_opts, aligned_buf,
+			    align.size, align.start, &aligned_written);
+
+	/* Figure out how many unaligned bytes were written. */
+	size_t written = align_fix_up_bytes(&align, aligned_written);
+	BUG_ON(written > size);
+
+	fuse_log(FUSE_LOG_DEBUG, "bcachefs_fuse_write: wrote %zd bytes\n",
+		 written);
+
+	if (written > 0)
+		ret = 0;
 
 	/*
 	 * Update inode data.
-	 * TODO: could possibly do asynchronously.
-	 * TODO: could also possibly do atomically with the extents.
+	 * TODO: Integrate with bch2_extent_update()
 	 */
-	if (!op.error)
-		op.error = write_set_inode(c, inum, offset + size);
+	if (!ret)
+		ret = write_set_inode(c, inum, offset + written);
 
-	if (!op.error) {
-		BUG_ON(op.written == 0);
-		fuse_reply_write(req, (size_t) op.written << 9);
-	} else {
-		BUG_ON(!op.error);
-		fuse_reply_err(req, -op.error);
+	if (!ret) {
+		BUG_ON(written == 0);
+		fuse_reply_write(req, written);
+		return;
 	}
+
+err:
+	fuse_reply_err(req, -ret);
 }
 
 #if 0
