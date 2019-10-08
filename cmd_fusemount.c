@@ -248,6 +248,9 @@ err:
 static void bcachefs_fuse_mkdir(fuse_req_t req, fuse_ino_t dir,
 				const char *name, mode_t mode)
 {
+	BUG_ON(mode & (~S_IALLUGO));
+
+	mode |= S_IFDIR;
 	bcachefs_fuse_mknod(req, dir, name, mode, 0);
 }
 
