@@ -208,15 +208,6 @@ err:
 	}
 }
 
-static void bcachefs_fuse_readlink(fuse_req_t req, fuse_ino_t inum)
-{
-	//struct bch_fs *c = fuse_req_userdata(req);
-
-	//char *link = malloc();
-
-	//fuse_reply_readlink(req, link);
-}
-
 static int do_create(struct bch_fs *c, u64 dir,
 		     const char *name, mode_t mode, dev_t rdev,
 		     struct bch_inode_unpacked *new_inode)
@@ -285,14 +276,6 @@ static void bcachefs_fuse_rmdir(fuse_req_t req, fuse_ino_t dir,
 	bcachefs_fuse_unlink(req, dir, name);
 }
 
-#if 0
-static void bcachefs_fuse_symlink(fuse_req_t req, const char *link,
-				  fuse_ino_t parent, const char *name)
-{
-	struct bch_fs *c = fuse_req_userdata(req);
-}
-#endif
-
 static void bcachefs_fuse_rename(fuse_req_t req,
 				 fuse_ino_t src_dir, const char *srcname,
 				 fuse_ino_t dst_dir, const char *dstname,
@@ -327,6 +310,8 @@ static void bcachefs_fuse_link(fuse_req_t req, fuse_ino_t inum,
 	struct bch_inode_unpacked inode_u;
 	struct qstr qstr = QSTR(newname);
 	int ret;
+
+	newparent = map_root_ino(newparent);
 
 	ret = bch2_trans_do(c, NULL, BTREE_INSERT_ATOMIC,
 			    bch2_link_trans(&trans, newparent,
@@ -657,6 +642,90 @@ err:
 	fuse_reply_err(req, -ret);
 }
 
+static void bcachefs_fuse_symlink(fuse_req_t req, const char *link,
+				  fuse_ino_t dir, const char *name)
+{
+	struct bch_fs *c = fuse_req_userdata(req);
+	struct bch_inode_unpacked new_inode;
+	size_t link_len = strlen(link);
+	int ret;
+
+	dir = map_root_ino(dir);
+
+	ret = do_create(c, dir, name, S_IFLNK|S_IRWXUGO, 0, &new_inode);
+	if (ret)
+		goto err;
+
+	struct bch_io_opts io_opts;
+	ret = get_inode_io_opts(c, new_inode.bi_inum, &io_opts);
+	if (ret)
+		goto err;
+
+	struct fuse_align_io align;
+	align_io(&align, c, link_len + 1, 0);
+
+	void *aligned_buf = aligned_alloc(PAGE_SIZE, align.size);
+	memset(aligned_buf, 0, align.size);
+	memcpy(aligned_buf, link, link_len); /* already terminated */
+
+	size_t aligned_written;
+	ret = write_aligned(c, new_inode.bi_inum, io_opts, aligned_buf,
+			    align.size, align.start, &aligned_written);
+	free(aligned_buf);
+
+	if (ret)
+		goto err;
+
+	size_t written = align_fix_up_bytes(&align, aligned_written);
+	BUG_ON(written != link_len + 1); // TODO: handle short
+
+	ret = write_set_inode(c, new_inode.bi_inum, written);
+	if (ret)
+		goto err;
+
+	new_inode.bi_size = written;
+
+	struct fuse_entry_param e = inode_to_entry(c, &new_inode);
+	fuse_reply_entry(req, &e);
+	return;
+
+err:
+	fuse_reply_err(req, -ret);
+}
+
+static void bcachefs_fuse_readlink(fuse_req_t req, fuse_ino_t inum)
+{
+	struct bch_fs *c = fuse_req_userdata(req);
+	char *buf = NULL;
+
+	struct bch_inode_unpacked bi;
+	int ret = bch2_inode_find_by_inum(c, inum, &bi);
+	if (ret)
+		goto err;
+
+	struct fuse_align_io align;
+	align_io(&align, c, bi.bi_size, 0);
+
+	ret = -ENOMEM;
+	buf = aligned_alloc(PAGE_SIZE, align.size);
+	if (!buf)
+		goto err;
+
+	ret = read_aligned(c, inum, align.size, align.start, buf);
+	if (ret)
+		goto err;
+
+	BUG_ON(buf[align.size - 1] != 0);
+
+	fuse_reply_readlink(req, buf);
+
+err:
+	if (ret)
+		fuse_reply_err(req, -ret);
+
+	free(buf);
+}
+
 #if 0
 /*
  * FUSE flush is essentially the close() call, however it is not guaranteed
@@ -958,7 +1027,7 @@ static const struct fuse_lowlevel_ops bcachefs_fuse_ops = {
 	.mkdir		= bcachefs_fuse_mkdir,
 	.unlink		= bcachefs_fuse_unlink,
 	.rmdir		= bcachefs_fuse_rmdir,
-	//.symlink	= bcachefs_fuse_symlink,
+	.symlink	= bcachefs_fuse_symlink,
 	.rename		= bcachefs_fuse_rename,
 	.link		= bcachefs_fuse_link,
 	.open		= bcachefs_fuse_open,
