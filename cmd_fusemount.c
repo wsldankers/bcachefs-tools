@@ -377,6 +377,27 @@ static void bcachefs_fuse_read_endio(struct bio *bio)
 	closure_put(bio->bi_private);
 }
 
+struct fuse_align_io {
+	off_t		start;
+	unsigned	offset;
+	off_t		end;
+	size_t		size;
+};
+
+/* Handle unaligned start and end */
+/* TODO: align to block_bytes, sector size, or page size? */
+static void align_io(struct fuse_align_io *align, const struct bch_fs *c,
+		     size_t size, off_t offset)
+{
+	BUG_ON(offset < 0);
+
+	align->start = round_down(offset, block_bytes(c));
+	align->offset = offset - align->start;
+
+	align->end = round_up(offset + size, block_bytes(c));
+	align->size = align->end - align->start;
+}
+
 static int read_aligned(struct bch_fs *c, fuse_ino_t inum, size_t aligned_size,
 			off_t aligned_offset, void *buf)
 {
@@ -412,26 +433,20 @@ static void bcachefs_fuse_read(fuse_req_t req, fuse_ino_t inum,
 			       struct fuse_file_info *fi)
 {
 	struct bch_fs *c = fuse_req_userdata(req);
+	struct fuse_align_io align;
 
-	/* Handle unaligned start and end */
-	/* TODO: align to block_bytes, sector size, or page size? */
-	BUG_ON(offset < 0);
-	off_t aligned_start = round_down(offset, block_bytes(c));
-	unsigned aligned_offset = offset - aligned_start;
+	align_io(&align, c, size, offset);
 
-	off_t aligned_end = round_up(offset + size, block_bytes(c));
-	size_t aligned_size = aligned_end - aligned_start;
-
-	void *buf = aligned_alloc(PAGE_SIZE, aligned_size);
+	void *buf = aligned_alloc(PAGE_SIZE, align.size);
 	if (!buf) {
 		fuse_reply_err(req, ENOMEM);
 		return;
 	}
 
-	int ret = read_aligned(c, inum, aligned_size, aligned_start, buf);
+	int ret = read_aligned(c, inum, align.size, align.start, buf);
 
 	if (likely(!ret))
-		fuse_reply_buf(req, buf + aligned_offset, size);
+		fuse_reply_buf(req, buf + align.offset, size);
 	else
 		fuse_reply_err(req, -ret);
 
