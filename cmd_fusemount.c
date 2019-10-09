@@ -173,6 +173,9 @@ static void bcachefs_fuse_setattr(fuse_req_t req, fuse_ino_t inum,
 	u64 now;
 	int ret;
 
+	fuse_log(FUSE_LOG_DEBUG, "bcachefs_fuse_setattr(%llu, %x)\n",
+		 inum, to_set);
+
 	inum = map_root_ino(inum);
 
 	bch2_trans_init(&trans, c, 0, 0);
@@ -247,6 +250,8 @@ static void bcachefs_fuse_mknod(fuse_req_t req, fuse_ino_t dir,
 	struct bch_inode_unpacked new_inode;
 	int ret;
 
+	fuse_log(FUSE_LOG_DEBUG, "bcachefs_fuse_mknod(%llu, %s, %x, %x)\n",
+		 dir, name, mode, rdev);
 	ret = do_create(c, dir, name, mode, rdev, &new_inode);
 	if (ret)
 		goto err;
@@ -261,6 +266,9 @@ err:
 static void bcachefs_fuse_mkdir(fuse_req_t req, fuse_ino_t dir,
 				const char *name, mode_t mode)
 {
+	fuse_log(FUSE_LOG_DEBUG, "bcachefs_fuse_mkdir(%llu, %s, %x)\n",
+		 dir, name, mode);
+
 	BUG_ON(mode & S_IFMT);
 
 	mode |= S_IFDIR;
@@ -275,6 +283,8 @@ static void bcachefs_fuse_unlink(fuse_req_t req, fuse_ino_t dir,
 	struct qstr qstr = QSTR(name);
 	int ret;
 
+	fuse_log(FUSE_LOG_DEBUG, "bcachefs_fuse_unlink(%llu, %s)\n", dir, name);
+
 	dir = map_root_ino(dir);
 
 	ret = bch2_trans_do(c, NULL, BTREE_INSERT_ATOMIC|BTREE_INSERT_NOFAIL,
@@ -287,6 +297,8 @@ static void bcachefs_fuse_unlink(fuse_req_t req, fuse_ino_t dir,
 static void bcachefs_fuse_rmdir(fuse_req_t req, fuse_ino_t dir,
 				const char *name)
 {
+	fuse_log(FUSE_LOG_DEBUG, "bcachefs_fuse_rmdir(%llu, %s)\n", dir, name);
+
 	dir = map_root_ino(dir);
 
 	bcachefs_fuse_unlink(req, dir, name);
@@ -303,6 +315,10 @@ static void bcachefs_fuse_rename(fuse_req_t req,
 	struct qstr dst_name = QSTR(srcname);
 	struct qstr src_name = QSTR(dstname);
 	int ret;
+
+	fuse_log(FUSE_LOG_DEBUG,
+		 "bcachefs_fuse_rename(%llu, %s, %llu, %s, %x)\n",
+		 src_dir, srcname, dst_dir, dstname, flags);
 
 	src_dir = map_root_ino(src_dir);
 	dst_dir = map_root_ino(dst_dir);
@@ -326,6 +342,9 @@ static void bcachefs_fuse_link(fuse_req_t req, fuse_ino_t inum,
 	struct bch_inode_unpacked inode_u;
 	struct qstr qstr = QSTR(newname);
 	int ret;
+
+	fuse_log(FUSE_LOG_DEBUG, "bcachefs_fuse_link(%llu, %llu, %s)\n",
+		 inum, newparent, newname);
 
 	newparent = map_root_ino(newparent);
 
@@ -669,6 +688,9 @@ static void bcachefs_fuse_symlink(fuse_req_t req, const char *link,
 	size_t link_len = strlen(link);
 	int ret;
 
+	fuse_log(FUSE_LOG_DEBUG, "bcachefs_fuse_symlink(%s, %llu, %s)\n",
+		 link, dir, name);
+
 	dir = map_root_ino(dir);
 
 	ret = do_create(c, dir, name, S_IFLNK|S_IRWXUGO, 0, &new_inode);
@@ -716,6 +738,8 @@ static void bcachefs_fuse_readlink(fuse_req_t req, fuse_ino_t inum)
 {
 	struct bch_fs *c = fuse_req_userdata(req);
 	char *buf = NULL;
+
+	fuse_log(FUSE_LOG_DEBUG, "bcachefs_fuse_readlink(%llu)\n", inum);
 
 	struct bch_inode_unpacked bi;
 	int ret = bch2_inode_find_by_inum(c, inum, &bi);
@@ -844,6 +868,7 @@ static int fuse_filldir(struct dir_context *_ctx,
 
 	ctx->buf	+= len;
 	ctx->bufsize	-= len;
+
 	return 0;
 }
 
@@ -987,6 +1012,9 @@ static void bcachefs_fuse_create(fuse_req_t req, fuse_ino_t dir,
 	struct bch_fs *c = fuse_req_userdata(req);
 	struct bch_inode_unpacked new_inode;
 	int ret;
+
+	fuse_log(FUSE_LOG_DEBUG, "bcachefs_fuse_create(%llu, %s, %x)\n",
+		 dir, name, mode);
 
 	ret = do_create(c, dir, name, mode, 0, &new_inode);
 	if (ret)
