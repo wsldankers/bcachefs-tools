@@ -486,7 +486,7 @@ static void bcachefs_fuse_read(fuse_req_t req, fuse_ino_t inum,
 	free(buf);
 }
 
-static int write_set_inode(struct bch_fs *c, fuse_ino_t inum, off_t new_size)
+static int inode_update_times(struct bch_fs *c, fuse_ino_t inum)
 {
 	struct btree_trans trans;
 	struct btree_iter *iter;
@@ -504,7 +504,6 @@ retry:
 	if (ret)
 		goto err;
 
-	inode_u.bi_size	= max_t(u64, inode_u.bi_size, new_size);
 	inode_u.bi_mtime = now;
 	inode_u.bi_ctime = now;
 
@@ -526,7 +525,7 @@ err:
 static int write_aligned(struct bch_fs *c, fuse_ino_t inum,
 			 struct bch_io_opts io_opts, void *buf,
 			 size_t aligned_size, off_t aligned_offset,
-			 size_t *written_out)
+			 off_t new_i_size, size_t *written_out)
 {
 	struct bch_write_op	op = { 0 };
 	struct bio_vec		bv;
@@ -544,6 +543,7 @@ static int write_aligned(struct bch_fs *c, fuse_ino_t inum,
 	op.nr_replicas	= io_opts.data_replicas;
 	op.target	= io_opts.foreground_target;
 	op.pos		= POS(inum, aligned_offset >> 9);
+	op.new_i_size	= new_i_size;
 
 	userbio_init(&op.wbio.bio, &bv, buf, aligned_size);
 	bio_set_op_attrs(&op.wbio.bio, REQ_OP_WRITE, REQ_SYNC);
@@ -618,7 +618,8 @@ static void bcachefs_fuse_write(fuse_req_t req, fuse_ino_t inum,
 
 	/* Actually write. */
 	ret = write_aligned(c, inum, io_opts, aligned_buf,
-			    align.size, align.start, &aligned_written);
+			    align.size, align.start,
+			    offset + size, &aligned_written);
 
 	/* Figure out how many unaligned bytes were written. */
 	size_t written = align_fix_up_bytes(&align, aligned_written);
@@ -631,11 +632,11 @@ static void bcachefs_fuse_write(fuse_req_t req, fuse_ino_t inum,
 		ret = 0;
 
 	/*
-	 * Update inode data.
+	 * Update inode times.
 	 * TODO: Integrate with bch2_extent_update()
 	 */
 	if (!ret)
-		ret = write_set_inode(c, inum, offset + written);
+		ret = inode_update_times(c, inum);
 
 	if (!ret) {
 		BUG_ON(written == 0);
@@ -674,7 +675,8 @@ static void bcachefs_fuse_symlink(fuse_req_t req, const char *link,
 
 	size_t aligned_written;
 	ret = write_aligned(c, new_inode.bi_inum, io_opts, aligned_buf,
-			    align.size, align.start, &aligned_written);
+			    align.size, align.start, link_len + 1,
+			    &aligned_written);
 	free(aligned_buf);
 
 	if (ret)
@@ -683,7 +685,7 @@ static void bcachefs_fuse_symlink(fuse_req_t req, const char *link,
 	size_t written = align_fix_up_bytes(&align, aligned_written);
 	BUG_ON(written != link_len + 1); // TODO: handle short
 
-	ret = write_set_inode(c, new_inode.bi_inum, written);
+	ret = inode_update_times(c, new_inode.bi_inum);
 	if (ret)
 		goto err;
 
