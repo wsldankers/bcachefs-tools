@@ -296,10 +296,10 @@ int bch2_dirent_delete(struct bch_fs *c, u64 dir_inum,
 struct btree_iter *
 __bch2_dirent_lookup_trans(struct btree_trans *trans, u64 dir_inum,
 			   const struct bch_hash_info *hash_info,
-			   const struct qstr *name)
+			   const struct qstr *name, unsigned flags)
 {
 	return bch2_hash_lookup(trans, bch2_dirent_hash_desc,
-				hash_info, dir_inum, name, 0);
+				hash_info, dir_inum, name, flags);
 }
 
 u64 bch2_dirent_lookup(struct bch_fs *c, u64 dir_inum,
@@ -313,7 +313,8 @@ u64 bch2_dirent_lookup(struct bch_fs *c, u64 dir_inum,
 
 	bch2_trans_init(&trans, c, 0, 0);
 
-	iter = __bch2_dirent_lookup_trans(&trans, dir_inum, hash_info, name);
+	iter = __bch2_dirent_lookup_trans(&trans, dir_inum,
+					  hash_info, name, 0);
 	if (IS_ERR(iter)) {
 		BUG_ON(PTR_ERR(iter) == -EINTR);
 		goto out;
@@ -353,36 +354,31 @@ int bch2_readdir(struct bch_fs *c, u64 inum, struct dir_context *ctx)
 	struct btree_iter *iter;
 	struct bkey_s_c k;
 	struct bkey_s_c_dirent dirent;
-	unsigned len;
 	int ret;
 
 	bch2_trans_init(&trans, c, 0, 0);
 
 	for_each_btree_key(&trans, iter, BTREE_ID_DIRENTS,
 			   POS(inum, ctx->pos), 0, k, ret) {
+		if (k.k->p.inode > inum)
+			break;
+
 		if (k.k->type != KEY_TYPE_dirent)
 			continue;
 
 		dirent = bkey_s_c_to_dirent(k);
 
-		if (bkey_cmp(k.k->p, POS(inum, ctx->pos)) < 0)
-			continue;
-
-		if (k.k->p.inode > inum)
-			break;
-
-		len = bch2_dirent_name_bytes(dirent);
-
 		/*
 		 * XXX: dir_emit() can fault and block, while we're holding
 		 * locks
 		 */
-		if (!dir_emit(ctx, dirent.v->d_name, len,
+		ctx->pos = dirent.k->p.offset;
+		if (!dir_emit(ctx, dirent.v->d_name,
+			      bch2_dirent_name_bytes(dirent),
 			      le64_to_cpu(dirent.v->d_inum),
 			      dirent.v->d_type))
 			break;
-
-		ctx->pos = k.k->p.offset + 1;
+		ctx->pos = dirent.k->p.offset + 1;
 	}
 	ret = bch2_trans_exit(&trans) ?: ret;
 

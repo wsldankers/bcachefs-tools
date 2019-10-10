@@ -19,6 +19,7 @@
 #include "ec.h"
 #include "error.h"
 #include "extents.h"
+#include "inode.h"
 #include "io.h"
 #include "journal.h"
 #include "keylist.h"
@@ -168,6 +169,258 @@ void bch2_bio_alloc_pages_pool(struct bch_fs *c, struct bio *bio,
 		mutex_unlock(&c->bio_bounce_pages_lock);
 }
 
+/* Extent update path: */
+
+static int sum_sector_overwrites(struct btree_trans *trans,
+				 struct btree_iter *extent_iter,
+				 struct bkey_i *new,
+				 bool may_allocate,
+				 bool *maybe_extending,
+				 s64 *delta)
+{
+	struct btree_iter *iter;
+	struct bkey_s_c old;
+	int ret = 0;
+
+	*maybe_extending = true;
+	*delta = 0;
+
+	iter = bch2_trans_copy_iter(trans, extent_iter);
+	if (IS_ERR(iter))
+		return PTR_ERR(iter);
+
+	for_each_btree_key_continue(iter, BTREE_ITER_SLOTS, old, ret) {
+		if (!may_allocate &&
+		    bch2_bkey_nr_ptrs_allocated(old) <
+		    bch2_bkey_nr_dirty_ptrs(bkey_i_to_s_c(new))) {
+			ret = -ENOSPC;
+			break;
+		}
+
+		*delta += (min(new->k.p.offset,
+			      old.k->p.offset) -
+			  max(bkey_start_offset(&new->k),
+			      bkey_start_offset(old.k))) *
+			(bkey_extent_is_allocation(&new->k) -
+			 bkey_extent_is_allocation(old.k));
+
+		if (bkey_cmp(old.k->p, new->k.p) >= 0) {
+			/*
+			 * Check if there's already data above where we're
+			 * going to be writing to - this means we're definitely
+			 * not extending the file:
+			 *
+			 * Note that it's not sufficient to check if there's
+			 * data up to the sector offset we're going to be
+			 * writing to, because i_size could be up to one block
+			 * less:
+			 */
+			if (!bkey_cmp(old.k->p, new->k.p))
+				old = bch2_btree_iter_next(iter);
+
+			if (old.k && !bkey_err(old) &&
+			    old.k->p.inode == extent_iter->pos.inode &&
+			    bkey_extent_is_data(old.k))
+				*maybe_extending = false;
+
+			break;
+		}
+	}
+
+	bch2_trans_iter_put(trans, iter);
+	return ret;
+}
+
+int bch2_extent_update(struct btree_trans *trans,
+		       struct btree_iter *iter,
+		       struct bkey_i *k,
+		       struct disk_reservation *disk_res,
+		       u64 *journal_seq,
+		       u64 new_i_size,
+		       s64 *i_sectors_delta)
+{
+	/* this must live until after bch2_trans_commit(): */
+	struct bkey_inode_buf inode_p;
+	bool extending = false;
+	s64 delta = 0;
+	int ret;
+
+	ret = bch2_extent_trim_atomic(k, iter);
+	if (ret)
+		return ret;
+
+	ret = sum_sector_overwrites(trans, iter, k,
+			disk_res && disk_res->sectors != 0,
+			&extending, &delta);
+	if (ret)
+		return ret;
+
+	new_i_size = extending
+		? min(k->k.p.offset << 9, new_i_size)
+		: 0;
+
+	if (delta || new_i_size) {
+		struct btree_iter *inode_iter;
+		struct bch_inode_unpacked inode_u;
+
+		inode_iter = bch2_inode_peek(trans, &inode_u,
+				k->k.p.inode, BTREE_ITER_INTENT);
+		if (IS_ERR(inode_iter))
+			return PTR_ERR(inode_iter);
+
+		/*
+		 * XXX:
+		 * writeback can race a bit with truncate, because truncate
+		 * first updates the inode then truncates the pagecache. This is
+		 * ugly, but lets us preserve the invariant that the in memory
+		 * i_size is always >= the on disk i_size.
+		 *
+		BUG_ON(new_i_size > inode_u.bi_size &&
+		       (inode_u.bi_flags & BCH_INODE_I_SIZE_DIRTY));
+		 */
+		BUG_ON(new_i_size > inode_u.bi_size && !extending);
+
+		if (!(inode_u.bi_flags & BCH_INODE_I_SIZE_DIRTY) &&
+		    new_i_size > inode_u.bi_size)
+			inode_u.bi_size = new_i_size;
+		else
+			new_i_size = 0;
+
+		inode_u.bi_sectors += delta;
+
+		if (delta || new_i_size) {
+			bch2_inode_pack(&inode_p, &inode_u);
+			bch2_trans_update(trans, inode_iter,
+					  &inode_p.inode.k_i);
+		}
+
+		bch2_trans_iter_put(trans, inode_iter);
+	}
+
+	bch2_trans_update(trans, iter, k);
+
+	ret = bch2_trans_commit(trans, disk_res, journal_seq,
+				BTREE_INSERT_NOFAIL|
+				BTREE_INSERT_ATOMIC|
+				BTREE_INSERT_USE_RESERVE);
+	if (!ret && i_sectors_delta)
+		*i_sectors_delta += delta;
+
+	return ret;
+}
+
+int bch2_fpunch_at(struct btree_trans *trans, struct btree_iter *iter,
+		   struct bpos end, u64 *journal_seq,
+		   s64 *i_sectors_delta)
+{
+	struct bch_fs *c	= trans->c;
+	unsigned max_sectors	= KEY_SIZE_MAX & (~0 << c->block_bits);
+	struct bkey_s_c k;
+	int ret = 0, ret2 = 0;
+
+	while ((k = bch2_btree_iter_peek(iter)).k &&
+	       bkey_cmp(iter->pos, end) < 0) {
+		struct disk_reservation disk_res =
+			bch2_disk_reservation_init(c, 0);
+		struct bkey_i delete;
+
+		ret = bkey_err(k);
+		if (ret)
+			goto btree_err;
+
+		bkey_init(&delete.k);
+		delete.k.p = iter->pos;
+
+		/* create the biggest key we can */
+		bch2_key_resize(&delete.k, max_sectors);
+		bch2_cut_back(end, &delete.k);
+
+		bch2_trans_begin_updates(trans);
+
+		ret = bch2_extent_update(trans, iter, &delete,
+				&disk_res, journal_seq,
+				0, i_sectors_delta);
+		bch2_disk_reservation_put(c, &disk_res);
+btree_err:
+		if (ret == -EINTR) {
+			ret2 = ret;
+			ret = 0;
+		}
+		if (ret)
+			break;
+	}
+
+	if (bkey_cmp(iter->pos, end) > 0) {
+		bch2_btree_iter_set_pos(iter, end);
+		ret = bch2_btree_iter_traverse(iter);
+	}
+
+	return ret ?: ret2;
+}
+
+int bch2_fpunch(struct bch_fs *c, u64 inum, u64 start, u64 end,
+		u64 *journal_seq, s64 *i_sectors_delta)
+{
+	struct btree_trans trans;
+	struct btree_iter *iter;
+	int ret = 0;
+
+	bch2_trans_init(&trans, c, BTREE_ITER_MAX, 1024);
+	iter = bch2_trans_get_iter(&trans, BTREE_ID_EXTENTS,
+				   POS(inum, start),
+				   BTREE_ITER_INTENT);
+
+	ret = bch2_fpunch_at(&trans, iter, POS(inum, end),
+			     journal_seq, i_sectors_delta);
+	bch2_trans_exit(&trans);
+
+	if (ret == -EINTR)
+		ret = 0;
+
+	return ret;
+}
+
+int bch2_write_index_default(struct bch_write_op *op)
+{
+	struct bch_fs *c = op->c;
+	struct keylist *keys = &op->insert_keys;
+	struct bkey_i *k = bch2_keylist_front(keys);
+	struct btree_trans trans;
+	struct btree_iter *iter;
+	int ret;
+
+	bch2_trans_init(&trans, c, BTREE_ITER_MAX, 1024);
+
+	iter = bch2_trans_get_iter(&trans, BTREE_ID_EXTENTS,
+				   bkey_start_pos(&k->k),
+				   BTREE_ITER_SLOTS|BTREE_ITER_INTENT);
+
+	do {
+		BKEY_PADDED(k) tmp;
+
+		bkey_copy(&tmp.k, bch2_keylist_front(keys));
+
+		bch2_trans_begin_updates(&trans);
+
+		ret = bch2_extent_update(&trans, iter, &tmp.k,
+					 &op->res, op_journal_seq(op),
+					 op->new_i_size, &op->i_sectors_delta);
+		if (ret == -EINTR)
+			continue;
+		if (ret)
+			break;
+
+		if (bkey_cmp(iter->pos, bch2_keylist_front(keys)->k.p) < 0)
+			bch2_cut_front(iter->pos, bch2_keylist_front(keys));
+		else
+			bch2_keylist_pop_front(keys);
+	} while (!bch2_keylist_empty(keys));
+
+	bch2_trans_exit(&trans);
+
+	return ret;
+}
+
 /* Writes */
 
 void bch2_submit_wbio_replicas(struct bch_write_bio *wbio, struct bch_fs *c,
@@ -244,58 +497,6 @@ static void bch2_write_done(struct closure *cl)
 	bch2_time_stats_update(&c->times[BCH_TIME_data_write], op->start_time);
 
 	closure_return(cl);
-}
-
-int bch2_write_index_default(struct bch_write_op *op)
-{
-	struct bch_fs *c = op->c;
-	struct btree_trans trans;
-	struct btree_iter *iter;
-	struct keylist *keys = &op->insert_keys;
-	int ret;
-
-	BUG_ON(bch2_keylist_empty(keys));
-	bch2_verify_keylist_sorted(keys);
-
-	bch2_trans_init(&trans, c, BTREE_ITER_MAX, 256);
-retry:
-	bch2_trans_begin(&trans);
-
-	iter = bch2_trans_get_iter(&trans, BTREE_ID_EXTENTS,
-				   bkey_start_pos(&bch2_keylist_front(keys)->k),
-				   BTREE_ITER_INTENT);
-
-	do {
-		BKEY_PADDED(k) split;
-
-		bkey_copy(&split.k, bch2_keylist_front(keys));
-
-		ret = bch2_extent_trim_atomic(&split.k, iter);
-		if (ret)
-			break;
-
-		bch2_trans_update(&trans, iter, &split.k);
-
-		ret = bch2_trans_commit(&trans, &op->res, op_journal_seq(op),
-					BTREE_INSERT_NOFAIL|
-					BTREE_INSERT_USE_RESERVE);
-		if (ret)
-			break;
-
-		if (bkey_cmp(iter->pos, bch2_keylist_front(keys)->k.p) < 0)
-			bch2_cut_front(iter->pos, bch2_keylist_front(keys));
-		else
-			bch2_keylist_pop_front(keys);
-	} while (!bch2_keylist_empty(keys));
-
-	if (ret == -EINTR) {
-		ret = 0;
-		goto retry;
-	}
-
-	bch2_trans_exit(&trans);
-
-	return ret;
 }
 
 /**
