@@ -44,7 +44,7 @@ static struct stat inode_to_stat(struct bch_fs *c,
 				 struct bch_inode_unpacked *bi)
 {
 	return (struct stat) {
-		.st_ino		= bi->bi_inum,
+		.st_ino		= unmap_root_ino(bi->bi_inum),
 		.st_size	= bi->bi_size,
 		.st_mode	= bi->bi_mode,
 		.st_uid		= bi->bi_uid,
@@ -63,7 +63,7 @@ static struct fuse_entry_param inode_to_entry(struct bch_fs *c,
 					      struct bch_inode_unpacked *bi)
 {
 	return (struct fuse_entry_param) {
-		.ino		= bi->bi_inum,
+		.ino		= unmap_root_ino(bi->bi_inum),
 		.generation	= bi->bi_generation,
 		.attr		= inode_to_stat(c, bi),
 		.attr_timeout	= DBL_MAX,
@@ -98,6 +98,9 @@ static void bcachefs_fuse_lookup(fuse_req_t req, fuse_ino_t dir,
 	u64 inum;
 	int ret;
 
+	fuse_log(FUSE_LOG_DEBUG, "fuse_lookup(dir=%llu name=%s)\n",
+		 dir, name);
+
 	dir = map_root_ino(dir);
 
 	ret = bch2_inode_find_by_inum(c, dir, &bi);
@@ -118,12 +121,14 @@ static void bcachefs_fuse_lookup(fuse_req_t req, fuse_ino_t dir,
 	if (ret)
 		goto err;
 
-	bi.bi_inum = unmap_root_ino(bi.bi_inum);
+	fuse_log(FUSE_LOG_DEBUG, "fuse_lookup ret(inum=%llu)\n",
+		 bi.bi_inum);
 
 	struct fuse_entry_param e = inode_to_entry(c, &bi);
 	fuse_reply_entry(req, &e);
 	return;
 err:
+	fuse_log(FUSE_LOG_DEBUG, "fuse_lookup error %i\n", ret);
 	fuse_reply_err(req, -ret);
 }
 
@@ -135,15 +140,19 @@ static void bcachefs_fuse_getattr(fuse_req_t req, fuse_ino_t inum,
 	struct stat attr;
 	int ret;
 
+	fuse_log(FUSE_LOG_DEBUG, "fuse_getattr(inum=%llu)\n",
+		 inum);
+
 	inum = map_root_ino(inum);
 
 	ret = bch2_inode_find_by_inum(c, inum, &bi);
 	if (ret) {
+		fuse_log(FUSE_LOG_DEBUG, "fuse_getattr error %i\n", ret);
 		fuse_reply_err(req, -ret);
 		return;
 	}
 
-	bi.bi_inum = unmap_root_ino(bi.bi_inum);
+	fuse_log(FUSE_LOG_DEBUG, "fuse_getattr success\n");
 
 	attr = inode_to_stat(c, &bi);
 	fuse_reply_attr(req, &attr, DBL_MAX);
@@ -764,43 +773,44 @@ static void bcachefs_fuse_opendir(fuse_req_t req, fuse_ino_t inum,
 }
 #endif
 
-struct fuse_dir_entry {
-	u64		ino;
-	unsigned	type;
-	char		name[0];
-};
-
 struct fuse_dir_context {
 	struct dir_context	ctx;
 	fuse_req_t		req;
 	char			*buf;
 	size_t			bufsize;
-
-	struct fuse_dir_entry	*prev;
 };
 
-static int fuse_send_dir_entry(struct fuse_dir_context *ctx, loff_t pos)
+struct fuse_dirent {
+	uint64_t	ino;
+	uint64_t	off;
+	uint32_t	namelen;
+	uint32_t	type;
+	char name[];
+};
+
+#define FUSE_NAME_OFFSET offsetof(struct fuse_dirent, name)
+#define FUSE_DIRENT_ALIGN(x) \
+	(((x) + sizeof(uint64_t) - 1) & ~(sizeof(uint64_t) - 1))
+
+static size_t fuse_add_direntry2(char *buf, size_t bufsize,
+				 const char *name, int namelen,
+				 const struct stat *stbuf, off_t off)
 {
-	struct fuse_dir_entry *de = ctx->prev;
-	ctx->prev = NULL;
+	size_t entlen		= FUSE_NAME_OFFSET + namelen;
+	size_t entlen_padded	= FUSE_DIRENT_ALIGN(entlen);
+	struct fuse_dirent *dirent = (struct fuse_dirent *) buf;
 
-	struct stat statbuf = {
-		.st_ino		= unmap_root_ino(de->ino),
-		.st_mode	= de->type << 12,
-	};
+	if ((buf == NULL) || (entlen_padded > bufsize))
+		return entlen_padded;
 
-	size_t len = fuse_add_direntry(ctx->req, ctx->buf, ctx->bufsize,
-				       de->name, &statbuf, pos);
+	dirent->ino = stbuf->st_ino;
+	dirent->off = off;
+	dirent->namelen = namelen;
+	dirent->type = (stbuf->st_mode & S_IFMT) >> 12;
+	memcpy(dirent->name, name, namelen);
+	memset(dirent->name + namelen, 0, entlen_padded - entlen);
 
-	free(de);
-
-	if (len > ctx->bufsize)
-		return -EINVAL;
-
-	ctx->buf	+= len;
-	ctx->bufsize	-= len;
-
-	return 0;
+	return entlen_padded;
 }
 
 static int fuse_filldir(struct dir_context *_ctx,
@@ -810,47 +820,41 @@ static int fuse_filldir(struct dir_context *_ctx,
 	struct fuse_dir_context *ctx =
 		container_of(_ctx, struct fuse_dir_context, ctx);
 
-	fuse_log(FUSE_LOG_DEBUG, "fuse_filldir(ctx={.ctx={.pos=%llu}}, "
-		 "name=%s, namelen=%d, pos=%lld, dir=%llu, type=%u)\n",
-		 ctx->ctx.pos, name, namelen, pos, ino, type);
+	struct stat statbuf = {
+		.st_ino		= unmap_root_ino(ino),
+		.st_mode	= type << 12,
+	};
 
-	/*
-	 * We have to emit directory entries after reading the next entry,
-	 * because the previous entry contains a pointer to next.
-	 */
-	if (ctx->prev) {
-		int ret = fuse_send_dir_entry(ctx, pos);
-		if (ret)
-			return ret;
-	}
+	fuse_log(FUSE_LOG_DEBUG, "fuse_filldir(name=%s inum=%llu pos=%llu)\n",
+		 name, statbuf.st_ino, pos);
 
-	struct fuse_dir_entry *cur = malloc(sizeof *cur + namelen + 1);
-	cur->ino = ino;
-	cur->type = type;
-	memcpy(cur->name, name, namelen);
-	cur->name[namelen] = 0;
+	size_t len = fuse_add_direntry2(ctx->buf,
+					ctx->bufsize,
+					name,
+					namelen,
+					&statbuf,
+					pos + 1);
 
-	ctx->prev = cur;
+	if (len > ctx->bufsize)
+		return -1;
 
+	ctx->buf	+= len;
+	ctx->bufsize	-= len;
 	return 0;
 }
 
 static bool handle_dots(struct fuse_dir_context *ctx, fuse_ino_t dir)
 {
-	int ret = 0;
-
 	if (ctx->ctx.pos == 0) {
-		ret = fuse_filldir(&ctx->ctx, ".", 1, ctx->ctx.pos,
-				   unmap_root_ino(dir), DT_DIR);
-		if (ret < 0)
+		if (fuse_filldir(&ctx->ctx, ".", 1, ctx->ctx.pos,
+				 dir, DT_DIR) < 0)
 			return false;
 		ctx->ctx.pos = 1;
 	}
 
 	if (ctx->ctx.pos == 1) {
-		ret = fuse_filldir(&ctx->ctx, "..", 2, ctx->ctx.pos,
-				   /*TODO: parent*/ 1, DT_DIR);
-		if (ret < 0)
+		if (fuse_filldir(&ctx->ctx, "..", 2, ctx->ctx.pos,
+				 /*TODO: parent*/ 1, DT_DIR) < 0)
 			return false;
 		ctx->ctx.pos = 2;
 	}
@@ -892,20 +896,7 @@ static void bcachefs_fuse_readdir(fuse_req_t req, fuse_ino_t dir,
 		goto reply;
 
 	ret = bch2_readdir(c, dir, &ctx.ctx);
-
 reply:
-	/*
-	 * If we have something to send, the error above doesn't matter.
-	 *
-	 * Alternatively, if this send fails, but we previously sent something,
-	 * then this is a success.
-	 */
-	if (ctx.prev) {
-		ret = fuse_send_dir_entry(&ctx, ctx.ctx.pos);
-		if (ret && ctx.buf != buf)
-			ret = 0;
-	}
-
 	if (!ret) {
 		fuse_log(FUSE_LOG_DEBUG, "bcachefs_fuse_readdir reply %zd\n",
 					ctx.buf - buf);
