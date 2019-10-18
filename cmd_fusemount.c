@@ -113,8 +113,12 @@ static void bcachefs_fuse_lookup(fuse_req_t req, fuse_ino_t dir,
 
 	inum = bch2_dirent_lookup(c, dir, &hash_info, &qstr);
 	if (!inum) {
-		ret = -ENOENT;
-		goto err;
+		struct fuse_entry_param e = {
+			.attr_timeout	= DBL_MAX,
+			.entry_timeout	= DBL_MAX,
+		};
+		fuse_reply_entry(req, &e);
+		return;
 	}
 
 	ret = bch2_inode_find_by_inum(c, inum, &bi);
