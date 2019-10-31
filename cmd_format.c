@@ -244,6 +244,8 @@ int cmd_format(int argc, char *argv[])
 		bch2_fs_stop(c);
 	}
 
+	darray_free(device_paths);
+
 	return 0;
 }
 
