@@ -83,6 +83,9 @@ static void btree_node_data_alloc(struct bch_fs *c, struct btree *b, gfp_t gfp)
 	if (bch2_btree_keys_alloc(b, btree_page_order(c), gfp))
 		goto err;
 
+	memset(&b->data->csum, 0, sizeof b->data->csum);
+	b->data->flags = 0;
+
 	bc->used++;
 	list_move(&b->list, &bc->freeable);
 	return;
