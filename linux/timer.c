@@ -244,6 +244,8 @@ out:
 	return idx >= 0;
 }
 
+static bool timer_thread_stop = false;
+
 static int timer_thread(void *arg)
 {
 	struct pending_timer *p;
@@ -253,7 +255,7 @@ static int timer_thread(void *arg)
 
 	pthread_mutex_lock(&timer_lock);
 
-	while (1) {
+	while (!timer_thread_stop) {
 		now = jiffies;
 		p = heap_peek(&pending_timers);
 
@@ -295,14 +297,28 @@ static int timer_thread(void *arg)
 	return 0;
 }
 
+struct task_struct *timer_task;
+
 __attribute__((constructor(103)))
 static void timers_init(void)
 {
-	struct task_struct *p;
-
 	heap_init(&pending_timers, 64);
 	BUG_ON(!pending_timers.data);
 
-	p = kthread_run(timer_thread, NULL, "timers");
-	BUG_ON(IS_ERR(p));
+	timer_task = kthread_run(timer_thread, NULL, "timers");
+	BUG_ON(IS_ERR(timer_task));
+}
+
+__attribute__((destructor(103)))
+static void timers_cleanup(void)
+{
+	pthread_mutex_lock(&timer_lock);
+	timer_thread_stop = true;
+	pthread_cond_signal(&timer_cond);
+	pthread_mutex_unlock(&timer_lock);
+
+	int ret = kthread_stop(timer_task);
+	BUG_ON(ret);
+
+	timer_task = NULL;
 }
