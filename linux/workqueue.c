@@ -307,3 +307,16 @@ static void wq_init(void)
 	BUG_ON(!system_wq || !system_highpri_wq || !system_long_wq ||
 	       !system_unbound_wq || !system_freezable_wq);
 }
+
+__attribute__((destructor(102)))
+static void wq_cleanup(void)
+{
+	destroy_workqueue(system_freezable_wq);
+	destroy_workqueue(system_unbound_wq);
+	destroy_workqueue(system_long_wq);
+	destroy_workqueue(system_highpri_wq);
+	destroy_workqueue(system_wq);
+
+	system_wq = system_highpri_wq = system_long_wq = system_unbound_wq =
+		system_freezable_wq = NULL;
+}
