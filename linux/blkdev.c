@@ -228,6 +228,8 @@ struct block_device *lookup_bdev(const char *path)
 	return ERR_PTR(-EINVAL);
 }
 
+static atomic_t aio_thread_stop;
+
 static int aio_completion_thread(void *arg)
 {
 	struct io_event events[8], *ev;
@@ -236,6 +238,9 @@ static int aio_completion_thread(void *arg)
 	while (1) {
 		ret = io_getevents(aio_ctx, 1, ARRAY_SIZE(events),
 				   events, NULL);
+
+		if (atomic_read(&aio_thread_stop))
+			break;
 
 		if (ret < 0 && ret == -EINTR)
 			continue;
@@ -255,6 +260,8 @@ static int aio_completion_thread(void *arg)
 	return 0;
 }
 
+static struct task_struct *aio_task = NULL;
+
 __attribute__((constructor(102)))
 static void blkdev_init(void)
 {
@@ -265,4 +272,39 @@ static void blkdev_init(void)
 
 	p = kthread_run(aio_completion_thread, NULL, "aio_completion");
 	BUG_ON(IS_ERR(p));
+
+	aio_task = p;
+}
+
+__attribute__((destructor(102)))
+static void blkdev_cleanup(void)
+{
+	struct task_struct *p = NULL;
+	swap(aio_task, p);
+
+	atomic_set(&aio_thread_stop, 1);
+
+	/* I mean, really?! IO_CMD_NOOP is even defined, but not implemented. */
+	int fds[2];
+	int ret = pipe(fds);
+	if (ret != 0)
+		die("pipe err: %s", strerror(ret));
+
+	/* Wake up the completion thread with spurious work. */
+	int junk = 0;
+	struct iocb iocb = {
+		.aio_lio_opcode = IO_CMD_PWRITE,
+		.aio_fildes = fds[1],
+		.u.c.buf = &junk,
+		.u.c.nbytes = 1,
+	}, *iocbp = &iocb;
+	ret = io_submit(aio_ctx, 1, &iocbp);
+	if (ret != 1)
+		die("io_submit cleanup err: %s", strerror(-ret));
+
+	ret = kthread_stop(p);
+	BUG_ON(ret);
+
+	close(fds[0]);
+	close(fds[1]);
 }
