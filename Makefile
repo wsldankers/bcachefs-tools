@@ -2,6 +2,7 @@
 PREFIX?=/usr/local
 PKG_CONFIG?=pkg-config
 INSTALL=install
+PYTEST=pytest-3
 CFLAGS+=-std=gnu89 -O2 -g -MMD -Wall				\
 	-Wno-pointer-sign					\
 	-fno-strict-aliasing					\
@@ -65,12 +66,18 @@ endif
 .PHONY: all
 all: bcachefs
 
+.PHONY: check
+check: tests/test_helper bcachefs
+	cd tests; $(PYTEST)
+
 SRCS=$(shell find . -type f -iname '*.c')
 DEPS=$(SRCS:.c=.d)
 -include $(DEPS)
 
 OBJS=$(SRCS:.c=.o)
-bcachefs: $(OBJS)
+bcachefs: $(filter-out ./tests/%.o, $(OBJS))
+
+tests/test_helper: $(filter ./tests/%.o, $(OBJS))
 
 # If the version string differs from the last build, update the last version
 ifneq ($(VERSION),$(shell cat .version 2>/dev/null))
@@ -97,7 +104,7 @@ install: bcachefs
 
 .PHONY: clean
 clean:
-	$(RM) bcachefs .version $(OBJS) $(DEPS)
+	$(RM) bcachefs tests/test_helper .version $(OBJS) $(DEPS)
 
 .PHONY: deb
 deb: all
