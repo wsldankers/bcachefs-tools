@@ -149,7 +149,7 @@ static inline u64 ktime_get_real_seconds(void)
 
 static inline void ktime_get_coarse_real_ts64(struct timespec64 *ts)
 {
-	clock_gettime(CLOCK_MONOTONIC, ts);
+	clock_gettime(CLOCK_REALTIME_COARSE, ts);
 }
 
 #define current_kernel_time64()	current_kernel_time()
