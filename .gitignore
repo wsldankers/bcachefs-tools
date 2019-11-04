@@ -5,8 +5,11 @@ bcachefs
 *.d
 *.a
 tags
+TAGS
 cscope*
 bcachefs-tools
+tests/test_helper
+tests/__pycache__/
 
 # dot-files that we don't want to ignore
 !.gitignore

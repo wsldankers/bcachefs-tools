@@ -70,6 +70,13 @@ all: bcachefs
 check: tests/test_helper bcachefs
 	cd tests; $(PYTEST)
 
+.PHONY: TAGS tags
+TAGS:
+	ctags -e -R .
+
+tags:
+	ctags -R .
+
 SRCS=$(shell find . -type f -iname '*.c')
 DEPS=$(SRCS:.c=.d)
 -include $(DEPS)
