@@ -299,7 +299,6 @@ do {									\
 	x(btree_node_sort)			\
 	x(btree_node_read)			\
 	x(btree_gc)				\
-	x(btree_update)				\
 	x(btree_lock_contended_read)		\
 	x(btree_lock_contended_intent)		\
 	x(btree_lock_contended_write)		\
@@ -498,6 +497,7 @@ enum {
 	/* misc: */
 	BCH_FS_BDEV_MOUNTED,
 	BCH_FS_FIXED_GENS,
+	BCH_FS_ALLOC_WRITTEN,
 	BCH_FS_REBUILD_REPLICAS,
 	BCH_FS_HOLD_BTREE_WRITES,
 };
