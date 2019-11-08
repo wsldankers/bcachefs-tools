@@ -312,6 +312,8 @@ static void timers_init(void)
 __attribute__((destructor(103)))
 static void timers_cleanup(void)
 {
+	get_task_struct(timer_task);
+
 	pthread_mutex_lock(&timer_lock);
 	timer_thread_stop = true;
 	pthread_cond_signal(&timer_cond);
@@ -320,5 +322,6 @@ static void timers_cleanup(void)
 	int ret = kthread_stop(timer_task);
 	BUG_ON(ret);
 
+	put_task_struct(timer_task);
 	timer_task = NULL;
 }

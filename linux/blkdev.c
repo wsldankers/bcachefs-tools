@@ -281,6 +281,7 @@ static void blkdev_cleanup(void)
 {
 	struct task_struct *p = NULL;
 	swap(aio_task, p);
+	get_task_struct(p);
 
 	atomic_set(&aio_thread_stop, 1);
 
@@ -304,6 +305,8 @@ static void blkdev_cleanup(void)
 
 	ret = kthread_stop(p);
 	BUG_ON(ret);
+
+	put_task_struct(p);
 
 	close(fds[0]);
 	close(fds[1]);
