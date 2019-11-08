@@ -21,6 +21,7 @@
 #include "tools-util.h"
 
 static io_context_t aio_ctx;
+static atomic_t running_requests;
 
 void generic_make_request(struct bio *bio)
 {
@@ -75,6 +76,7 @@ void generic_make_request(struct bio *bio)
 		iocb.u.v.nr		= i;
 		iocb.u.v.offset		= bio->bi_iter.bi_sector << 9;
 
+		atomic_inc(&running_requests);
 		ret = io_submit(aio_ctx, 1, &iocbp);
 		if (ret != 1)
 			die("io_submit err: %s", strerror(-ret));
@@ -85,6 +87,7 @@ void generic_make_request(struct bio *bio)
 		iocb.u.v.nr		= i;
 		iocb.u.v.offset		= bio->bi_iter.bi_sector << 9;
 
+		atomic_inc(&running_requests);
 		ret = io_submit(aio_ctx, 1, &iocbp);
 		if (ret != 1)
 			die("io_submit err: %s", strerror(-ret));
@@ -228,19 +231,15 @@ struct block_device *lookup_bdev(const char *path)
 	return ERR_PTR(-EINVAL);
 }
 
-static atomic_t aio_thread_stop;
-
 static int aio_completion_thread(void *arg)
 {
 	struct io_event events[8], *ev;
 	int ret;
+	bool stop = false;
 
-	while (1) {
+	while (!stop) {
 		ret = io_getevents(aio_ctx, 1, ARRAY_SIZE(events),
 				   events, NULL);
-
-		if (atomic_read(&aio_thread_stop))
-			break;
 
 		if (ret < 0 && ret == -EINTR)
 			continue;
@@ -250,10 +249,18 @@ static int aio_completion_thread(void *arg)
 		for (ev = events; ev < events + ret; ev++) {
 			struct bio *bio = (struct bio *) ev->data;
 
+			/* This should only happen during blkdev_cleanup() */
+			if (!bio) {
+				BUG_ON(atomic_read(&running_requests) != 0);
+				stop = true;
+				continue;
+			}
+
 			if (ev->res != bio->bi_iter.bi_size)
 				bio->bi_status = BLK_STS_IOERR;
 
 			bio_endio(bio);
+			atomic_dec(&running_requests);
 		}
 	}
 
@@ -283,8 +290,6 @@ static void blkdev_cleanup(void)
 	swap(aio_task, p);
 	get_task_struct(p);
 
-	atomic_set(&aio_thread_stop, 1);
-
 	/* I mean, really?! IO_CMD_NOOP is even defined, but not implemented. */
 	int fds[2];
 	int ret = pipe(fds);
@@ -295,6 +300,7 @@ static void blkdev_cleanup(void)
 	int junk = 0;
 	struct iocb iocb = {
 		.aio_lio_opcode = IO_CMD_PWRITE,
+		.data = NULL, /* Signal to stop */
 		.aio_fildes = fds[1],
 		.u.c.buf = &junk,
 		.u.c.nbytes = 1,
