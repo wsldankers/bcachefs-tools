@@ -5,6 +5,7 @@
 import pytest
 import signal
 import subprocess
+import time
 
 import util
 from pathlib import Path
@@ -51,3 +52,18 @@ def test_read_after_free():
 def test_write_after_free():
     with pytest.raises(util.ValgrindFailedError):
         ret = util.run(helper, 'write_after_free', valgrind=True)
+
+def test_mountpoint(tmpdir):
+    path = util.mountpoint(tmpdir)
+    assert str(path)[-4:] == '/mnt'
+    assert path.is_dir()
+
+def test_timestamp():
+    t1 = time.clock_gettime(time.CLOCK_REALTIME)
+    with util.Timestamp() as ts:
+        t2 = time.clock_gettime(time.CLOCK_REALTIME)
+    t3 = time.clock_gettime(time.CLOCK_REALTIME)
+
+    assert not ts.contains(t1)
+    assert ts.contains(t2)
+    assert not ts.contains(t3)

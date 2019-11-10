@@ -1243,6 +1243,9 @@ int cmd_fusemount(int argc, char *argv[])
 	if (fuse_session_mount(se, fuse_opts.mountpoint))
 		die("fuse_mount err: %m");
 
+	/* This print statement is a trigger for tests. */
+	printf("Fuse mount initialized.\n");
+
 	fuse_daemonize(fuse_opts.foreground);
 
 	ret = fuse_session_loop(se);

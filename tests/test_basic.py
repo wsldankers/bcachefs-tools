@@ -21,8 +21,7 @@ def test_format(tmpdir):
     assert len(ret.stderr) == 0
 
 def test_fsck(tmpdir):
-    dev = util.device_1g(tmpdir)
-    util.run_bch('format', dev, valgrind=False, check=True)
+    dev = util.format_1g(tmpdir)
 
     ret = util.run_bch('fsck', dev, valgrind=True)
 
@@ -31,8 +30,7 @@ def test_fsck(tmpdir):
     assert len(ret.stderr) == 0
 
 def test_list(tmpdir):
-    dev = util.device_1g(tmpdir)
-    util.run_bch('format', dev, valgrind=False, check=True)
+    dev = util.format_1g(tmpdir)
 
     ret = util.run_bch('list', dev, valgrind=True)
 
@@ -42,8 +40,7 @@ def test_list(tmpdir):
     assert len(ret.stdout.splitlines()) == 2
 
 def test_list_inodes(tmpdir):
-    dev = util.device_1g(tmpdir)
-    util.run_bch('format', dev, valgrind=False, check=True)
+    dev = util.format_1g(tmpdir)
 
     ret = util.run_bch('list', '-b', 'inodes', dev, valgrind=True)
 
@@ -52,8 +49,7 @@ def test_list_inodes(tmpdir):
     assert len(ret.stdout.splitlines()) == (2 + 2) # 2 inodes on clean format
 
 def test_list_dirent(tmpdir):
-    dev = util.device_1g(tmpdir)
-    util.run_bch('format', dev, valgrind=False, check=True)
+    dev = util.format_1g(tmpdir)
 
     ret = util.run_bch('list', '-b', 'dirents', dev, valgrind=True)
 
