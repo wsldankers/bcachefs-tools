@@ -49,6 +49,53 @@ static void journal_seq_copy(struct bch_inode_info *dst,
 	} while ((v = cmpxchg(&dst->ei_journal_seq, old, journal_seq)) != old);
 }
 
+static void __pagecache_lock_put(struct pagecache_lock *lock, long i)
+{
+	BUG_ON(atomic_long_read(&lock->v) == 0);
+
+	if (atomic_long_sub_return_release(i, &lock->v) == 0)
+		wake_up_all(&lock->wait);
+}
+
+static bool __pagecache_lock_tryget(struct pagecache_lock *lock, long i)
+{
+	long v = atomic_long_read(&lock->v), old;
+
+	do {
+		old = v;
+
+		if (i > 0 ? v < 0 : v > 0)
+			return false;
+	} while ((v = atomic_long_cmpxchg_acquire(&lock->v,
+					old, old + i)) != old);
+	return true;
+}
+
+static void __pagecache_lock_get(struct pagecache_lock *lock, long i)
+{
+	wait_event(lock->wait, __pagecache_lock_tryget(lock, i));
+}
+
+void bch2_pagecache_add_put(struct pagecache_lock *lock)
+{
+	__pagecache_lock_put(lock, 1);
+}
+
+void bch2_pagecache_add_get(struct pagecache_lock *lock)
+{
+	__pagecache_lock_get(lock, 1);
+}
+
+void bch2_pagecache_block_put(struct pagecache_lock *lock)
+{
+	__pagecache_lock_put(lock, -1);
+}
+
+void bch2_pagecache_block_get(struct pagecache_lock *lock)
+{
+	__pagecache_lock_get(lock, -1);
+}
+
 void bch2_inode_update_after_write(struct bch_fs *c,
 				   struct bch_inode_info *inode,
 				   struct bch_inode_unpacked *bi,
@@ -706,10 +753,15 @@ static int bch2_getattr(const struct path *path, struct kstat *stat,
 
 	if (inode->ei_inode.bi_flags & BCH_INODE_IMMUTABLE)
 		stat->attributes |= STATX_ATTR_IMMUTABLE;
+	stat->attributes_mask	 |= STATX_ATTR_IMMUTABLE;
+
 	if (inode->ei_inode.bi_flags & BCH_INODE_APPEND)
 		stat->attributes |= STATX_ATTR_APPEND;
+	stat->attributes_mask	 |= STATX_ATTR_APPEND;
+
 	if (inode->ei_inode.bi_flags & BCH_INODE_NODUMP)
 		stat->attributes |= STATX_ATTR_NODUMP;
+	stat->attributes_mask	 |= STATX_ATTR_NODUMP;
 
 	return 0;
 }
@@ -872,7 +924,7 @@ retry:
 }
 
 static const struct vm_operations_struct bch_vm_ops = {
-	.fault		= filemap_fault,
+	.fault		= bch2_page_fault,
 	.map_pages	= filemap_map_pages,
 	.page_mkwrite   = bch2_page_mkwrite,
 };
@@ -906,7 +958,7 @@ static int bch2_vfs_readdir(struct file *file, struct dir_context *ctx)
 
 static const struct file_operations bch_file_operations = {
 	.llseek		= bch2_llseek,
-	.read_iter	= generic_file_read_iter,
+	.read_iter	= bch2_read_iter,
 	.write_iter	= bch2_write_iter,
 	.mmap		= bch2_mmap,
 	.open		= generic_file_open,
@@ -994,7 +1046,7 @@ static const struct address_space_operations bch_address_space_operations = {
 	.write_end	= bch2_write_end,
 	.invalidatepage	= bch2_invalidatepage,
 	.releasepage	= bch2_releasepage,
-	.direct_IO	= bch2_direct_IO,
+	.direct_IO	= noop_direct_IO,
 #ifdef CONFIG_MIGRATION
 	.migratepage	= bch2_migrate_page,
 #endif
@@ -1090,6 +1142,7 @@ static struct inode *bch2_alloc_inode(struct super_block *sb)
 
 	inode_init_once(&inode->v);
 	mutex_init(&inode->ei_update_lock);
+	pagecache_lock_init(&inode->ei_pagecache_lock);
 	mutex_init(&inode->ei_quota_lock);
 	inode->ei_journal_seq = 0;
 

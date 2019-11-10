@@ -1096,7 +1096,12 @@ static int btree_iter_traverse_one(struct btree_iter *iter)
 	if (unlikely(iter->level >= BTREE_MAX_DEPTH))
 		return 0;
 
-	if (iter->uptodate == BTREE_ITER_NEED_RELOCK)
+	/*
+	 * if we need interior nodes locked, call btree_iter_relock() to make
+	 * sure we walk back up enough that we lock them:
+	 */
+	if (iter->uptodate == BTREE_ITER_NEED_RELOCK ||
+	    iter->locks_want > 1)
 		bch2_btree_iter_relock(iter, false);
 
 	if (iter->uptodate < BTREE_ITER_NEED_RELOCK)
