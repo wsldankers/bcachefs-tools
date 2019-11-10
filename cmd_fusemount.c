@@ -609,6 +609,8 @@ static void bcachefs_fuse_write(fuse_req_t req, fuse_ino_t inum,
 		 inum, size, offset);
 
 	struct fuse_align_io align = align_io(c, size, offset);
+	void *aligned_buf = aligned_alloc(PAGE_SIZE, align.size);
+	BUG_ON(!aligned_buf);
 
 	if (get_inode_io_opts(c, inum, &io_opts)) {
 		ret = -ENOENT;
@@ -616,7 +618,6 @@ static void bcachefs_fuse_write(fuse_req_t req, fuse_ino_t inum,
 	}
 
 	/* Realign the data and read in start and end, if needed */
-	void *aligned_buf = aligned_alloc(PAGE_SIZE, align.size);
 
 	/* Read partial start data. */
 	if (align.pad_start) {
@@ -673,11 +674,13 @@ static void bcachefs_fuse_write(fuse_req_t req, fuse_ino_t inum,
 	if (!ret) {
 		BUG_ON(written == 0);
 		fuse_reply_write(req, written);
+		free(aligned_buf);
 		return;
 	}
 
 err:
 	fuse_reply_err(req, -ret);
+	free(aligned_buf);
 }
 
 static void bcachefs_fuse_symlink(fuse_req_t req, const char *link,
@@ -705,6 +708,8 @@ static void bcachefs_fuse_symlink(fuse_req_t req, const char *link,
 	struct fuse_align_io align = align_io(c, link_len + 1, 0);
 
 	void *aligned_buf = aligned_alloc(PAGE_SIZE, align.size);
+	BUG_ON(!aligned_buf);
+
 	memset(aligned_buf, 0, align.size);
 	memcpy(aligned_buf, link, link_len); /* already terminated */
 
