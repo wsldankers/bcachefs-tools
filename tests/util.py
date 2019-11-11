@@ -4,6 +4,7 @@ import os
 import pytest
 import re
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -208,3 +209,7 @@ class BFuse(threading.Thread):
         assert self.returncode == 0
         assert len(self.stdout) > 0
         assert len(self.stderr) == 0
+
+def have_fuse():
+    res = run(BCH_PATH, 'fusemount', valgrind=False)
+    return "Please supply a mountpoint." in res.stdout
