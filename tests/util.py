@@ -16,6 +16,8 @@ BCH_PATH = DIR / 'bcachefs'
 
 VPAT = re.compile(r'ERROR SUMMARY: (\d+) errors from (\d+) contexts')
 
+ENABLE_VALGRIND = os.getenv('BCACHEFS_TEST_USE_VALGRIND', 'yes') == 'yes'
+
 class ValgrindFailedError(Exception):
     def __init__(self, log):
         self.log = log
@@ -37,6 +39,7 @@ def run(cmd, *args, valgrind=False, check=False):
     ValgrindFailedError if there's a problem.
     """
     cmds = [cmd] + list(args)
+    valgrind = valgrind and ENABLE_VALGRIND
 
     if valgrind:
         vout = tempfile.NamedTemporaryFile()
@@ -147,12 +150,17 @@ class BFuse(threading.Thread):
     def run(self):
         """Background thread which runs "bcachefs fusemount" under valgrind"""
 
-        vout = tempfile.NamedTemporaryFile()
-        cmd = [ 'valgrind',
-                '--leak-check=full',
-                '--log-file={}'.format(vout.name),
-                BCH_PATH,
-                'fusemount', '-f', self.dev, self.mnt]
+        vout = None
+        cmd = []
+
+        if ENABLE_VALGRIND:
+            vout = tempfile.NamedTemporaryFile()
+            cmd += [ 'valgrind',
+                     '--leak-check=full',
+                     '--log-file={}'.format(vout.name) ]
+
+        cmd += [ BCH_PATH,
+                 'fusemount', '-f', self.dev, self.mnt]
 
         print("Running {}".format(cmd))
 
@@ -203,7 +211,8 @@ class BFuse(threading.Thread):
             self.proc.kill()
             self.join()
 
-        check_valgrind(self.vout)
+        if self.vout:
+            check_valgrind(self.vout)
 
     def verify(self):
         assert self.returncode == 0

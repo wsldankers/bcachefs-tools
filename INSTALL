@@ -45,8 +45,12 @@ Some tests are available to validate the "bcachefs" binary.  The tests depend
 on python3 pytest.
 
 On debian:
-   apt install -u python3-pytest
+    apt install -u python3-pytest
 
 Then, you can run the tests via:
 
-   make check
+    make check
+
+Optionally, you may wish to run tests in parallel using python3-pytest-xdist:
+
+    cd tests; pytest-3 -n4
