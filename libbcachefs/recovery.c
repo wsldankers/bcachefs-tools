@@ -177,7 +177,7 @@ static struct journal_keys journal_keys_sort(struct list_head *journal_entries)
 			if ((cmp_int(i[0].journal_seq, i[1].journal_seq) ?:
 			     cmp_int(i[0].journal_offset, i[1].journal_offset)) < 0) {
 				if (bkey_cmp(i[0].k->k.p, i[1].k->k.p) <= 0) {
-					bch2_cut_back(bkey_start_pos(&i[1].k->k), &i[0].k->k);
+					bch2_cut_back(bkey_start_pos(&i[1].k->k), i[0].k);
 				} else {
 					struct bkey_i *split =
 						kmalloc(bkey_bytes(i[0].k), GFP_KERNEL);
@@ -186,7 +186,7 @@ static struct journal_keys journal_keys_sort(struct list_head *journal_entries)
 						goto err;
 
 					bkey_copy(split, i[0].k);
-					bch2_cut_back(bkey_start_pos(&i[1].k->k), &split->k);
+					bch2_cut_back(bkey_start_pos(&i[1].k->k), split);
 					keys_deduped.d[keys_deduped.nr++] = (struct journal_key) {
 						.btree_id	= i[0].btree_id,
 						.allocated	= true,
@@ -254,7 +254,7 @@ static int bch2_extent_replay_key(struct bch_fs *c, enum btree_id btree_id,
 	 * Some extents aren't equivalent - w.r.t. what the triggers do
 	 * - if they're split:
 	 */
-	bool remark_if_split = bch2_extent_is_compressed(bkey_i_to_s_c(k)) ||
+	bool remark_if_split = bch2_bkey_sectors_compressed(bkey_i_to_s_c(k)) ||
 		k->k.type == KEY_TYPE_reflink_p;
 	bool remark = false;
 	int ret;
@@ -289,7 +289,7 @@ retry:
 		    bkey_cmp(atomic_end, k->k.p) < 0) {
 			ret = bch2_disk_reservation_add(c, &disk_res,
 					k->k.size *
-					bch2_bkey_nr_dirty_ptrs(bkey_i_to_s_c(k)),
+					bch2_bkey_nr_ptrs_allocated(bkey_i_to_s_c(k)),
 					BCH_DISK_RESERVATION_NOFAIL);
 			BUG_ON(ret);
 
@@ -298,7 +298,7 @@ retry:
 
 		bkey_copy(split, k);
 		bch2_cut_front(split_iter->pos, split);
-		bch2_cut_back(atomic_end, &split->k);
+		bch2_cut_back(atomic_end, split);
 
 		bch2_trans_update(&trans, split_iter, split);
 		bch2_btree_iter_set_pos(iter, split->k.p);
@@ -910,6 +910,12 @@ int bch2_fs_recovery(struct bch_fs *c)
 			c->disk_sb.sb->version_min =
 				le16_to_cpu(bcachefs_metadata_version_min);
 		c->disk_sb.sb->version = le16_to_cpu(bcachefs_metadata_version_current);
+		write_sb = true;
+	}
+
+	if (!(c->sb.features & (1ULL << BCH_FEATURE_INLINE_DATA))) {
+		c->disk_sb.sb->features[0] |=
+			cpu_to_le64(1ULL << BCH_FEATURE_INLINE_DATA);
 		write_sb = true;
 	}
 

@@ -3,11 +3,13 @@
 
 #include "bcachefs.h"
 #include "alloc_foreground.h"
+#include "bkey_on_stack.h"
 #include "btree_update.h"
 #include "buckets.h"
 #include "clock.h"
 #include "error.h"
 #include "extents.h"
+#include "extent_update.h"
 #include "fs.h"
 #include "fs-io.h"
 #include "fsck.h"
@@ -730,7 +732,7 @@ static void bch2_add_page_sectors(struct bio *bio, struct bkey_s_c k)
 	struct bvec_iter iter;
 	struct bio_vec bv;
 	unsigned nr_ptrs = k.k->type == KEY_TYPE_reflink_v
-		? 0 : bch2_bkey_nr_ptrs_allocated(k);
+		? 0 : bch2_bkey_nr_ptrs_fully_allocated(k);
 	unsigned state = k.k->type == KEY_TYPE_reservation
 		? SECTOR_RESERVED
 		: SECTOR_ALLOCATED;
@@ -746,6 +748,18 @@ static void bch2_add_page_sectors(struct bio *bio, struct bkey_s_c k)
 			s->s[i].state = state;
 		}
 	}
+}
+
+static bool extent_partial_reads_expensive(struct bkey_s_c k)
+{
+	struct bkey_ptrs_c ptrs = bch2_bkey_ptrs_c(k);
+	struct bch_extent_crc_unpacked crc;
+	const union bch_extent_entry *i;
+
+	bkey_for_each_crc(k.k, ptrs, crc, i)
+		if (crc.csum_type || crc.compression_type)
+			return true;
+	return false;
 }
 
 static void readpage_bio_extend(struct readpages_iter *iter,
@@ -801,15 +815,17 @@ static void bchfs_read(struct btree_trans *trans, struct btree_iter *iter,
 		       struct readpages_iter *readpages_iter)
 {
 	struct bch_fs *c = trans->c;
+	struct bkey_on_stack sk;
 	int flags = BCH_READ_RETRY_IF_STALE|
 		BCH_READ_MAY_PROMOTE;
 	int ret = 0;
 
 	rbio->c = c;
 	rbio->start_time = local_clock();
+
+	bkey_on_stack_init(&sk);
 retry:
 	while (1) {
-		BKEY_PADDED(k) tmp;
 		struct bkey_s_c k;
 		unsigned bytes, sectors, offset_into_extent;
 
@@ -821,15 +837,16 @@ retry:
 		if (ret)
 			break;
 
-		bkey_reassemble(&tmp.k, k);
-		k = bkey_i_to_s_c(&tmp.k);
+		bkey_on_stack_realloc(&sk, c, k.k->u64s);
+		bkey_reassemble(sk.k, k);
+		k = bkey_i_to_s_c(sk.k);
 
 		offset_into_extent = iter->pos.offset -
 			bkey_start_offset(k.k);
 		sectors = k.k->size - offset_into_extent;
 
 		ret = bch2_read_indirect_extent(trans,
-					&offset_into_extent, &tmp.k);
+					&offset_into_extent, sk.k);
 		if (ret)
 			break;
 
@@ -837,22 +854,9 @@ retry:
 
 		bch2_trans_unlock(trans);
 
-		if (readpages_iter) {
-			bool want_full_extent = false;
-
-			if (bkey_extent_is_data(k.k)) {
-				struct bkey_ptrs_c ptrs = bch2_bkey_ptrs_c(k);
-				const union bch_extent_entry *i;
-				struct extent_ptr_decoded p;
-
-				bkey_for_each_ptr_decode(k.k, ptrs, p, i)
-					want_full_extent |= ((p.crc.csum_type != 0) |
-							     (p.crc.compression_type != 0));
-			}
-
-			readpage_bio_extend(readpages_iter, &rbio->bio,
-					    sectors, want_full_extent);
-		}
+		if (readpages_iter)
+			readpage_bio_extend(readpages_iter, &rbio->bio, sectors,
+					    extent_partial_reads_expensive(k));
 
 		bytes = min(sectors, bio_sectors(&rbio->bio)) << 9;
 		swap(rbio->bio.bi_iter.bi_size, bytes);
@@ -866,7 +870,7 @@ retry:
 		bch2_read_extent(c, rbio, k, offset_into_extent, flags);
 
 		if (flags & BCH_READ_LAST_FRAGMENT)
-			return;
+			break;
 
 		swap(rbio->bio.bi_iter.bi_size, bytes);
 		bio_advance(&rbio->bio, bytes);
@@ -875,8 +879,12 @@ retry:
 	if (ret == -EINTR)
 		goto retry;
 
-	bcache_io_error(c, &rbio->bio, "btree IO error %i", ret);
-	bio_endio(&rbio->bio);
+	if (ret) {
+		bcache_io_error(c, &rbio->bio, "btree IO error %i", ret);
+		bio_endio(&rbio->bio);
+	}
+
+	bkey_on_stack_exit(&sk, c);
 }
 
 int bch2_readpages(struct file *file, struct address_space *mapping,
@@ -1046,6 +1054,18 @@ static void bch2_writepage_io_done(struct closure *cl)
 		}
 	}
 
+	if (io->op.flags & BCH_WRITE_WROTE_DATA_INLINE) {
+		bio_for_each_segment_all(bvec, bio, iter) {
+			struct bch_page_state *s;
+
+			s = __bch2_page_state(bvec->bv_page);
+			spin_lock(&s->lock);
+			for (i = 0; i < PAGE_SECTORS; i++)
+				s->s[i].nr_replicas = 0;
+			spin_unlock(&s->lock);
+		}
+	}
+
 	/*
 	 * racing with fallocate can cause us to add fewer sectors than
 	 * expected - but we shouldn't add more sectors than expected:
@@ -1089,6 +1109,7 @@ static void bch2_writepage_do_io(struct bch_writepage_state *w)
  * possible, else allocating a new one:
  */
 static void bch2_writepage_io_alloc(struct bch_fs *c,
+				    struct writeback_control *wbc,
 				    struct bch_writepage_state *w,
 				    struct bch_inode_info *inode,
 				    u64 sector,
@@ -1113,6 +1134,7 @@ static void bch2_writepage_io_alloc(struct bch_fs *c,
 	op->write_point		= writepoint_hashed(inode->ei_last_dirtied);
 	op->pos			= POS(inode->v.i_ino, sector);
 	op->wbio.bio.bi_iter.bi_sector = sector;
+	op->wbio.bio.bi_opf	= wbc_to_write_flags(wbc);
 }
 
 static int __bch2_writepage(struct page *page,
@@ -1223,7 +1245,7 @@ do_io:
 			bch2_writepage_do_io(w);
 
 		if (!w->io)
-			bch2_writepage_io_alloc(c, w, inode, sector,
+			bch2_writepage_io_alloc(c, wbc, w, inode, sector,
 						nr_replicas_this_write);
 
 		atomic_inc(&s->write_count);
@@ -1239,9 +1261,6 @@ do_io:
 		w->io->op.res.sectors += reserved_sectors;
 		w->io->op.i_sectors_delta -= dirty_sectors;
 		w->io->op.new_i_size = i_size;
-
-		if (wbc->sync_mode == WB_SYNC_ALL)
-			w->io->op.wbio.bio.bi_opf |= REQ_SYNC;
 
 		offset += sectors;
 	}
@@ -2382,6 +2401,7 @@ static long bchfs_fcollapse_finsert(struct bch_inode_info *inode,
 {
 	struct bch_fs *c = inode->v.i_sb->s_fs_info;
 	struct address_space *mapping = inode->v.i_mapping;
+	struct bkey_on_stack copy;
 	struct btree_trans trans;
 	struct btree_iter *src, *dst, *del = NULL;
 	loff_t shift, new_size;
@@ -2391,6 +2411,7 @@ static long bchfs_fcollapse_finsert(struct bch_inode_info *inode,
 	if ((offset | len) & (block_bytes(c) - 1))
 		return -EINVAL;
 
+	bkey_on_stack_init(&copy);
 	bch2_trans_init(&trans, c, BTREE_ITER_MAX, 256);
 
 	/*
@@ -2459,7 +2480,6 @@ static long bchfs_fcollapse_finsert(struct bch_inode_info *inode,
 	while (1) {
 		struct disk_reservation disk_res =
 			bch2_disk_reservation_init(c, 0);
-		BKEY_PADDED(k) copy;
 		struct bkey_i delete;
 		struct bkey_s_c k;
 		struct bpos next_pos;
@@ -2484,34 +2504,35 @@ static long bchfs_fcollapse_finsert(struct bch_inode_info *inode,
 		    bkey_cmp(k.k->p, POS(inode->v.i_ino, offset >> 9)) <= 0)
 			break;
 reassemble:
-		bkey_reassemble(&copy.k, k);
+		bkey_on_stack_realloc(&copy, c, k.k->u64s);
+		bkey_reassemble(copy.k, k);
 
 		if (insert &&
 		    bkey_cmp(bkey_start_pos(k.k), move_pos) < 0) {
-			bch2_cut_front(move_pos, &copy.k);
-			bch2_btree_iter_set_pos(src, bkey_start_pos(&copy.k.k));
+			bch2_cut_front(move_pos, copy.k);
+			bch2_btree_iter_set_pos(src, bkey_start_pos(&copy.k->k));
 		}
 
-		copy.k.k.p.offset += shift >> 9;
-		bch2_btree_iter_set_pos(dst, bkey_start_pos(&copy.k.k));
+		copy.k->k.p.offset += shift >> 9;
+		bch2_btree_iter_set_pos(dst, bkey_start_pos(&copy.k->k));
 
-		ret = bch2_extent_atomic_end(dst, &copy.k, &atomic_end);
+		ret = bch2_extent_atomic_end(dst, copy.k, &atomic_end);
 		if (ret)
 			goto bkey_err;
 
-		if (bkey_cmp(atomic_end, copy.k.k.p)) {
+		if (bkey_cmp(atomic_end, copy.k->k.p)) {
 			if (insert) {
 				move_pos = atomic_end;
 				move_pos.offset -= shift >> 9;
 				goto reassemble;
 			} else {
-				bch2_cut_back(atomic_end, &copy.k.k);
+				bch2_cut_back(atomic_end, copy.k);
 			}
 		}
 
 		bkey_init(&delete.k);
 		delete.k.p = src->pos;
-		bch2_key_resize(&delete.k, copy.k.k.size);
+		bch2_key_resize(&delete.k, copy.k->k.size);
 
 		next_pos = insert ? bkey_start_pos(&delete.k) : delete.k.p;
 
@@ -2524,12 +2545,12 @@ reassemble:
 		 * by the triggers machinery:
 		 */
 		if (insert &&
-		    bkey_cmp(bkey_start_pos(&copy.k.k), delete.k.p) < 0) {
-			bch2_cut_back(bkey_start_pos(&copy.k.k), &delete.k);
+		    bkey_cmp(bkey_start_pos(&copy.k->k), delete.k.p) < 0) {
+			bch2_cut_back(bkey_start_pos(&copy.k->k), &delete);
 		} else if (!insert &&
-			   bkey_cmp(copy.k.k.p,
+			   bkey_cmp(copy.k->k.p,
 				    bkey_start_pos(&delete.k)) > 0) {
-			bch2_cut_front(copy.k.k.p, &delete);
+			bch2_cut_front(copy.k->k.p, &delete);
 
 			del = bch2_trans_copy_iter(&trans, src);
 			BUG_ON(IS_ERR_OR_NULL(del));
@@ -2538,10 +2559,10 @@ reassemble:
 				bkey_start_pos(&delete.k));
 		}
 
-		bch2_trans_update(&trans, dst, &copy.k);
+		bch2_trans_update(&trans, dst, copy.k);
 		bch2_trans_update(&trans, del ?: src, &delete);
 
-		if (copy.k.k.size == k.k->size) {
+		if (copy.k->k.size == k.k->size) {
 			/*
 			 * If we're moving the entire extent, we can skip
 			 * running triggers:
@@ -2550,10 +2571,10 @@ reassemble:
 		} else {
 			/* We might end up splitting compressed extents: */
 			unsigned nr_ptrs =
-				bch2_bkey_nr_dirty_ptrs(bkey_i_to_s_c(&copy.k));
+				bch2_bkey_nr_ptrs_allocated(bkey_i_to_s_c(copy.k));
 
 			ret = bch2_disk_reservation_get(c, &disk_res,
-					copy.k.k.size, nr_ptrs,
+					copy.k->k.size, nr_ptrs,
 					BCH_DISK_RESERVATION_NOFAIL);
 			BUG_ON(ret);
 		}
@@ -2588,6 +2609,7 @@ bkey_err:
 	}
 err:
 	bch2_trans_exit(&trans);
+	bkey_on_stack_exit(&copy, c);
 	bch2_pagecache_block_put(&inode->ei_pagecache_lock);
 	inode_unlock(&inode->v);
 	return ret;
@@ -2671,11 +2693,11 @@ static long bchfs_fallocate(struct bch_inode_info *inode, int mode,
 		reservation.k.p		= k.k->p;
 		reservation.k.size	= k.k->size;
 
-		bch2_cut_front(iter->pos, &reservation.k_i);
-		bch2_cut_back(end_pos, &reservation.k);
+		bch2_cut_front(iter->pos,	&reservation.k_i);
+		bch2_cut_back(end_pos,		&reservation.k_i);
 
 		sectors = reservation.k.size;
-		reservation.v.nr_replicas = bch2_bkey_nr_dirty_ptrs(k);
+		reservation.v.nr_replicas = bch2_bkey_nr_ptrs_allocated(k);
 
 		if (!bkey_extent_is_allocation(k.k)) {
 			ret = bch2_quota_reservation_add(c, inode,
@@ -2686,7 +2708,7 @@ static long bchfs_fallocate(struct bch_inode_info *inode, int mode,
 		}
 
 		if (reservation.v.nr_replicas < replicas ||
-		    bch2_extent_is_compressed(k)) {
+		    bch2_bkey_sectors_compressed(k)) {
 			ret = bch2_disk_reservation_get(c, &disk_res, sectors,
 							replicas, 0);
 			if (unlikely(ret))

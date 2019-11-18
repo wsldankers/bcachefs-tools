@@ -10,7 +10,7 @@
 #include "buckets.h"
 #include "debug.h"
 #include "error.h"
-#include "extents.h"
+#include "extent_update.h"
 #include "journal.h"
 #include "journal_reclaim.h"
 #include "keylist.h"
@@ -886,7 +886,7 @@ retry:
 
 			/* create the biggest key we can */
 			bch2_key_resize(&delete.k, max_sectors);
-			bch2_cut_back(end, &delete.k);
+			bch2_cut_back(end, &delete);
 
 			ret = bch2_extent_trim_atomic(&delete, iter);
 			if (ret)

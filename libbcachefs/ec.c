@@ -4,6 +4,7 @@
 
 #include "bcachefs.h"
 #include "alloc_foreground.h"
+#include "bkey_on_stack.h"
 #include "bset.h"
 #include "btree_gc.h"
 #include "btree_update.h"
@@ -776,10 +777,10 @@ static int ec_stripe_update_ptrs(struct bch_fs *c,
 	struct btree_iter *iter;
 	struct bkey_s_c k;
 	struct bkey_s_extent e;
-	struct bch_extent_ptr *ptr;
-	BKEY_PADDED(k) tmp;
+	struct bkey_on_stack sk;
 	int ret = 0, dev, idx;
 
+	bkey_on_stack_init(&sk);
 	bch2_trans_init(&trans, c, BTREE_ITER_MAX, 0);
 
 	iter = bch2_trans_get_iter(&trans, BTREE_ID_EXTENTS,
@@ -789,6 +790,8 @@ static int ec_stripe_update_ptrs(struct bch_fs *c,
 	while ((k = bch2_btree_iter_peek(iter)).k &&
 	       !(ret = bkey_err(k)) &&
 	       bkey_cmp(bkey_start_pos(k.k), pos->p) < 0) {
+		struct bch_extent_ptr *ptr, *ec_ptr = NULL;
+
 		if (extent_has_stripe_ptr(k, s->key.k.p.offset)) {
 			bch2_btree_iter_next(iter);
 			continue;
@@ -804,19 +807,20 @@ static int ec_stripe_update_ptrs(struct bch_fs *c,
 
 		dev = s->key.v.ptrs[idx].dev;
 
-		bkey_reassemble(&tmp.k, k);
-		e = bkey_i_to_s_extent(&tmp.k);
+		bkey_on_stack_realloc(&sk, c, k.k->u64s);
+		bkey_reassemble(sk.k, k);
+		e = bkey_i_to_s_extent(sk.k);
 
-		extent_for_each_ptr(e, ptr)
-			if (ptr->dev != dev)
+		extent_for_each_ptr(e, ptr) {
+			if (ptr->dev == dev)
+				ec_ptr = ptr;
+			else
 				ptr->cached = true;
+		}
 
-		ptr = (void *) bch2_extent_has_device(e.c, dev);
-		BUG_ON(!ptr);
+		extent_stripe_ptr_add(e, s, ec_ptr, idx);
 
-		extent_stripe_ptr_add(e, s, ptr, idx);
-
-		bch2_trans_update(&trans, iter, &tmp.k);
+		bch2_trans_update(&trans, iter, sk.k);
 
 		ret = bch2_trans_commit(&trans, NULL, NULL,
 					BTREE_INSERT_ATOMIC|
@@ -829,6 +833,7 @@ static int ec_stripe_update_ptrs(struct bch_fs *c,
 	}
 
 	bch2_trans_exit(&trans);
+	bkey_on_stack_exit(&sk, c);
 
 	return ret;
 }
