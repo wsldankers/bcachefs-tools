@@ -127,7 +127,7 @@ class FuseError(Exception):
     def __init__(self, msg):
         self.msg = msg
 
-class BFuse(threading.Thread):
+class BFuse:
     '''bcachefs fuse runner.
 
     This class runs bcachefs in fusemount mode, and waits until the mount has
@@ -137,7 +137,7 @@ class BFuse(threading.Thread):
     '''
 
     def __init__(self, dev, mnt):
-        threading.Thread.__init__(self)
+        self.thread = None
         self.dev = dev
         self.mnt = mnt
         self.ready = threading.Event()
@@ -197,7 +197,11 @@ class BFuse(threading.Thread):
 
     def mount(self):
         print("Starting fuse thread.")
-        self.start()
+
+        assert not self.thread
+        self.thread = threading.Thread(target=self.run)
+        self.thread.start()
+
         self.ready.wait()
         print("Fuse is mounted.")
 
@@ -206,10 +210,13 @@ class BFuse(threading.Thread):
         run("fusermount3", "-zu", self.mnt)
         print("Waiting for thread to exit.")
 
-        self.join(timeout)
-        if self.isAlive():
+        self.thread.join(timeout)
+        if self.thread.is_alive():
             self.proc.kill()
-            self.join()
+            self.thread.join()
+
+        self.thread = None
+        self.ready.clear()
 
         if self.vout:
             check_valgrind(self.vout)

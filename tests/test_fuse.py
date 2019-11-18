@@ -14,6 +14,13 @@ def test_mount(bfuse):
     bfuse.unmount()
     bfuse.verify()
 
+def test_remount(bfuse):
+    bfuse.mount()
+    bfuse.unmount()
+    bfuse.mount()
+    bfuse.unmount()
+    bfuse.verify()
+
 def test_lostfound(bfuse):
     bfuse.mount()
 
