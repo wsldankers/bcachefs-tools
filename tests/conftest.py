@@ -15,5 +15,4 @@ def bfuse(tmpdir):
 
     yield bf
 
-    if bf.returncode is None:
-        bf.unmount(timeout=5.0)
+    bf.unmount(timeout=5.0)
