@@ -203,8 +203,10 @@ int main(int argc, char *argv[])
 	if (!strcmp(cmd, "setattr"))
 		return cmd_setattr(argc, argv);
 
+#ifdef BCACHEFS_FUSE
 	if (!strcmp(cmd, "fusemount"))
 		return cmd_fusemount(argc, argv);
+#endif
 
 	if (!strcmp(cmd, "--help")) {
 		usage();

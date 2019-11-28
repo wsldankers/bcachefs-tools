@@ -29,26 +29,32 @@ def test_segfault():
     ret = util.run(helper, 'segfault')
     assert ret.returncode == -signal.SIGSEGV
 
+@pytest.mark.skipif(not util.ENABLE_VALGRIND, reason="no valgrind")
 def test_check():
     with pytest.raises(subprocess.CalledProcessError):
         ret = util.run(helper, 'abort', check=True)
 
+@pytest.mark.skipif(not util.ENABLE_VALGRIND, reason="no valgrind")
 def test_leak():
     with pytest.raises(util.ValgrindFailedError):
         ret = util.run(helper, 'leak', valgrind=True)
 
+@pytest.mark.skipif(not util.ENABLE_VALGRIND, reason="no valgrind")
 def test_undefined():
     with pytest.raises(util.ValgrindFailedError):
         ret = util.run(helper, 'undefined', valgrind=True)
 
+@pytest.mark.skipif(not util.ENABLE_VALGRIND, reason="no valgrind")
 def test_undefined_branch():
     with pytest.raises(util.ValgrindFailedError):
         ret = util.run(helper, 'undefined_branch', valgrind=True)
 
+@pytest.mark.skipif(not util.ENABLE_VALGRIND, reason="no valgrind")
 def test_read_after_free():
     with pytest.raises(util.ValgrindFailedError):
         ret = util.run(helper, 'read_after_free', valgrind=True)
 
+@pytest.mark.skipif(not util.ENABLE_VALGRIND, reason="no valgrind")
 def test_write_after_free():
     with pytest.raises(util.ValgrindFailedError):
         ret = util.run(helper, 'write_after_free', valgrind=True)

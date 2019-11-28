@@ -2,10 +2,21 @@
 #
 # Tests of the fuse mount functionality.
 
+import pytest
 import os
 import util
 
+pytestmark = pytest.mark.skipif(
+    not util.have_fuse(), reason="bcachefs not built with fuse support.")
+
 def test_mount(bfuse):
+    bfuse.mount()
+    bfuse.unmount()
+    bfuse.verify()
+
+def test_remount(bfuse):
+    bfuse.mount()
+    bfuse.unmount()
     bfuse.mount()
     bfuse.unmount()
     bfuse.verify()

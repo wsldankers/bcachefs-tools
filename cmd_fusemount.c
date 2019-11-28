@@ -1,3 +1,5 @@
+#ifdef BCACHEFS_FUSE
+
 #include <errno.h>
 #include <float.h>
 #include <getopt.h>
@@ -1262,3 +1264,5 @@ out:
 
 	return ret ? 1 : 0;
 }
+
+#endif /* BCACHEFS_FUSE */

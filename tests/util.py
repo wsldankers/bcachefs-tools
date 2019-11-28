@@ -4,6 +4,7 @@ import os
 import pytest
 import re
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -14,6 +15,8 @@ DIR = Path('..')
 BCH_PATH = DIR / 'bcachefs'
 
 VPAT = re.compile(r'ERROR SUMMARY: (\d+) errors from (\d+) contexts')
+
+ENABLE_VALGRIND = os.getenv('BCACHEFS_TEST_USE_VALGRIND', 'yes') == 'yes'
 
 class ValgrindFailedError(Exception):
     def __init__(self, log):
@@ -36,6 +39,7 @@ def run(cmd, *args, valgrind=False, check=False):
     ValgrindFailedError if there's a problem.
     """
     cmds = [cmd] + list(args)
+    valgrind = valgrind and ENABLE_VALGRIND
 
     if valgrind:
         vout = tempfile.NamedTemporaryFile()
@@ -123,7 +127,7 @@ class FuseError(Exception):
     def __init__(self, msg):
         self.msg = msg
 
-class BFuse(threading.Thread):
+class BFuse:
     '''bcachefs fuse runner.
 
     This class runs bcachefs in fusemount mode, and waits until the mount has
@@ -133,7 +137,7 @@ class BFuse(threading.Thread):
     '''
 
     def __init__(self, dev, mnt):
-        threading.Thread.__init__(self)
+        self.thread = None
         self.dev = dev
         self.mnt = mnt
         self.ready = threading.Event()
@@ -146,12 +150,17 @@ class BFuse(threading.Thread):
     def run(self):
         """Background thread which runs "bcachefs fusemount" under valgrind"""
 
-        vout = tempfile.NamedTemporaryFile()
-        cmd = [ 'valgrind',
-                '--leak-check=full',
-                '--log-file={}'.format(vout.name),
-                BCH_PATH,
-                'fusemount', '-f', self.dev, self.mnt]
+        vout = None
+        cmd = []
+
+        if ENABLE_VALGRIND:
+            vout = tempfile.NamedTemporaryFile()
+            cmd += [ 'valgrind',
+                     '--leak-check=full',
+                     '--log-file={}'.format(vout.name) ]
+
+        cmd += [ BCH_PATH,
+                 'fusemount', '-f', self.dev, self.mnt]
 
         print("Running {}".format(cmd))
 
@@ -188,7 +197,11 @@ class BFuse(threading.Thread):
 
     def mount(self):
         print("Starting fuse thread.")
-        self.start()
+
+        assert not self.thread
+        self.thread = threading.Thread(target=self.run)
+        self.thread.start()
+
         self.ready.wait()
         print("Fuse is mounted.")
 
@@ -197,14 +210,22 @@ class BFuse(threading.Thread):
         run("fusermount3", "-zu", self.mnt)
         print("Waiting for thread to exit.")
 
-        self.join(timeout)
-        if self.isAlive():
+        self.thread.join(timeout)
+        if self.thread.is_alive():
             self.proc.kill()
-            self.join()
+            self.thread.join()
 
-        check_valgrind(self.vout)
+        self.thread = None
+        self.ready.clear()
+
+        if self.vout:
+            check_valgrind(self.vout)
 
     def verify(self):
         assert self.returncode == 0
         assert len(self.stdout) > 0
         assert len(self.stderr) == 0
+
+def have_fuse():
+    res = run(BCH_PATH, 'fusemount', valgrind=False)
+    return "Please supply a mountpoint." in res.stdout

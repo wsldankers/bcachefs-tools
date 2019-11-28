@@ -38,7 +38,11 @@ ifdef D
 	CFLAGS+=-DCONFIG_BCACHEFS_DEBUG=y
 endif
 
-PKGCONFIG_LIBS="blkid uuid liburcu libsodium zlib liblz4 libzstd fuse3"
+PKGCONFIG_LIBS="blkid uuid liburcu libsodium zlib liblz4 libzstd"
+ifdef BCACHEFS_FUSE
+	PKGCONFIG_LIBS+="fuse3"
+	CFLAGS+=-DBCACHEFS_FUSE
+endif
 
 PKGCONFIG_CFLAGS:=$(shell $(PKG_CONFIG) --cflags $(PKGCONFIG_LIBS))
 ifeq (,$(PKGCONFIG_CFLAGS))
