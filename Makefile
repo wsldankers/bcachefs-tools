@@ -36,6 +36,7 @@ endif
 ifdef D
 	CFLAGS+=-Werror
 	CFLAGS+=-DCONFIG_BCACHEFS_DEBUG=y
+	CFLAGS+=-DCONFIG_VALGRIND=y
 endif
 
 PKGCONFIG_LIBS="blkid uuid liburcu libsodium zlib liblz4 libzstd"

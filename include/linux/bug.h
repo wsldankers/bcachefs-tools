@@ -3,7 +3,12 @@
 
 #include <assert.h>
 #include <linux/compiler.h>
+
+#ifdef CONFIG_VALGRIND
 #include <valgrind/memcheck.h>
+
+#define DEBUG_MEMORY_FREED(p, len) VALGRIND_MAKE_MEM_UNDEFINED(p, len)
+#endif
 
 #define BUILD_BUG_ON_NOT_POWER_OF_2(n)			\
 	BUILD_BUG_ON((n) == 0 || (((n) & ((n) - 1)) != 0))
@@ -52,7 +57,5 @@
 	}								\
 	__ret_warn_on;							\
 })
-
-#define DEBUG_MEMORY_FREED(p, len) VALGRIND_MAKE_MEM_UNDEFINED(p, len)
 
 #endif /* __TOOLS_LINUX_BUG_H */

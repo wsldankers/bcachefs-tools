@@ -10,7 +10,9 @@
 
 #include <libaio.h>
 
+#ifdef CONFIG_VALGRIND
 #include <valgrind/memcheck.h>
+#endif
 
 #include <linux/bio.h>
 #include <linux/blkdev.h>
@@ -57,9 +59,11 @@ void generic_make_request(struct bio *bio)
 			.iov_len = len,
 		};
 
+#ifdef CONFIG_VALGRIND
 		/* To be pedantic it should only be on IO completion. */
 		if (bio_op(bio) == REQ_OP_READ)
 			VALGRIND_MAKE_MEM_DEFINED(start, len);
+#endif
 	}
 
 	struct iocb iocb = {
