@@ -50,7 +50,8 @@ On Fedora (32 or later needed for lbifuse >= 3.7):
 Arch:
     pacman -S fuse3
 
-Then, make using the BCACHEFS_FUSE environment variable:
+Then, make using the BCACHEFS_FUSE environment variable (make clean first if
+previously built without fuse support):
 
 BCACHEFS_FUSE=1 make && make install
 
