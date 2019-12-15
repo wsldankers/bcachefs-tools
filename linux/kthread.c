@@ -76,7 +76,7 @@ struct task_struct *kthread_create(int (*thread_fn)(void *data),
 
 	pthread_attr_t attr;
 	pthread_attr_init(&attr);
-	pthread_attr_setstacksize(&attr, 16 << 10);
+	pthread_attr_setstacksize(&attr, 32 << 10);
 
 	ret = pthread_create(&p->thread, &attr, kthread_start_fn, p);
 	if (ret)
