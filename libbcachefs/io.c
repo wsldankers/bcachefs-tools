@@ -1139,6 +1139,8 @@ static void bch2_write_data_inline(struct bch_write_op *op, unsigned data_len)
 	unsigned sectors;
 	int ret;
 
+	bch2_check_set_feature(op->c, BCH_FEATURE_INLINE_DATA);
+
 	ret = bch2_keylist_realloc(&op->insert_keys, op->inline_keys,
 				   ARRAY_SIZE(op->inline_keys),
 				   BKEY_U64s + DIV_ROUND_UP(data_len, 8));
@@ -1220,7 +1222,8 @@ void bch2_write(struct closure *cl)
 	data_len = min_t(u64, bio->bi_iter.bi_size,
 			 op->new_i_size - (op->pos.offset << 9));
 
-	if (data_len <= min(block_bytes(c) / 2, 1024U)) {
+	if (c->opts.inline_data &&
+	    data_len <= min(block_bytes(c) / 2, 1024U)) {
 		bch2_write_data_inline(op, data_len);
 		return;
 	}
@@ -1536,8 +1539,7 @@ retry:
 	if (bkey_err(k))
 		goto err;
 
-	bkey_on_stack_realloc(&sk, c, k.k->u64s);
-	bkey_reassemble(sk.k, k);
+	bkey_on_stack_reassemble(&sk, c, k);
 	k = bkey_i_to_s_c(sk.k);
 	bch2_trans_unlock(&trans);
 
@@ -1588,8 +1590,7 @@ retry:
 			   BTREE_ITER_SLOTS, k, ret) {
 		unsigned bytes, sectors, offset_into_extent;
 
-		bkey_on_stack_realloc(&sk, c, k.k->u64s);
-		bkey_reassemble(sk.k, k);
+		bkey_on_stack_reassemble(&sk, c, k);
 		k = bkey_i_to_s_c(sk.k);
 
 		offset_into_extent = iter->pos.offset -
@@ -1712,8 +1713,7 @@ retry:
 	if (IS_ERR_OR_NULL(k.k))
 		goto out;
 
-	bkey_on_stack_realloc(&new, c, k.k->u64s);
-	bkey_reassemble(new.k, k);
+	bkey_on_stack_reassemble(&new, c, k);
 	k = bkey_i_to_s_c(new.k);
 
 	if (bversion_cmp(k.k->version, rbio->version) ||
@@ -2220,8 +2220,7 @@ retry:
 			bkey_start_offset(k.k);
 		sectors = k.k->size - offset_into_extent;
 
-		bkey_on_stack_realloc(&sk, c, k.k->u64s);
-		bkey_reassemble(sk.k, k);
+		bkey_on_stack_reassemble(&sk, c, k);
 		k = bkey_i_to_s_c(sk.k);
 
 		ret = bch2_read_indirect_extent(&trans,

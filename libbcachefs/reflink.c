@@ -171,16 +171,7 @@ s64 bch2_remap_range(struct bch_fs *c,
 	if (!percpu_ref_tryget(&c->writes))
 		return -EROFS;
 
-	if (!(c->sb.features & (1ULL << BCH_FEATURE_REFLINK))) {
-		mutex_lock(&c->sb_lock);
-		if (!(c->sb.features & (1ULL << BCH_FEATURE_REFLINK))) {
-			c->disk_sb.sb->features[0] |=
-				cpu_to_le64(1ULL << BCH_FEATURE_REFLINK);
-
-			bch2_write_super(c);
-		}
-		mutex_unlock(&c->sb_lock);
-	}
+	bch2_check_set_feature(c, BCH_FEATURE_REFLINK);
 
 	dst_end.offset += remap_sectors;
 	src_end.offset += remap_sectors;
@@ -225,8 +216,7 @@ s64 bch2_remap_range(struct bch_fs *c,
 			break;
 
 		if (src_k.k->type == KEY_TYPE_extent) {
-			bkey_on_stack_realloc(&new_src, c, src_k.k->u64s);
-			bkey_reassemble(new_src.k, src_k);
+			bkey_on_stack_reassemble(&new_src, c, src_k);
 			src_k = bkey_i_to_s_c(new_src.k);
 
 			bch2_cut_front(src_iter->pos,	new_src.k);

@@ -735,9 +735,9 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 	if (bch2_fs_init_fault("fs_alloc"))
 		goto err;
 
-	iter_size = sizeof(struct btree_node_iter_large) +
+	iter_size = sizeof(struct sort_iter) +
 		(btree_blocks(c) + 1) * 2 *
-		sizeof(struct btree_node_iter_set);
+		sizeof(struct sort_iter_set);
 
 	if (!(c->wq = alloc_workqueue("bcachefs",
 				WQ_FREEZABLE|WQ_MEM_RECLAIM|WQ_CPU_INTENSIVE, 1)) ||
@@ -1092,7 +1092,6 @@ static struct bch_dev *__bch2_dev_alloc(struct bch_fs *c,
 
 	writepoint_init(&ca->copygc_write_point, BCH_DATA_USER);
 
-	spin_lock_init(&ca->freelist_lock);
 	bch2_dev_copygc_init(ca);
 
 	INIT_WORK(&ca->io_error_work, bch2_io_error_work);

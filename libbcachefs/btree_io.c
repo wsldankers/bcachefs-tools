@@ -80,27 +80,102 @@ static void *btree_bounce_alloc(struct bch_fs *c, unsigned order,
 	return mempool_alloc(&c->btree_bounce_pool, GFP_NOIO);
 }
 
-static unsigned should_compact_bset(struct btree *b, struct bset_tree *t,
-				    bool compacting,
-				    enum compact_mode mode)
+static void sort_bkey_ptrs(const struct btree *bt,
+			   struct bkey_packed **ptrs, unsigned nr)
 {
-	unsigned bset_u64s = le16_to_cpu(bset(b, t)->u64s);
-	unsigned dead_u64s = bset_u64s - b->nr.bset_u64s[t - b->set];
+	unsigned n = nr, a = nr / 2, b, c, d;
 
-	if (mode == COMPACT_LAZY) {
-		if (should_compact_bset_lazy(b, t) ||
-		    (compacting && !bset_written(b, bset(b, t))))
-			return dead_u64s;
-	} else {
-		if (bset_written(b, bset(b, t)))
-			return dead_u64s;
+	if (!a)
+		return;
+
+	/* Heap sort: see lib/sort.c: */
+	while (1) {
+		if (a)
+			a--;
+		else if (--n)
+			swap(ptrs[0], ptrs[n]);
+		else
+			break;
+
+		for (b = a; c = 2 * b + 1, (d = c + 1) < n;)
+			b = bkey_cmp_packed(bt,
+					    ptrs[c],
+					    ptrs[d]) >= 0 ? c : d;
+		if (d == n)
+			b = c;
+
+		while (b != a &&
+		       bkey_cmp_packed(bt,
+				       ptrs[a],
+				       ptrs[b]) >= 0)
+			b = (b - 1) / 2;
+		c = b;
+		while (b != a) {
+			b = (b - 1) / 2;
+			swap(ptrs[b], ptrs[c]);
+		}
 	}
-
-	return 0;
 }
 
-bool __bch2_compact_whiteouts(struct bch_fs *c, struct btree *b,
-			     enum compact_mode mode)
+static void bch2_sort_whiteouts(struct bch_fs *c, struct btree *b)
+{
+	struct bkey_packed *new_whiteouts, **ptrs, **ptrs_end, *k;
+	bool used_mempool = false;
+	unsigned order;
+
+	if (!b->whiteout_u64s)
+		return;
+
+	order = get_order(b->whiteout_u64s * sizeof(u64));
+
+	new_whiteouts = btree_bounce_alloc(c, order, &used_mempool);
+
+	ptrs = ptrs_end = ((void *) new_whiteouts + (PAGE_SIZE << order));
+
+	for (k = unwritten_whiteouts_start(c, b);
+	     k != unwritten_whiteouts_end(c, b);
+	     k = bkey_next(k))
+		*--ptrs = k;
+
+	sort_bkey_ptrs(b, ptrs, ptrs_end - ptrs);
+
+	k = new_whiteouts;
+
+	while (ptrs != ptrs_end) {
+		bkey_copy(k, *ptrs);
+		k = bkey_next(k);
+		ptrs++;
+	}
+
+	verify_no_dups(b, new_whiteouts,
+		       (void *) ((u64 *) new_whiteouts + b->whiteout_u64s));
+
+	memcpy_u64s(unwritten_whiteouts_start(c, b),
+		    new_whiteouts, b->whiteout_u64s);
+
+	btree_bounce_free(c, order, used_mempool, new_whiteouts);
+}
+
+static bool should_compact_bset(struct btree *b, struct bset_tree *t,
+				bool compacting, enum compact_mode mode)
+{
+	if (!bset_dead_u64s(b, t))
+		return false;
+
+	switch (mode) {
+	case COMPACT_LAZY:
+		return should_compact_bset_lazy(b, t) ||
+			(compacting && !bset_written(b, bset(b, t)));
+	case COMPACT_ALL:
+		return true;
+	default:
+		BUG();
+	}
+}
+
+static bool bch2_compact_extent_whiteouts(struct bch_fs *c,
+					  struct btree *b,
+					  enum compact_mode mode)
 {
 	const struct bkey_format *f = &b->format;
 	struct bset_tree *t;
@@ -110,12 +185,16 @@ bool __bch2_compact_whiteouts(struct bch_fs *c, struct btree *b,
 	unsigned order, whiteout_u64s = 0, u64s;
 	bool used_mempool, compacting = false;
 
+	BUG_ON(!btree_node_is_extents(b));
+
 	for_each_bset(b, t)
-		whiteout_u64s += should_compact_bset(b, t,
-					whiteout_u64s != 0, mode);
+		if (should_compact_bset(b, t, whiteout_u64s != 0, mode))
+			whiteout_u64s += bset_dead_u64s(b, t);
 
 	if (!whiteout_u64s)
 		return false;
+
+	bch2_sort_whiteouts(c, b);
 
 	sort_iter_init(&sort_iter, b);
 
@@ -139,8 +218,11 @@ bool __bch2_compact_whiteouts(struct bch_fs *c, struct btree *b,
 		if (t != b->set && !bset_written(b, i)) {
 			src = container_of(i, struct btree_node_entry, keys);
 			dst = max(write_block(b),
-				  (void *) btree_bkey_last(b, t -1));
+				  (void *) btree_bkey_last(b, t - 1));
 		}
+
+		if (src != dst)
+			compacting = true;
 
 		if (!should_compact_bset(b, t, compacting, mode)) {
 			if (src != dst) {
@@ -169,18 +251,21 @@ bool __bch2_compact_whiteouts(struct bch_fs *c, struct btree *b,
 		for (k = start; k != end; k = n) {
 			n = bkey_next_skip_noops(k, end);
 
-			if (bkey_deleted(k) && btree_node_is_extents(b))
+			if (bkey_deleted(k))
 				continue;
+
+			BUG_ON(bkey_whiteout(k) &&
+			       k->needs_whiteout &&
+			       bkey_written(b, k));
 
 			if (bkey_whiteout(k) && !k->needs_whiteout)
 				continue;
 
 			if (bkey_whiteout(k)) {
-				unreserve_whiteout(b, k);
 				memcpy_u64s(u_pos, k, bkeyp_key_u64s(f, k));
 				set_bkeyp_val_u64s(f, u_pos, 0);
 				u_pos = bkey_next(u_pos);
-			} else if (mode != COMPACT_WRITTEN_NO_WRITE_LOCK) {
+			} else {
 				bkey_copy(out, k);
 				out = bkey_next(out);
 			}
@@ -188,11 +273,9 @@ bool __bch2_compact_whiteouts(struct bch_fs *c, struct btree *b,
 
 		sort_iter_add(&sort_iter, u_start, u_pos);
 
-		if (mode != COMPACT_WRITTEN_NO_WRITE_LOCK) {
-			i->u64s = cpu_to_le16((u64 *) out - i->_data);
-			set_btree_bset_end(b, t);
-			bch2_bset_set_no_aux_tree(b, t);
-		}
+		i->u64s = cpu_to_le16((u64 *) out - i->_data);
+		set_btree_bset_end(b, t);
+		bch2_bset_set_no_aux_tree(b, t);
 	}
 
 	b->whiteout_u64s = (u64 *) u_pos - (u64 *) whiteouts;
@@ -200,13 +283,10 @@ bool __bch2_compact_whiteouts(struct bch_fs *c, struct btree *b,
 	BUG_ON((void *) unwritten_whiteouts_start(c, b) <
 	       (void *) btree_bkey_last(b, bset_tree_last(b)));
 
-	u64s = (btree_node_is_extents(b)
-		? bch2_sort_extent_whiteouts
-		: bch2_sort_key_whiteouts)(unwritten_whiteouts_start(c, b),
-					   &sort_iter);
+	u64s = bch2_sort_extent_whiteouts(unwritten_whiteouts_start(c, b),
+					  &sort_iter);
 
 	BUG_ON(u64s > b->whiteout_u64s);
-	BUG_ON(u64s != b->whiteout_u64s && !btree_node_is_extents(b));
 	BUG_ON(u_pos != whiteouts && !u64s);
 
 	if (u64s != b->whiteout_u64s) {
@@ -222,8 +302,7 @@ bool __bch2_compact_whiteouts(struct bch_fs *c, struct btree *b,
 
 	btree_bounce_free(c, order, used_mempool, whiteouts);
 
-	if (mode != COMPACT_WRITTEN_NO_WRITE_LOCK)
-		bch2_btree_build_aux_trees(b);
+	bch2_btree_build_aux_trees(b);
 
 	bch_btree_keys_u64s_remaining(c, b);
 	bch2_verify_btree_nr_keys(b);
@@ -231,7 +310,7 @@ bool __bch2_compact_whiteouts(struct bch_fs *c, struct btree *b,
 	return true;
 }
 
-static bool bch2_drop_whiteouts(struct btree *b)
+static bool bch2_drop_whiteouts(struct btree *b, enum compact_mode mode)
 {
 	struct bset_tree *t;
 	bool ret = false;
@@ -239,21 +318,34 @@ static bool bch2_drop_whiteouts(struct btree *b)
 	for_each_bset(b, t) {
 		struct bset *i = bset(b, t);
 		struct bkey_packed *k, *n, *out, *start, *end;
+		struct btree_node_entry *src = NULL, *dst = NULL;
 
-		if (!should_compact_bset(b, t, true, COMPACT_WRITTEN))
+		if (t != b->set && !bset_written(b, i)) {
+			src = container_of(i, struct btree_node_entry, keys);
+			dst = max(write_block(b),
+				  (void *) btree_bkey_last(b, t - 1));
+		}
+
+		if (src != dst)
+			ret = true;
+
+		if (!should_compact_bset(b, t, ret, mode)) {
+			if (src != dst) {
+				memmove(dst, src, sizeof(*src) +
+					le16_to_cpu(src->keys.u64s) *
+					sizeof(u64));
+				i = &dst->keys;
+				set_btree_bset(b, t, i);
+			}
 			continue;
+		}
 
 		start	= btree_bkey_first(b, t);
 		end	= btree_bkey_last(b, t);
 
-		if (!bset_written(b, i) &&
-		    t != b->set) {
-			struct bset *dst =
-			       max_t(struct bset *, write_block(b),
-				     (void *) btree_bkey_last(b, t -1));
-
-			memmove(dst, i, sizeof(struct bset));
-			i = dst;
+		if (src != dst) {
+			memmove(dst, src, sizeof(*src));
+			i = &dst->keys;
 			set_btree_bset(b, t, i);
 		}
 
@@ -265,17 +357,30 @@ static bool bch2_drop_whiteouts(struct btree *b)
 			if (!bkey_whiteout(k)) {
 				bkey_copy(out, k);
 				out = bkey_next(out);
+			} else {
+				BUG_ON(k->needs_whiteout);
 			}
 		}
 
 		i->u64s = cpu_to_le16((u64 *) out - i->_data);
+		set_btree_bset_end(b, t);
 		bch2_bset_set_no_aux_tree(b, t);
 		ret = true;
 	}
 
 	bch2_verify_btree_nr_keys(b);
 
+	bch2_btree_build_aux_trees(b);
+
 	return ret;
+}
+
+bool bch2_compact_whiteouts(struct bch_fs *c, struct btree *b,
+			    enum compact_mode mode)
+{
+	return !btree_node_is_extents(b)
+		? bch2_drop_whiteouts(b, mode)
+		: bch2_compact_extent_whiteouts(c, b, mode);
 }
 
 static void btree_node_sort(struct bch_fs *c, struct btree *b,
@@ -758,7 +863,7 @@ fsck_err:
 int bch2_btree_node_read_done(struct bch_fs *c, struct btree *b, bool have_retry)
 {
 	struct btree_node_entry *bne;
-	struct btree_node_iter_large *iter;
+	struct sort_iter *iter;
 	struct btree_node *sorted;
 	struct bkey_packed *k;
 	struct bset *i;
@@ -767,7 +872,8 @@ int bch2_btree_node_read_done(struct bch_fs *c, struct btree *b, bool have_retry
 	int ret, retry_read = 0, write = READ;
 
 	iter = mempool_alloc(&c->fill_iter, GFP_NOIO);
-	iter->used = 0;
+	sort_iter_init(iter, b);
+	iter->size = (btree_blocks(c) + 1) * 2;
 
 	if (bch2_meta_read_fault("btree"))
 		btree_err(BTREE_ERR_MUST_RETRY, c, b, NULL,
@@ -846,13 +952,12 @@ int bch2_btree_node_read_done(struct bch_fs *c, struct btree *b, bool have_retry
 		if (blacklisted && !first)
 			continue;
 
-		bch2_btree_node_iter_large_push(iter, b,
-					   i->start,
-					   vstruct_idx(i, whiteout_u64s));
+		sort_iter_add(iter, i->start,
+			      vstruct_idx(i, whiteout_u64s));
 
-		bch2_btree_node_iter_large_push(iter, b,
-					   vstruct_idx(i, whiteout_u64s),
-					   vstruct_last(i));
+		sort_iter_add(iter,
+			      vstruct_idx(i, whiteout_u64s),
+			      vstruct_last(i));
 	}
 
 	for (bne = write_block(b);
@@ -867,9 +972,9 @@ int bch2_btree_node_read_done(struct bch_fs *c, struct btree *b, bool have_retry
 
 	set_btree_bset(b, b->set, &b->data->keys);
 
-	b->nr = btree_node_is_extents(b)
-		? bch2_extent_sort_fix_overlapping(c, &sorted->keys, b, iter)
-		: bch2_key_sort_fix_overlapping(&sorted->keys, b, iter);
+	b->nr = (btree_node_is_extents(b)
+		 ? bch2_extent_sort_fix_overlapping
+		 : bch2_key_sort_fix_overlapping)(c, &sorted->keys, iter);
 
 	u64s = le16_to_cpu(sorted->keys.u64s);
 	*sorted = *b->data;
@@ -1343,21 +1448,7 @@ void __bch2_btree_node_write(struct bch_fs *c, struct btree *b,
 	BUG_ON(le64_to_cpu(b->data->magic) != bset_magic(c));
 	BUG_ON(memcmp(&b->data->format, &b->format, sizeof(b->format)));
 
-	/*
-	 * We can't block on six_lock_write() here; another thread might be
-	 * trying to get a journal reservation with read locks held, and getting
-	 * a journal reservation might be blocked on flushing the journal and
-	 * doing btree writes:
-	 */
-	if (lock_type_held == SIX_LOCK_intent &&
-	    six_trylock_write(&b->lock)) {
-		__bch2_compact_whiteouts(c, b, COMPACT_WRITTEN);
-		six_unlock_write(&b->lock);
-	} else {
-		__bch2_compact_whiteouts(c, b, COMPACT_WRITTEN_NO_WRITE_LOCK);
-	}
-
-	BUG_ON(b->uncompacted_whiteout_u64s);
+	bch2_sort_whiteouts(c, b);
 
 	sort_iter_init(&sort_iter, b);
 
@@ -1545,7 +1636,6 @@ bool bch2_btree_post_write_cleanup(struct bch_fs *c, struct btree *b)
 		return false;
 
 	BUG_ON(b->whiteout_u64s);
-	BUG_ON(b->uncompacted_whiteout_u64s);
 
 	clear_btree_node_just_written(b);
 
@@ -1566,7 +1656,7 @@ bool bch2_btree_post_write_cleanup(struct bch_fs *c, struct btree *b)
 		btree_node_sort(c, b, NULL, 0, b->nsets, true);
 		invalidated_iter = true;
 	} else {
-		invalidated_iter = bch2_drop_whiteouts(b);
+		invalidated_iter = bch2_drop_whiteouts(b, COMPACT_ALL);
 	}
 
 	for_each_bset(b, t)

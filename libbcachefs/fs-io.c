@@ -602,7 +602,7 @@ int bch2_migrate_page(struct address_space *mapping, struct page *newpage,
 	EBUG_ON(!PageLocked(page));
 	EBUG_ON(!PageLocked(newpage));
 
-	ret = migrate_page_move_mapping(mapping, newpage, page, mode, 0);
+	ret = migrate_page_move_mapping(mapping, newpage, page, 0);
 	if (ret != MIGRATEPAGE_SUCCESS)
 		return ret;
 
@@ -837,8 +837,7 @@ retry:
 		if (ret)
 			break;
 
-		bkey_on_stack_realloc(&sk, c, k.k->u64s);
-		bkey_reassemble(sk.k, k);
+		bkey_on_stack_reassemble(&sk, c, k);
 		k = bkey_i_to_s_c(sk.k);
 
 		offset_into_extent = iter->pos.offset -
@@ -1239,7 +1238,7 @@ do_io:
 
 		if (w->io &&
 		    (w->io->op.res.nr_replicas != nr_replicas_this_write ||
-		     bio_full(&w->io->op.wbio.bio) ||
+		     bio_full(&w->io->op.wbio.bio, PAGE_SIZE) ||
 		     w->io->op.wbio.bio.bi_iter.bi_size >= (256U << 20) ||
 		     bio_end_sector(&w->io->op.wbio.bio) != sector))
 			bch2_writepage_do_io(w);
@@ -2504,8 +2503,7 @@ static long bchfs_fcollapse_finsert(struct bch_inode_info *inode,
 		    bkey_cmp(k.k->p, POS(inode->v.i_ino, offset >> 9)) <= 0)
 			break;
 reassemble:
-		bkey_on_stack_realloc(&copy, c, k.k->u64s);
-		bkey_reassemble(copy.k, k);
+		bkey_on_stack_reassemble(&copy, c, k);
 
 		if (insert &&
 		    bkey_cmp(bkey_start_pos(k.k), move_pos) < 0) {

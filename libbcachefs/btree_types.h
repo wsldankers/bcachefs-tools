@@ -94,7 +94,6 @@ struct btree {
 	struct btree_nr_keys	nr;
 	u16			sib_u64s[2];
 	u16			whiteout_u64s;
-	u16			uncompacted_whiteout_u64s;
 	u8			page_order;
 	u8			unpack_fn_len;
 
@@ -419,6 +418,11 @@ static inline unsigned bset_u64s(struct bset_tree *t)
 {
 	return t->end_offset - t->data_offset -
 		sizeof(struct bset) / sizeof(u64);
+}
+
+static inline unsigned bset_dead_u64s(struct btree *b, struct bset_tree *t)
+{
+	return bset_u64s(t) - b->nr.bset_u64s[t - b->set];
 }
 
 static inline unsigned bset_byte_offset(struct btree *b, void *i)
