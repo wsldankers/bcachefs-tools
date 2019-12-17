@@ -16,7 +16,7 @@ BCH_PATH = DIR / 'bcachefs'
 
 VPAT = re.compile(r'ERROR SUMMARY: (\d+) errors from (\d+) contexts')
 
-ENABLE_VALGRIND = os.getenv('BCACHEFS_TEST_USE_VALGRIND', 'yes') == 'yes'
+ENABLE_VALGRIND = os.getenv('BCACHEFS_TEST_USE_VALGRIND', 'no') == 'yes'
 
 class ValgrindFailedError(Exception):
     def __init__(self, log):
