@@ -134,11 +134,12 @@ static void create_link(struct bch_fs *c,
 			const char *name, u64 inum, mode_t mode)
 {
 	struct qstr qstr = QSTR(name);
+	struct bch_inode_unpacked parent_u;
 	struct bch_inode_unpacked inode;
 
 	int ret = bch2_trans_do(c, NULL, BTREE_INSERT_ATOMIC,
-		bch2_link_trans(&trans, parent->bi_inum,
-				inum, &inode, &qstr));
+		bch2_link_trans(&trans, parent->bi_inum, inum,
+				&parent_u, &inode, &qstr));
 	if (ret)
 		die("error creating hardlink: %s", strerror(-ret));
 }
