@@ -1,4 +1,5 @@
 #include <ctype.h>
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdbool.h>
@@ -1102,4 +1103,39 @@ void bch2_opts_usage(unsigned opt_types)
 			newline();
 		}
 	}
+}
+
+dev_names bchu_fs_get_devices(struct bchfs_handle fs)
+{
+	DIR *dir = fdopendir(fs.sysfs_fd);
+	struct dirent *d;
+	dev_names devs;
+
+	darray_init(devs);
+
+	while ((errno = 0), (d = readdir(dir))) {
+		struct dev_name n;
+
+		if (sscanf(d->d_name, "dev-%u", &n.idx) != 1)
+			continue;
+
+		char *block_attr = mprintf("dev-%u/block", n.idx);
+
+		char sysfs_block_buf[4096];
+		if (readlinkat(fs.sysfs_fd, block_attr,
+			       sysfs_block_buf, sizeof(sysfs_block_buf)) > 0)
+			n.dev = strdup(basename(sysfs_block_buf));
+
+		free(block_attr);
+
+		char *label_attr = mprintf("dev-%u/label", n.idx);
+		n.label = read_file_str(fs.sysfs_fd, label_attr);
+		free(label_attr);
+
+		darray_append(devs, n);
+	}
+
+	closedir(dir);
+
+	return devs;
 }

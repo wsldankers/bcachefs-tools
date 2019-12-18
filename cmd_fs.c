@@ -14,123 +14,128 @@
 #include "cmds.h"
 #include "libbcachefs.h"
 
-static void print_dev_usage(struct bch_ioctl_dev_usage *d, unsigned idx,
-			    const char *label, enum units units)
+static void print_dev_usage(struct bchfs_handle fs,
+			    struct dev_name *d,
+			    enum units units)
 {
-	char *name = NULL;
-	u64 available = d->nr_buckets;
+	struct bch_ioctl_dev_usage u = bchu_dev_usage(fs, d->idx);
+	u64 available = u.nr_buckets;
 	unsigned i;
 
 	printf("\n");
-	printf_pad(20, "%s (device %u):", label, idx);
-
-	name = !d->dev ? strdup("(offline)")
-		: dev_to_path(d->dev)
-		?: strdup("(device not found)");
-	printf("%24s%12s\n", name, bch2_dev_state[d->state]);
-	free(name);
+	printf_pad(20, "%s (device %u):", d->label, d->idx);
+	printf("%24s%12s\n", d->dev ?: "(device not found)", bch2_dev_state[u.state]);
 
 	printf("%-20s%12s%12s%12s\n",
 	       "", "data", "buckets", "fragmented");
 
 	for (i = BCH_DATA_SB; i < BCH_DATA_NR; i++) {
-		u64 frag = max((s64) d->buckets[i] * d->bucket_size -
-			       (s64) d->sectors[i], 0LL);
+		u64 frag = max((s64) u.buckets[i] * u.bucket_size -
+			       (s64) u.sectors[i], 0LL);
 
 		printf_pad(20, "  %s:", bch2_data_types[i]);
 		printf("%12s%12llu%12s\n",
-		       pr_units(d->sectors[i], units),
-		       d->buckets[i],
+		       pr_units(u.sectors[i], units),
+		       u.buckets[i],
 		       pr_units(frag, units));
 
 		if (i != BCH_DATA_CACHED)
-			available -= d->buckets[i];
+			available -= u.buckets[i];
 	}
 
 	printf_pad(20, "  available:");
 	printf("%12s%12llu\n",
-	       pr_units(available * d->bucket_size, units),
+	       pr_units(available * u.bucket_size, units),
 	       available);
 
 	printf_pad(20, "  capacity:");
 	printf("%12s%12llu\n",
-	       pr_units(d->nr_buckets * d->bucket_size, units),
-	       d->nr_buckets);
+	       pr_units(u.nr_buckets * u.bucket_size, units),
+	       u.nr_buckets);
 }
-
-struct dev_by_label {
-	unsigned	idx;
-	char		*label;
-};
 
 static int dev_by_label_cmp(const void *_l, const void *_r)
 {
-	const struct dev_by_label *l = _l, *r = _r;
+	const struct dev_name *l = _l, *r = _r;
 
 	return strcmp(l->label, r->label);
 }
 
 static void print_fs_usage(const char *path, enum units units)
 {
-	unsigned i, j;
+	unsigned i;
 	char uuid[40];
 
 	struct bchfs_handle fs = bcache_fs_open(path);
-	struct bch_ioctl_usage *u = bchu_usage(fs);
+
+	dev_names dev_names = bchu_fs_get_devices(fs);
+
+	struct bch_ioctl_fs_usage *u = bchu_fs_usage(fs);
 
 	uuid_unparse(fs.uuid.b, uuid);
 	printf("Filesystem %s:\n", uuid);
 
-	printf("%-20s%12s\n", "Size:", pr_units(u->fs.capacity, units));
-	printf("%-20s%12s\n", "Used:", pr_units(u->fs.used, units));
+	printf("%-20s%12s\n", "Size:", pr_units(u->capacity, units));
+	printf("%-20s%12s\n", "Used:", pr_units(u->used, units));
 
-	printf("%-20s%12s%12s%12s%12s\n",
-	       "By replicas:", "1x", "2x", "3x", "4x");
+	printf("%-20s%12s\n", "Online reserved:", pr_units(u->online_reserved, units));
 
-	for (j = BCH_DATA_SB; j < BCH_DATA_NR; j++) {
-		printf_pad(20, "  %s:", bch2_data_types[j]);
-
-		for (i = 0; i < BCH_REPLICAS_MAX; i++)
-			printf("%12s", pr_units(u->fs.sectors[j][i], units));
-		printf("\n");
-	}
-
-	printf_pad(20, "  %s:", "reserved");
-	for (i = 0; i < BCH_REPLICAS_MAX; i++)
-		printf("%12s", pr_units(u->fs.persistent_reserved[i], units));
 	printf("\n");
+	printf("%-16s%-16s%s\n", "Data type", "Required/total", "Devices");
 
-	printf("%-20s%12s\n", "  online reserved:", pr_units(u->fs.online_reserved, units));
-
-	darray(struct dev_by_label) devs_by_label;
-	darray_init(devs_by_label);
-
-	for (i = 0; i < u->nr_devices; i++) {
-		struct bch_ioctl_dev_usage *d = u->devs + i;
-
-		if (!d->alive)
+	for (i = 0; i < BCH_REPLICAS_MAX; i++) {
+		if (!u->persistent_reserved[i])
 			continue;
 
-		char *label_attr = mprintf("dev-%u/label", i);
-		char *label = read_file_str(fs.sysfs_fd, label_attr);
-		free(label_attr);
-
-		darray_append(devs_by_label,
-			(struct dev_by_label) { i, label });
+		printf_pad(16, "%s: ", "reserved");
+		printf_pad(16, "%u/%u ", 1, i);
+		printf_pad(32, "[] ");
+		printf("%s\n", pr_units(u->persistent_reserved[i], units));
 	}
 
-	sort(&darray_item(devs_by_label, 0), darray_size(devs_by_label),
-	     sizeof(darray_item(devs_by_label, 0)), dev_by_label_cmp, NULL);
+	struct bch_replicas_usage *r;
 
-	struct dev_by_label *d;
-	darray_foreach(d, devs_by_label)
-		print_dev_usage(u->devs + d->idx, d->idx, d->label, units);
+	for (r = u->replicas;
+	     r != (void *) u->replicas + u->replica_entries_bytes;
+	     r = replicas_usage_next(r)) {
+		BUG_ON((void *) r > (void *) u->replicas + u->replica_entries_bytes);
 
-	darray_foreach(d, devs_by_label)
-		free(d->label);
-	darray_free(devs_by_label);
+		if (!r->sectors)
+			continue;
+
+		char devs[4096], *d = devs;
+		*d++ = '[';
+
+		for (i = 0; i < r->r.nr_devs; i++) {
+			if (i)
+				*d++ = ' ';
+			strcpy(d, dev_names.item[r->r.devs[i]].dev);
+			d += strlen(dev_names.item[r->r.devs[i]].dev);
+		}
+		*d++ = ']';
+		*d++ = '\0';
+
+		printf_pad(16, "%s: ", bch2_data_types[r->r.data_type]);
+		printf_pad(16, "%u/%u ", r->r.nr_required, r->r.nr_devs);
+		printf_pad(32, "%s ", devs);
+		printf(" %s\n", pr_units(r->sectors, units));
+	}
 
 	free(u);
+
+	sort(&darray_item(dev_names, 0), darray_size(dev_names),
+	     sizeof(darray_item(dev_names, 0)), dev_by_label_cmp, NULL);
+
+	struct dev_name *d;
+	darray_foreach(d, dev_names)
+		print_dev_usage(fs, d, units);
+
+	darray_foreach(d, dev_names) {
+		free(d->dev);
+		free(d->label);
+	}
+	darray_free(dev_names);
+
 	bcache_fs_close(fs);
 }
 

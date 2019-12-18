@@ -140,22 +140,33 @@ static inline void bchu_disk_set_state(struct bchfs_handle fs, unsigned dev,
 	xioctl(fs.ioctl_fd, BCH_IOCTL_DISK_SET_STATE, &i);
 }
 
-static inline struct bch_ioctl_usage *bchu_usage(struct bchfs_handle fs)
+static inline struct bch_ioctl_fs_usage *bchu_fs_usage(struct bchfs_handle fs)
 {
-	struct bch_ioctl_usage *u = NULL;
-	unsigned nr_devices = 4;
+	struct bch_ioctl_fs_usage *u = NULL;
+	size_t replica_entries_bytes = 4096;
 
 	while (1) {
-		u = xrealloc(u, sizeof(*u) + sizeof(u->devs[0]) * nr_devices);
-		u->nr_devices = nr_devices;
+		u = xrealloc(u, sizeof(*u) + replica_entries_bytes);
+		u->replica_entries_bytes = replica_entries_bytes;
 
-		if (!ioctl(fs.ioctl_fd, BCH_IOCTL_USAGE, u))
+		if (!ioctl(fs.ioctl_fd, BCH_IOCTL_FS_USAGE, u))
 			return u;
 
 		if (errno != ERANGE)
 			die("BCH_IOCTL_USAGE error: %m");
-		nr_devices *= 2;
+
+		replica_entries_bytes *= 2;
 	}
+}
+
+static inline struct bch_ioctl_dev_usage bchu_dev_usage(struct bchfs_handle fs,
+							unsigned idx)
+{
+	struct bch_ioctl_dev_usage i = { .dev = idx, .flags = BCH_BY_INDEX};
+
+	if (xioctl(fs.ioctl_fd, BCH_IOCTL_DEV_USAGE, &i))
+		die("BCH_IOCTL_DEV_USAGE error: %m");
+	return i;
 }
 
 static inline struct bch_sb *bchu_read_super(struct bchfs_handle fs, unsigned idx)
@@ -204,5 +215,15 @@ static inline void bchu_disk_resize(struct bchfs_handle fs,
 }
 
 int bchu_data(struct bchfs_handle, struct bch_ioctl_data);
+
+struct dev_name {
+	unsigned	idx;
+	char		*dev;
+	char		*label;
+	uuid_le		uuid;
+};
+typedef darray(struct dev_name) dev_names;
+
+dev_names bchu_fs_get_devices(struct bchfs_handle);
 
 #endif /* _LIBBCACHE_H */
