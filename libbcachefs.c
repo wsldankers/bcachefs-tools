@@ -1114,7 +1114,7 @@ dev_names bchu_fs_get_devices(struct bchfs_handle fs)
 	darray_init(devs);
 
 	while ((errno = 0), (d = readdir(dir))) {
-		struct dev_name n;
+		struct dev_name n = { 0, NULL, NULL };
 
 		if (sscanf(d->d_name, "dev-%u", &n.idx) != 1)
 			continue;
@@ -1122,9 +1122,12 @@ dev_names bchu_fs_get_devices(struct bchfs_handle fs)
 		char *block_attr = mprintf("dev-%u/block", n.idx);
 
 		char sysfs_block_buf[4096];
-		if (readlinkat(fs.sysfs_fd, block_attr,
-			       sysfs_block_buf, sizeof(sysfs_block_buf)) > 0)
+		ssize_t r = readlinkat(fs.sysfs_fd, block_attr,
+				       sysfs_block_buf, sizeof(sysfs_block_buf));
+		if (r > 0) {
+			sysfs_block_buf[r] = '\0';
 			n.dev = strdup(basename(sysfs_block_buf));
+		}
 
 		free(block_attr);
 
