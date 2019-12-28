@@ -341,7 +341,7 @@ static void bcachefs_fuse_link(fuse_req_t req, fuse_ino_t inum,
 			       fuse_ino_t newparent, const char *newname)
 {
 	struct bch_fs *c = fuse_req_userdata(req);
-	struct bch_inode_unpacked inode_u;
+	struct bch_inode_unpacked dir_u, inode_u;
 	struct qstr qstr = QSTR(newname);
 	int ret;
 
@@ -352,7 +352,7 @@ static void bcachefs_fuse_link(fuse_req_t req, fuse_ino_t inum,
 
 	ret = bch2_trans_do(c, NULL, BTREE_INSERT_ATOMIC,
 			    bch2_link_trans(&trans, newparent,
-					    inum, &inode_u, &qstr));
+					    inum, &dir_u, &inode_u, &qstr));
 
 	if (!ret) {
 		struct fuse_entry_param e = inode_to_entry(c, &inode_u);
