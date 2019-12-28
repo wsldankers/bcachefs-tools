@@ -16,7 +16,6 @@ void bch2_btree_journal_key(struct btree_trans *, struct btree_iter *,
 			    struct bkey_i *);
 
 enum {
-	__BTREE_INSERT_ATOMIC,
 	__BTREE_INSERT_NOUNLOCK,
 	__BTREE_INSERT_NOFAIL,
 	__BTREE_INSERT_NOCHECK_RW,
@@ -27,19 +26,12 @@ enum {
 	__BTREE_INSERT_JOURNAL_RESERVED,
 	__BTREE_INSERT_NOMARK_OVERWRITES,
 	__BTREE_INSERT_NOMARK,
-	__BTREE_INSERT_NO_CLEAR_REPLICAS,
 	__BTREE_INSERT_BUCKET_INVALIDATE,
 	__BTREE_INSERT_NOWAIT,
 	__BTREE_INSERT_GC_LOCK_HELD,
 	__BCH_HASH_SET_MUST_CREATE,
 	__BCH_HASH_SET_MUST_REPLACE,
 };
-
-/*
- * Don't drop/retake locks before doing btree update, instead return -EINTR if
- * we had to drop locks for any reason
- */
-#define BTREE_INSERT_ATOMIC		(1 << __BTREE_INSERT_ATOMIC)
 
 /*
  * Don't drop locks _after_ successfully updating btree:
@@ -66,8 +58,6 @@ enum {
 
 /* Don't call mark new key at all: */
 #define BTREE_INSERT_NOMARK		(1 << __BTREE_INSERT_NOMARK)
-
-#define BTREE_INSERT_NO_CLEAR_REPLICAS	(1 << __BTREE_INSERT_NO_CLEAR_REPLICAS)
 
 #define BTREE_INSERT_BUCKET_INVALIDATE	(1 << __BTREE_INSERT_BUCKET_INVALIDATE)
 
@@ -101,8 +91,7 @@ int __bch2_trans_commit(struct btree_trans *);
  * This is main entry point for btree updates.
  *
  * Return values:
- * -EINTR: locking changed, this function should be called again. Only returned
- *  if passed BTREE_INSERT_ATOMIC.
+ * -EINTR: locking changed, this function should be called again.
  * -EROFS: filesystem read only
  * -EIO: journal or btree node IO error
  */
@@ -131,22 +120,32 @@ static inline void bch2_trans_update(struct btree_trans *trans,
 	};
 }
 
-#define bch2_trans_do(_c, _journal_seq, _flags, _do)			\
+#define __bch2_trans_do(_trans, _disk_res, _journal_seq,		\
+			_flags,	_reset_flags, _do)			\
 ({									\
-	struct btree_trans trans;					\
 	int _ret;							\
 									\
-	bch2_trans_init(&trans, (_c), 0, 0);				\
-									\
 	do {								\
-		bch2_trans_begin(&trans);				\
+		bch2_trans_reset(_trans, _reset_flags);			\
 									\
-		_ret = (_do) ?:	bch2_trans_commit(&trans, NULL,		\
+		_ret = (_do) ?:	bch2_trans_commit(_trans, (_disk_res),	\
 					(_journal_seq), (_flags));	\
 	} while (_ret == -EINTR);					\
 									\
-	bch2_trans_exit(&trans);					\
 	_ret;								\
+})
+
+#define bch2_trans_do(_c, _disk_res, _journal_seq, _flags, _do)		\
+({									\
+	struct btree_trans trans;					\
+	int _ret, _ret2;						\
+									\
+	bch2_trans_init(&trans, (_c), 0, 0);				\
+	_ret = __bch2_trans_do(&trans, _disk_res, _journal_seq, _flags,	\
+			       TRANS_RESET_MEM|TRANS_RESET_ITERS, _do);	\
+	_ret2 = bch2_trans_exit(&trans);				\
+									\
+	_ret ?: _ret2;							\
 })
 
 #define trans_for_each_update(_trans, _i)				\

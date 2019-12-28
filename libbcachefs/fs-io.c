@@ -2493,9 +2493,7 @@ static long bchfs_fcollapse_finsert(struct bch_inode_info *inode,
 		struct bpos next_pos;
 		struct bpos move_pos = POS(inode->v.i_ino, offset >> 9);
 		struct bpos atomic_end;
-		unsigned commit_flags = BTREE_INSERT_NOFAIL|
-			BTREE_INSERT_ATOMIC|
-			BTREE_INSERT_USE_RESERVE;
+		unsigned commit_flags = 0;
 
 		k = insert
 			? bch2_btree_iter_peek_prev(src)
@@ -2588,6 +2586,7 @@ reassemble:
 
 		ret = bch2_trans_commit(&trans, &disk_res,
 					&inode->ei_journal_seq,
+					BTREE_INSERT_NOFAIL|
 					commit_flags);
 		bch2_disk_reservation_put(c, &disk_res);
 bkey_err:
@@ -2678,6 +2677,8 @@ static long bchfs_fallocate(struct bch_inode_info *inode, int mode,
 		struct bkey_i_reservation reservation;
 		struct bkey_s_c k;
 
+		bch2_trans_reset(&trans, TRANS_RESET_MEM);
+
 		k = bch2_btree_iter_peek_slot(iter);
 		if ((ret = bkey_err(k)))
 			goto bkey_err;
@@ -2723,8 +2724,6 @@ static long bchfs_fallocate(struct bch_inode_info *inode, int mode,
 
 			reservation.v.nr_replicas = disk_res.nr_replicas;
 		}
-
-		bch2_trans_begin_updates(&trans);
 
 		ret = bch2_extent_update(&trans, iter, &reservation.k_i,
 				&disk_res, &inode->ei_journal_seq,

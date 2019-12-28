@@ -309,14 +309,11 @@ retry:
 					  0, -((s64) k->k.size),
 					  BCH_BUCKET_MARK_OVERWRITE) ?:
 		      bch2_trans_commit(&trans, &disk_res, NULL,
-					BTREE_INSERT_ATOMIC|
 					BTREE_INSERT_NOFAIL|
 					BTREE_INSERT_LAZY_RW|
-					BTREE_INSERT_NOMARK_OVERWRITES|
-					BTREE_INSERT_NO_CLEAR_REPLICAS);
+					BTREE_INSERT_NOMARK_OVERWRITES);
 	} else {
 		ret = bch2_trans_commit(&trans, &disk_res, NULL,
-					BTREE_INSERT_ATOMIC|
 					BTREE_INSERT_NOFAIL|
 					BTREE_INSERT_LAZY_RW|
 					BTREE_INSERT_JOURNAL_REPLAY|
@@ -989,11 +986,6 @@ int bch2_fs_initialize(struct bch_fs *c)
 	bch2_fs_journal_start(&c->journal, 1, &journal);
 	bch2_journal_set_replay_done(&c->journal);
 
-	err = "error going read write";
-	ret = __bch2_fs_read_write(c, true);
-	if (ret)
-		goto err;
-
 	bch2_inode_init(c, &root_inode, 0, 0,
 			S_IFDIR|S_IRWXU|S_IRUGO|S_IXUGO, 0, NULL);
 	root_inode.bi_inum = BCACHEFS_ROOT_INO;
@@ -1002,14 +994,14 @@ int bch2_fs_initialize(struct bch_fs *c)
 	err = "error creating root directory";
 	ret = bch2_btree_insert(c, BTREE_ID_INODES,
 				&packed_inode.inode.k_i,
-				NULL, NULL, 0);
+				NULL, NULL, BTREE_INSERT_LAZY_RW);
 	if (ret)
 		goto err;
 
 	bch2_inode_init_early(c, &lostfound_inode);
 
 	err = "error creating lost+found";
-	ret = bch2_trans_do(c, NULL, BTREE_INSERT_ATOMIC,
+	ret = bch2_trans_do(c, NULL, NULL, 0,
 		bch2_create_trans(&trans, BCACHEFS_ROOT_INO,
 				  &root_inode, &lostfound_inode,
 				  &lostfound,

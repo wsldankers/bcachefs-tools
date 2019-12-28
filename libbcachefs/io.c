@@ -303,7 +303,6 @@ int bch2_extent_update(struct btree_trans *trans,
 	ret = bch2_trans_commit(trans, disk_res, journal_seq,
 				BTREE_INSERT_NOCHECK_RW|
 				BTREE_INSERT_NOFAIL|
-				BTREE_INSERT_ATOMIC|
 				BTREE_INSERT_USE_RESERVE);
 	if (!ret && i_sectors_delta)
 		*i_sectors_delta += delta;
@@ -326,6 +325,8 @@ int bch2_fpunch_at(struct btree_trans *trans, struct btree_iter *iter,
 			bch2_disk_reservation_init(c, 0);
 		struct bkey_i delete;
 
+		bch2_trans_reset(trans, TRANS_RESET_MEM);
+
 		ret = bkey_err(k);
 		if (ret)
 			goto btree_err;
@@ -336,8 +337,6 @@ int bch2_fpunch_at(struct btree_trans *trans, struct btree_iter *iter,
 		/* create the biggest key we can */
 		bch2_key_resize(&delete.k, max_sectors);
 		bch2_cut_back(end, &delete);
-
-		bch2_trans_begin_updates(trans);
 
 		ret = bch2_extent_update(trans, iter, &delete,
 				&disk_res, journal_seq,
@@ -400,13 +399,13 @@ int bch2_write_index_default(struct bch_write_op *op)
 				   BTREE_ITER_SLOTS|BTREE_ITER_INTENT);
 
 	do {
+		bch2_trans_reset(&trans, TRANS_RESET_MEM);
+
 		k = bch2_keylist_front(keys);
 
 		bkey_on_stack_realloc(&sk, c, k->k.u64s);
 		bkey_copy(sk.k, k);
 		bch2_cut_front(iter->pos, sk.k);
-
-		bch2_trans_begin_updates(&trans);
 
 		ret = bch2_extent_update(&trans, iter, sk.k,
 					 &op->res, op_journal_seq(op),
@@ -501,12 +500,13 @@ static void bch2_write_done(struct closure *cl)
 
 	bch2_time_stats_update(&c->times[BCH_TIME_data_write], op->start_time);
 
-	if (op->end_io)
-		op->end_io(op);
-	if (cl->parent)
-		closure_return(cl);
-	else
+	if (op->end_io) {
+		EBUG_ON(cl->parent);
 		closure_debug_destroy(cl);
+		op->end_io(op);
+	} else {
+		closure_return(cl);
+	}
 }
 
 /**
@@ -1233,12 +1233,14 @@ void bch2_write(struct closure *cl)
 err:
 	if (!(op->flags & BCH_WRITE_NOPUT_RESERVATION))
 		bch2_disk_reservation_put(c, &op->res);
-	if (op->end_io)
-		op->end_io(op);
-	if (cl->parent)
-		closure_return(cl);
-	else
+
+	if (op->end_io) {
+		EBUG_ON(cl->parent);
 		closure_debug_destroy(cl);
+		op->end_io(op);
+	} else {
+		closure_return(cl);
+	}
 }
 
 /* Cache promotion on read */
@@ -1738,7 +1740,6 @@ retry:
 
 	bch2_trans_update(&trans, iter, new.k);
 	ret = bch2_trans_commit(&trans, NULL, NULL,
-				BTREE_INSERT_ATOMIC|
 				BTREE_INSERT_NOFAIL|
 				BTREE_INSERT_NOWAIT);
 	if (ret == -EINTR)

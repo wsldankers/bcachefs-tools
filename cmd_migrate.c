@@ -137,7 +137,7 @@ static void create_link(struct bch_fs *c,
 	struct bch_inode_unpacked parent_u;
 	struct bch_inode_unpacked inode;
 
-	int ret = bch2_trans_do(c, NULL, BTREE_INSERT_ATOMIC,
+	int ret = bch2_trans_do(c, NULL, NULL, 0,
 		bch2_link_trans(&trans, parent->bi_inum, inum,
 				&parent_u, &inode, &qstr));
 	if (ret)
@@ -153,7 +153,7 @@ static struct bch_inode_unpacked create_file(struct bch_fs *c,
 	struct qstr qstr = QSTR(name);
 	struct bch_inode_unpacked new_inode;
 
-	int ret = bch2_trans_do(c, NULL, BTREE_INSERT_ATOMIC,
+	int ret = bch2_trans_do(c, NULL, NULL, 0,
 		bch2_create_trans(&trans,
 				  parent->bi_inum, parent,
 				  &new_inode, &qstr,
@@ -224,7 +224,7 @@ static void copy_xattrs(struct bch_fs *c, struct bch_inode_unpacked *dst,
 
 		const struct xattr_handler *h = xattr_resolve_name(&attr);
 
-		int ret = bch2_trans_do(c, NULL, BTREE_INSERT_ATOMIC,
+		int ret = bch2_trans_do(c, NULL, NULL, 0,
 				bch2_xattr_set(&trans, dst->bi_inum, &hash_info, attr,
 					       val, val_size, h->flags, 0));
 		if (ret < 0)

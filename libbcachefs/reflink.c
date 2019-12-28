@@ -185,7 +185,8 @@ s64 bch2_remap_range(struct bch_fs *c,
 				       BTREE_ITER_INTENT);
 
 	while (1) {
-		bch2_trans_begin_updates(&trans);
+		bch2_trans_reset(&trans, TRANS_RESET_MEM);
+
 		trans.mem_top = 0;
 
 		if (fatal_signal_pending(current)) {
@@ -287,8 +288,7 @@ err:
 		    inode_u.bi_size < new_i_size) {
 			inode_u.bi_size = new_i_size;
 			ret2  = bch2_inode_write(&trans, inode_iter, &inode_u) ?:
-				bch2_trans_commit(&trans, NULL, journal_seq,
-						  BTREE_INSERT_ATOMIC);
+				bch2_trans_commit(&trans, NULL, journal_seq, 0);
 		}
 	} while (ret2 == -EINTR);
 
