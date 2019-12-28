@@ -210,7 +210,6 @@ retry:
 
 	ret   = bch2_inode_write(&trans, iter, &inode_u) ?:
 		bch2_trans_commit(&trans, NULL, NULL,
-				  BTREE_INSERT_ATOMIC|
 				  BTREE_INSERT_NOFAIL);
 err:
 	if (ret == -EINTR)
@@ -237,7 +236,7 @@ static int do_create(struct bch_fs *c, u64 dir,
 
 	bch2_inode_init_early(c, new_inode);
 
-	return bch2_trans_do(c, NULL, BTREE_INSERT_ATOMIC,
+	return bch2_trans_do(c, NULL, NULL, 0,
 			bch2_create_trans(&trans,
 				dir, &dir_u,
 				new_inode, &qstr,
@@ -289,7 +288,7 @@ static void bcachefs_fuse_unlink(fuse_req_t req, fuse_ino_t dir,
 
 	dir = map_root_ino(dir);
 
-	ret = bch2_trans_do(c, NULL, BTREE_INSERT_ATOMIC|BTREE_INSERT_NOFAIL,
+	ret = bch2_trans_do(c, NULL, NULL, BTREE_INSERT_NOFAIL,
 			    bch2_unlink_trans(&trans, dir, &dir_u,
 					      &inode_u, &qstr));
 
@@ -326,7 +325,7 @@ static void bcachefs_fuse_rename(fuse_req_t req,
 	dst_dir = map_root_ino(dst_dir);
 
 	/* XXX handle overwrites */
-	ret = bch2_trans_do(c, NULL, BTREE_INSERT_ATOMIC,
+	ret = bch2_trans_do(c, NULL, NULL, 0,
 		bch2_rename_trans(&trans,
 				  src_dir, &src_dir_u,
 				  dst_dir, &dst_dir_u,
@@ -350,7 +349,7 @@ static void bcachefs_fuse_link(fuse_req_t req, fuse_ino_t inum,
 
 	newparent = map_root_ino(newparent);
 
-	ret = bch2_trans_do(c, NULL, BTREE_INSERT_ATOMIC,
+	ret = bch2_trans_do(c, NULL, NULL, 0,
 			    bch2_link_trans(&trans, newparent,
 					    inum, &dir_u, &inode_u, &qstr));
 
@@ -546,7 +545,7 @@ retry:
 		goto err;
 
 	ret = bch2_trans_commit(&trans, NULL, NULL,
-				BTREE_INSERT_ATOMIC|BTREE_INSERT_NOFAIL);
+				BTREE_INSERT_NOFAIL);
 
 err:
 	if (ret == -EINTR)
