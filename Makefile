@@ -71,8 +71,11 @@ endif
 .PHONY: all
 all: bcachefs
 
+.PHONY: tests
+tests: tests/test_helper
+
 .PHONY: check
-check: tests/test_helper bcachefs
+check: tests bcachefs
 	cd tests; $(PYTEST)
 
 .PHONY: TAGS tags
