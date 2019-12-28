@@ -210,10 +210,11 @@ class BFuse:
         run("fusermount3", "-zu", self.mnt)
         print("Waiting for thread to exit.")
 
-        self.thread.join(timeout)
-        if self.thread.is_alive():
-            self.proc.kill()
-            self.thread.join()
+        if self.thread:
+            self.thread.join(timeout)
+            if self.thread.is_alive():
+                self.proc.kill()
+                self.thread.join()
 
         self.thread = None
         self.ready.clear()
