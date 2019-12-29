@@ -1,0 +1,32 @@
+os: linux
+dist: bionic
+language: c
+arch: amd64
+addons:
+    apt:
+        packages:
+            - valgrind
+            - python3-pytest
+            - python3-pytest-xdist
+            - meson
+            - ninja-build
+            - pkg-config
+            - libaio-dev
+            - libblkid-dev
+            - libkeyutils-dev
+            - liblz4-dev
+            - libscrypt-dev
+            - libsodium-dev
+            - liburcu-dev
+            - libzstd-dev
+            - uuid-dev
+            - zlib1g-dev
+
+before_install:
+    - wget https://github.com/libfuse/libfuse/archive/fuse-3.7.0.tar.gz -O /tmp/fuse.tar.gz
+    - tar -C /tmp -zxvf /tmp/fuse.tar.gz
+    - mkdir /tmp/libfuse-fuse-3.7.0/build
+    - pushd /tmp/libfuse-fuse-3.7.0/build && meson .. && ninja && sudo ninja install && popd
+    - sudo ldconfig
+
+script: ./smoke_test
