@@ -3,7 +3,7 @@ dist: bionic
 language: c
 arch:
     - amd64
-    - arm64
+#   - arm64
 
 addons:
     apt:
