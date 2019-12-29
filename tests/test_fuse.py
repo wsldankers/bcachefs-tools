@@ -230,3 +230,6 @@ def test_write(bfuse):
     assert ts.contains(post_st.st_mtime)
 
     assert path.read_bytes() == b'test'
+
+    bfuse.unmount()
+    bfuse.verify()
