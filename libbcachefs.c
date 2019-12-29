@@ -241,8 +241,6 @@ struct bch_sb *bch2_format(struct bch_opt_strs	fs_opt_strs,
 	sb.sb->time_base_lo	= cpu_to_le64(now.tv_sec * NSEC_PER_SEC + now.tv_nsec);
 	sb.sb->time_precision	= cpu_to_le32(1);
 
-	sb.sb->features[0] |= 1ULL << BCH_FEATURE_NEW_SIPHASH;
-
 	/* Member info: */
 	mi = bch2_sb_resize_members(&sb,
 			(sizeof(*mi) + sizeof(struct bch_member) *
@@ -756,17 +754,17 @@ void bch2_sb_print(struct bch_sb *sb, bool print_layout,
 	       BCH_SB_DATA_REPLICAS_WANT(sb),
 
 	       BCH_SB_META_CSUM_TYPE(sb) < BCH_CSUM_OPT_NR
-	       ? bch2_csum_types[BCH_SB_META_CSUM_TYPE(sb)]
+	       ? bch2_csum_opts[BCH_SB_META_CSUM_TYPE(sb)]
 	       : "unknown",
 	       BCH_SB_META_CSUM_TYPE(sb),
 
 	       BCH_SB_DATA_CSUM_TYPE(sb) < BCH_CSUM_OPT_NR
-	       ? bch2_csum_types[BCH_SB_DATA_CSUM_TYPE(sb)]
+	       ? bch2_csum_opts[BCH_SB_DATA_CSUM_TYPE(sb)]
 	       : "unknown",
 	       BCH_SB_DATA_CSUM_TYPE(sb),
 
 	       BCH_SB_COMPRESSION_TYPE(sb) < BCH_COMPRESSION_OPT_NR
-	       ? bch2_compression_types[BCH_SB_COMPRESSION_TYPE(sb)]
+	       ? bch2_compression_opts[BCH_SB_COMPRESSION_TYPE(sb)]
 	       : "unknown",
 	       BCH_SB_COMPRESSION_TYPE(sb),
 

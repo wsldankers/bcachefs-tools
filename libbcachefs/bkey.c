@@ -173,8 +173,7 @@ static bool set_inc_field(struct pack_state *state, unsigned field, u64 v)
 
 	if (bits > state->bits) {
 		bits -= state->bits;
-		/* avoid shift by 64 if bits is 0 - bits is never 64 here: */
-		state->w |= (v >> 1) >> (bits - 1);
+		state->w |= v >> bits;
 
 		*state->p = state->w;
 		state->p = next_word(state->p);
@@ -183,7 +182,10 @@ static bool set_inc_field(struct pack_state *state, unsigned field, u64 v)
 	}
 
 	state->bits -= bits;
-	state->w |= v << state->bits;
+
+	EBUG_ON(!state->bits);
+	/* avoid shift by 64: */
+	state->w |= (v << 1) << (state->bits - 1);
 
 	return true;
 }
@@ -370,7 +372,7 @@ static bool set_inc_field_lossy(struct pack_state *state, unsigned field, u64 v)
 
 	if (bits > state->bits) {
 		bits -= state->bits;
-		state->w |= (v >> 1) >> (bits - 1);
+		state->w |= v >> bits;
 
 		*state->p = state->w;
 		state->p = next_word(state->p);
@@ -379,7 +381,7 @@ static bool set_inc_field_lossy(struct pack_state *state, unsigned field, u64 v)
 	}
 
 	state->bits -= bits;
-	state->w |= v << state->bits;
+	state->w |= (v << 1) << (state->bits - 1);
 
 	return ret;
 }
