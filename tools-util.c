@@ -31,7 +31,7 @@ void die(const char *fmt, ...)
 	va_end(args);
 	fputc('\n', stderr);
 
-	exit(EXIT_FAILURE);
+	_exit(EXIT_FAILURE);
 }
 
 char *mprintf(const char *fmt, ...)

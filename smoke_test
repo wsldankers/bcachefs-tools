@@ -1,0 +1,82 @@
+#!/bin/bash
+#
+# This is a smoke test of bcachefs-tools.
+#
+# It builds the source with multiple options (debug, release, valgrind, FUSE)
+# and runs the test suite.
+#
+# Returns 0 on success, nonzero on any failure.
+#
+# Dependencies:
+#
+# valgrind, python3-pytest, python3-pytest-xdist
+#
+# On debian/ubuntu based systems, install with:
+#
+#   apt install valgrind python3-pytest python3-pytest-xdist
+#
+# You also currently need fuse 3.7 or later.  Fuse 3.7 unfortunately requires
+# debian sid or bullseye at this time, so you may need to install from source.
+
+set -e
+
+spam=$(tempfile)
+unset BCACHEFS_FUSE BCACHEFS_TEST_USE_VALGRIND D
+
+trap "set +x; cat ${spam}; rm -f ${spam} ; echo; echo FAILED." EXIT
+
+echo -- Verify dependencies --
+pkg-config --atleast-version 3.7.0 fuse3
+python3 -c "import pytest"
+python3 -c "import xdist"
+which valgrind > /dev/null
+echo OK
+
+JOBS=$(nproc)
+function build() {
+    echo Building.
+    make -j ${JOBS} clean          > ${spam} 2>&1
+    make -j ${JOBS} tests bcachefs > ${spam} 2>&1
+    truncate -s0 ${spam}
+}
+
+function test() {
+    echo Running tests.
+    (
+        cd tests
+        pytest-3 -n${JOBS}
+    ) > ${spam} 2>&1
+}
+
+function test_vg() {
+    echo Running tests with valgrind.
+    (
+        export BCACHEFS_TEST_USE_VALGRIND=yes
+        cd tests
+        pytest-3 -n${JOBS}
+    ) > ${spam} 2>&1
+}
+
+
+echo -- Test: default --
+build
+test    
+
+echo -- Test: debug --
+export D=1
+build
+test
+
+echo -- Test: debug with valgrind --
+test_vg
+
+echo -- Test: fuse debug --
+export BCACHEFS_FUSE=1
+build
+test
+
+echo -- Test: fuse debug with valgrind --
+test_vg
+
+rm -f ${spam}
+trap "set +x; echo; echo SUCCESS." EXIT

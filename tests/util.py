@@ -22,10 +22,14 @@ class ValgrindFailedError(Exception):
     def __init__(self, log):
         self.log = log
 
-def check_valgrind(logfile):
-    log = logfile.read().decode('utf-8')
+def check_valgrind(log):
     m = VPAT.search(log)
-    assert m is not None, 'Internal error: valgrind log did not match.'
+    if m is None:
+        print('Internal error: valgrind log did not match.')
+        print('-- valgrind log:')
+        print(log)
+        print('-- end log --')
+        assert False
 
     errors = int(m.group(1))
     if errors > 0:
@@ -53,7 +57,7 @@ def run(cmd, *args, valgrind=False, check=False):
                          encoding='utf-8', check=check)
 
     if valgrind:
-        check_valgrind(vout)
+        check_valgrind(vout.read().decode('utf-8'))
 
     return res
 
@@ -150,14 +154,14 @@ class BFuse:
     def run(self):
         """Background thread which runs "bcachefs fusemount" under valgrind"""
 
-        vout = None
+        vlog = None
         cmd = []
 
         if ENABLE_VALGRIND:
-            vout = tempfile.NamedTemporaryFile()
+            vlog = tempfile.NamedTemporaryFile()
             cmd += [ 'valgrind',
                      '--leak-check=full',
-                     '--log-file={}'.format(vout.name) ]
+                     '--log-file={}'.format(vlog.name) ]
 
         cmd += [ BCH_PATH,
                  'fusemount', '-f', self.dev, self.mnt]
@@ -178,7 +182,7 @@ class BFuse:
         self.stdout = out1 + out2
         self.stderr = err.read()
         self.returncode = self.proc.returncode
-        self.vout = vout
+        self.vout = vlog.read().decode('utf-8')
 
     def expect(self, pipe, regex):
         """Wait for the child process to mount."""
@@ -208,13 +212,15 @@ class BFuse:
     def unmount(self, timeout=None):
         print("Unmounting fuse.")
         run("fusermount3", "-zu", self.mnt)
-        print("Waiting for thread to exit.")
 
         if self.thread:
+            print("Waiting for thread to exit.")
             self.thread.join(timeout)
             if self.thread.is_alive():
                 self.proc.kill()
                 self.thread.join()
+        else:
+            print("Thread was already done.")
 
         self.thread = None
         self.ready.clear()
