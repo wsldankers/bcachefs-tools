@@ -66,9 +66,10 @@ static void dump_one_device(struct bch_fs *c, struct bch_dev *ca, int fd)
 		bch2_trans_init(&trans, c, 0, 0);
 
 		for_each_btree_node(&trans, iter, i, POS_MIN, 0, b) {
-			struct bkey_s_c_extent e = bkey_i_to_s_c_extent(&b->key);
+			struct bkey_ptrs_c ptrs =
+				bch2_bkey_ptrs_c(bkey_i_to_s_c(&b->key));
 
-			extent_for_each_ptr(e, ptr)
+			bkey_for_each_ptr(ptrs, ptr)
 				if (ptr->dev == ca->dev_idx)
 					range_add(&data,
 						  ptr->offset << 9,
