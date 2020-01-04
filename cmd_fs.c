@@ -23,7 +23,7 @@ static void print_dev_usage(struct bchfs_handle fs,
 	unsigned i;
 
 	printf("\n");
-	printf_pad(20, "%s (device %u):", d->label, d->idx);
+	printf_pad(20, "%s (device %u):", d->label ?: "(no label)", d->idx);
 	printf("%24s%12s\n", d->dev ?: "(device not found)", bch2_dev_state[u.state]);
 
 	printf("%-20s%12s%12s%12s\n",
@@ -58,7 +58,11 @@ static int dev_by_label_cmp(const void *_l, const void *_r)
 {
 	const struct dev_name *l = _l, *r = _r;
 
-	return strcmp(l->label, r->label);
+	return  (l->label && r->label
+		 ? strcmp(l->label, r->label) : 0) ?:
+		(l->dev && r->dev
+		 ? strcmp(l->dev, r->dev) : 0) ?:
+		cmp_int(l->idx, r->idx);
 }
 
 static void print_fs_usage(const char *path, enum units units)
@@ -68,6 +72,7 @@ static void print_fs_usage(const char *path, enum units units)
 
 	struct bchfs_handle fs = bcache_fs_open(path);
 
+	struct dev_name *dev;
 	dev_names dev_names = bchu_fs_get_devices(fs);
 
 	struct bch_ioctl_fs_usage *u = bchu_fs_usage(fs);
@@ -107,10 +112,18 @@ static void print_fs_usage(const char *path, enum units units)
 		*d++ = '[';
 
 		for (i = 0; i < r->r.nr_devs; i++) {
+			unsigned dev_idx = r->r.devs[i];
 			if (i)
 				*d++ = ' ';
-			strcpy(d, dev_names.item[r->r.devs[i]].dev);
-			d += strlen(dev_names.item[r->r.devs[i]].dev);
+
+			darray_foreach(dev, dev_names)
+				if (dev->idx == dev_idx)
+					goto found;
+			d = NULL;
+found:
+			d += dev && dev->dev
+				? sprintf(d, "%s", dev->dev)
+				: sprintf(d, "%u", dev_idx);
 		}
 		*d++ = ']';
 		*d++ = '\0';
@@ -126,13 +139,12 @@ static void print_fs_usage(const char *path, enum units units)
 	sort(&darray_item(dev_names, 0), darray_size(dev_names),
 	     sizeof(darray_item(dev_names, 0)), dev_by_label_cmp, NULL);
 
-	struct dev_name *d;
-	darray_foreach(d, dev_names)
-		print_dev_usage(fs, d, units);
+	darray_foreach(dev, dev_names)
+		print_dev_usage(fs, dev, units);
 
-	darray_foreach(d, dev_names) {
-		free(d->dev);
-		free(d->label);
+	darray_foreach(dev, dev_names) {
+		free(dev->dev);
+		free(dev->label);
 	}
 	darray_free(dev_names);
 
