@@ -15,7 +15,7 @@ bool bch2_btree_bset_insert_key(struct btree_iter *, struct btree *,
 void bch2_btree_journal_key(struct btree_trans *, struct btree_iter *,
 			    struct bkey_i *);
 
-enum {
+enum btree_insert_flags {
 	__BTREE_INSERT_NOUNLOCK,
 	__BTREE_INSERT_NOFAIL,
 	__BTREE_INSERT_NOCHECK_RW,
@@ -24,9 +24,6 @@ enum {
 	__BTREE_INSERT_USE_ALLOC_RESERVE,
 	__BTREE_INSERT_JOURNAL_REPLAY,
 	__BTREE_INSERT_JOURNAL_RESERVED,
-	__BTREE_INSERT_NOMARK_OVERWRITES,
-	__BTREE_INSERT_NOMARK,
-	__BTREE_INSERT_BUCKET_INVALIDATE,
 	__BTREE_INSERT_NOWAIT,
 	__BTREE_INSERT_GC_LOCK_HELD,
 	__BCH_HASH_SET_MUST_CREATE,
@@ -53,14 +50,6 @@ enum {
 
 #define BTREE_INSERT_JOURNAL_RESERVED	(1 << __BTREE_INSERT_JOURNAL_RESERVED)
 
-/* Don't mark overwrites, just new key: */
-#define BTREE_INSERT_NOMARK_OVERWRITES	(1 << __BTREE_INSERT_NOMARK_OVERWRITES)
-
-/* Don't call mark new key at all: */
-#define BTREE_INSERT_NOMARK		(1 << __BTREE_INSERT_NOMARK)
-
-#define BTREE_INSERT_BUCKET_INVALIDATE	(1 << __BTREE_INSERT_BUCKET_INVALIDATE)
-
 /* Don't block on allocation failure (for new btree nodes: */
 #define BTREE_INSERT_NOWAIT		(1 << __BTREE_INSERT_NOWAIT)
 #define BTREE_INSERT_GC_LOCK_HELD	(1 << __BTREE_INSERT_GC_LOCK_HELD)
@@ -83,6 +72,8 @@ int bch2_btree_node_rewrite(struct bch_fs *c, struct btree_iter *,
 int bch2_btree_node_update_key(struct bch_fs *, struct btree_iter *,
 			       struct btree *, struct bkey_i_btree_ptr *);
 
+int bch2_trans_update(struct btree_trans *, struct btree_iter *,
+		      struct bkey_i *, enum btree_trigger_flags);
 int __bch2_trans_commit(struct btree_trans *);
 
 /**
@@ -105,19 +96,6 @@ static inline int bch2_trans_commit(struct btree_trans *trans,
 	trans->flags		= flags;
 
 	return __bch2_trans_commit(trans);
-}
-
-static inline void bch2_trans_update(struct btree_trans *trans,
-				     struct btree_iter *iter,
-				     struct bkey_i *k)
-{
-	EBUG_ON(trans->nr_updates >= trans->nr_iters + 4);
-
-	iter->flags |= BTREE_ITER_KEEP_UNTIL_COMMIT;
-
-	trans->updates[trans->nr_updates++] = (struct btree_insert_entry) {
-		.iter = iter, .k = k
-	};
 }
 
 #define __bch2_trans_do(_trans, _disk_res, _journal_seq,		\
