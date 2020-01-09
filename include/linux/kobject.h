@@ -121,7 +121,10 @@ static inline struct kobject *kobject_get(struct kobject *kobj)
 	return kobj;
 }
 
-static inline void kset_unregister(struct kset *kset) {}
+static inline void kset_unregister(struct kset *kset)
+{
+	kfree(kset);
+}
 
 #define kset_create_and_add(_name, _u, _parent)				\
 	((struct kset *) kzalloc(sizeof(struct kset), GFP_KERNEL))
