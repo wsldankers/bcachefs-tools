@@ -210,28 +210,38 @@ bch2_sort_repack_merge(struct bch_fs *c,
 		       bool filter_whiteouts)
 {
 	struct bkey_packed *prev = NULL, *k_packed;
-	struct bkey_s k;
+	struct bkey_on_stack k;
 	struct btree_nr_keys nr;
-	struct bkey unpacked;
 
 	memset(&nr, 0, sizeof(nr));
+	bkey_on_stack_init(&k);
 
 	while ((k_packed = bch2_btree_node_iter_next_all(iter, src))) {
 		if (filter_whiteouts && bkey_whiteout(k_packed))
 			continue;
 
-		k = __bkey_disassemble(src, k_packed, &unpacked);
+		/*
+		 * NOTE:
+		 * bch2_bkey_normalize may modify the key we pass it (dropping
+		 * stale pointers) and we don't have a write lock on the src
+		 * node; we have to make a copy of the entire key before calling
+		 * normalize
+		 */
+		bkey_on_stack_realloc(&k, c, k_packed->u64s + BKEY_U64s);
+		bch2_bkey_unpack(src, k.k, k_packed);
 
 		if (filter_whiteouts &&
-		    bch2_bkey_normalize(c, k))
+		    bch2_bkey_normalize(c, bkey_i_to_s(k.k)))
 			continue;
 
-		extent_sort_append(c, out_f, &nr, vstruct_last(dst), &prev, k);
+		extent_sort_append(c, out_f, &nr, vstruct_last(dst),
+				   &prev, bkey_i_to_s(k.k));
 	}
 
 	extent_sort_advance_prev(out_f, &nr, vstruct_last(dst), &prev);
 
 	dst->u64s = cpu_to_le16((u64 *) prev - dst->_data);
+	bkey_on_stack_exit(&k, c);
 	return nr;
 }
 
@@ -254,23 +264,18 @@ unsigned bch2_sort_keys(struct bkey_packed *dst,
 	sort_iter_sort(iter, sort_keys_cmp);
 
 	while ((in = sort_iter_next(iter, sort_keys_cmp))) {
+		bool needs_whiteout = false;
+
 		if (bkey_whiteout(in) &&
 		    (filter_whiteouts || !in->needs_whiteout))
 			continue;
 
-		if (bkey_whiteout(in) &&
-		    (next = sort_iter_peek(iter)) &&
-		    !bkey_cmp_packed(iter->b, in, next)) {
+		while ((next = sort_iter_peek(iter)) &&
+		       !bkey_cmp_packed(iter->b, in, next)) {
 			BUG_ON(in->needs_whiteout &&
 			       next->needs_whiteout);
-			/*
-			 * XXX racy, called with read lock from write path
-			 *
-			 * leads to spurious BUG_ON() in bkey_unpack_key() in
-			 * debug mode
-			 */
-			next->needs_whiteout |= in->needs_whiteout;
-			continue;
+			needs_whiteout |= in->needs_whiteout;
+			in = sort_iter_next(iter, sort_keys_cmp);
 		}
 
 		if (bkey_whiteout(in)) {
@@ -279,6 +284,7 @@ unsigned bch2_sort_keys(struct bkey_packed *dst,
 		} else {
 			bkey_copy(out, in);
 		}
+		out->needs_whiteout |= needs_whiteout;
 		out = bkey_next(out);
 	}
 
