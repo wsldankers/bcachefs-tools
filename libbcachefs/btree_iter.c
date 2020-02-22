@@ -408,7 +408,7 @@ static void __bch2_btree_iter_verify(struct btree_iter *iter,
 	 * For extents, the iterator may have skipped past deleted keys (but not
 	 * whiteouts)
 	 */
-	k = b->level || iter->flags & BTREE_ITER_IS_EXTENTS
+	k = b->level || btree_node_type_is_extents(iter->btree_id)
 		? bch2_btree_node_iter_prev_filter(&tmp, b, KEY_TYPE_discard)
 		: bch2_btree_node_iter_prev_all(&tmp, b);
 	if (k && bkey_iter_pos_cmp(b, k, &pos) >= 0) {
@@ -563,7 +563,7 @@ fixup_done:
 	if (!bch2_btree_node_iter_end(node_iter) &&
 	    iter_current_key_modified &&
 	    (b->level ||
-	     (iter->flags & BTREE_ITER_IS_EXTENTS))) {
+	     btree_node_type_is_extents(iter->btree_id))) {
 		struct bset_tree *t;
 		struct bkey_packed *k, *k2, *p;
 
@@ -1271,6 +1271,29 @@ static unsigned btree_iter_pos_changed(struct btree_iter *iter, int cmp)
 	return l;
 }
 
+void __bch2_btree_iter_set_pos(struct btree_iter *iter, struct bpos new_pos,
+			       bool strictly_greater)
+{
+	struct bpos old = btree_iter_search_key(iter);
+	unsigned l;
+	int cmp;
+
+	iter->flags &= ~BTREE_ITER_IS_EXTENTS;
+	iter->flags |= strictly_greater ? BTREE_ITER_IS_EXTENTS : 0;
+	iter->pos = new_pos;
+
+	cmp = bkey_cmp(btree_iter_search_key(iter), old);
+	if (!cmp)
+		return;
+
+	l = btree_iter_pos_changed(iter, cmp);
+
+	if (l != iter->level)
+		btree_iter_set_dirty(iter, BTREE_ITER_NEED_TRAVERSE);
+	else
+		btree_iter_set_dirty(iter, BTREE_ITER_NEED_PEEK);
+}
+
 void bch2_btree_iter_set_pos(struct btree_iter *iter, struct bpos new_pos)
 {
 	int cmp = bkey_cmp(new_pos, iter->pos);
@@ -1709,8 +1732,7 @@ static inline void bch2_btree_iter_init(struct btree_trans *trans,
 	iter->nodes_locked		= 0;
 	iter->nodes_intent_locked	= 0;
 	for (i = 0; i < ARRAY_SIZE(iter->l); i++)
-		iter->l[i].b		= NULL;
-	iter->l[iter->level].b		= BTREE_ITER_NO_NODE_INIT;
+		iter->l[i].b		= BTREE_ITER_NO_NODE_INIT;
 
 	prefetch(c->btree_roots[btree_id].b);
 }
@@ -1729,7 +1751,12 @@ static inline void __bch2_trans_iter_free(struct btree_trans *trans,
 int bch2_trans_iter_put(struct btree_trans *trans,
 			struct btree_iter *iter)
 {
-	int ret = btree_iter_err(iter);
+	int ret;
+
+	if (IS_ERR_OR_NULL(iter))
+		return 0;
+
+	ret = btree_iter_err(iter);
 
 	if (!(trans->iters_touched & (1ULL << iter->idx)) &&
 	    !(iter->flags & BTREE_ITER_KEEP_UNTIL_COMMIT))
@@ -1742,6 +1769,9 @@ int bch2_trans_iter_put(struct btree_trans *trans,
 int bch2_trans_iter_free(struct btree_trans *trans,
 			 struct btree_iter *iter)
 {
+	if (IS_ERR_OR_NULL(iter))
+		return 0;
+
 	trans->iters_touched &= ~(1ULL << iter->idx);
 
 	return bch2_trans_iter_put(trans, iter);
@@ -1939,7 +1969,8 @@ struct btree_iter *bch2_trans_get_iter(struct btree_trans *trans,
 		__btree_trans_get_iter(trans, btree_id, pos, flags);
 
 	if (!IS_ERR(iter))
-		bch2_btree_iter_set_pos(iter, pos);
+		__bch2_btree_iter_set_pos(iter, pos,
+			btree_node_type_is_extents(btree_id));
 	return iter;
 }
 
@@ -1981,8 +2012,8 @@ struct btree_iter *bch2_trans_copy_iter(struct btree_trans *trans,
 
 	trans->iters_live |= 1ULL << iter->idx;
 	/*
-	 * Don't mark it as touched, we don't need to preserve this iter since
-	 * it's cheap to copy it again:
+	 * We don't need to preserve this iter since it's cheap to copy it
+	 * again - this will cause trans_iter_put() to free it right away:
 	 */
 	trans->iters_touched &= ~(1ULL << iter->idx);
 

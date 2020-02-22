@@ -53,9 +53,8 @@ bool bch2_btree_bset_insert_key(struct btree_iter *iter,
 				struct btree_node_iter *node_iter,
 				struct bkey_i *insert)
 {
-	const struct bkey_format *f = &b->format;
 	struct bkey_packed *k;
-	unsigned clobber_u64s;
+	unsigned clobber_u64s = 0, new_u64s = 0;
 
 	EBUG_ON(btree_node_just_written(b));
 	EBUG_ON(bset_written(b, btree_bset_last(b)));
@@ -68,30 +67,25 @@ bool bch2_btree_bset_insert_key(struct btree_iter *iter,
 		k = NULL;
 
 	/* @k is the key being overwritten/deleted, if any: */
-
 	EBUG_ON(k && bkey_whiteout(k));
+
+	/* Deleting, but not found? nothing to do: */
+	if (bkey_whiteout(&insert->k) && !k)
+		return false;
 
 	if (bkey_whiteout(&insert->k)) {
 		/* Deleting: */
-
-		/* Not found? Nothing to do: */
-		if (!k)
-			return false;
-
 		btree_account_key_drop(b, k);
 		k->type = KEY_TYPE_deleted;
 
-		if (k->needs_whiteout) {
+		if (k->needs_whiteout)
 			push_whiteout(iter->trans->c, b, k);
-			k->needs_whiteout = false;
-		}
+		k->needs_whiteout = false;
 
 		if (k >= btree_bset_last(b)->start) {
 			clobber_u64s = k->u64s;
-
 			bch2_bset_delete(b, k, clobber_u64s);
-			bch2_btree_node_iter_fix(iter, b, node_iter, k,
-						 clobber_u64s, 0);
+			goto fix_iter;
 		} else {
 			bch2_btree_iter_fix_key_modified(iter, b, k);
 		}
@@ -101,14 +95,6 @@ bool bch2_btree_bset_insert_key(struct btree_iter *iter,
 
 	if (k) {
 		/* Overwriting: */
-		if (!bkey_written(b, k) &&
-		    bkey_val_u64s(&insert->k) == bkeyp_val_u64s(f, k)) {
-			k->type = insert->k.type;
-			memcpy_u64s(bkeyp_val(f, k), &insert->v,
-				    bkey_val_u64s(&insert->k));
-			return true;
-		}
-
 		btree_account_key_drop(b, k);
 		k->type = KEY_TYPE_deleted;
 
@@ -124,11 +110,13 @@ bool bch2_btree_bset_insert_key(struct btree_iter *iter,
 	}
 
 	k = bch2_btree_node_iter_bset_pos(node_iter, b, bset_tree_last(b));
-	clobber_u64s = 0;
 overwrite:
 	bch2_bset_insert(b, node_iter, k, insert, clobber_u64s);
-	bch2_btree_node_iter_fix(iter, b, node_iter, k,
-				 clobber_u64s, k->u64s);
+	new_u64s = k->u64s;
+fix_iter:
+	if (clobber_u64s != new_u64s)
+		bch2_btree_node_iter_fix(iter, b, node_iter, k,
+					 clobber_u64s, new_u64s);
 	return true;
 }
 
@@ -792,7 +780,7 @@ int bch2_trans_update(struct btree_trans *trans, struct btree_iter *iter,
 
 	iter->flags |= BTREE_ITER_KEEP_UNTIL_COMMIT;
 
-	if (iter->flags & BTREE_ITER_IS_EXTENTS) {
+	if (btree_node_type_is_extents(iter->btree_id)) {
 		iter->pos_after_commit = k->k.p;
 		iter->flags |= BTREE_ITER_SET_POS_AFTER_COMMIT;
 	}
@@ -910,7 +898,7 @@ retry:
 		 */
 		delete.k.p = iter->pos;
 
-		if (iter->flags & BTREE_ITER_IS_EXTENTS) {
+		if (btree_node_type_is_extents(iter->btree_id)) {
 			unsigned max_sectors =
 				KEY_SIZE_MAX & (~0 << trans->c->block_bits);
 
