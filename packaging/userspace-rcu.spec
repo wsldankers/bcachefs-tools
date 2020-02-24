@@ -2,7 +2,7 @@
 
 Name:           userspace-rcu
 Version:        0.11.1
-Release:        1%{?dist}
+Release:        2%{?dist}
 Summary:        liburcu is a LGPLv2.1 userspace RCU (read-copy-update) library.
 
 License:        LGPLv2.1
@@ -11,8 +11,9 @@ Source0:        https://lttng.org/files/urcu/%{name}-%{version}.tar.bz2
 Source1:        https://lttng.org/files/urcu/%{name}-%{version}.tar.bz2.asc
 
 # "devel" files are installed with this package, also.
-Conflicts:	userspace-rcu-devel < 0.11.1
 Provides:	userspace-rcu-devel
+
+# Recommend using https://www.softwarecollections.org/en/scls/rhscl/devtoolset-8/ for this
 
 BuildRequires:  bzip2
 BuildRequires:  gcc
@@ -231,5 +232,7 @@ rm -rf $RPM_BUILD_ROOT
 %{_libdir}/pkgconfig/liburcu.pc
 
 %changelog
+* Mon Feb 24 2020 Michael Adams <unquietwiki@gmail.com> - 0.11-2
+- Try to fix RPM package install warning
 * Tue Jan 07 2020 Michael Adams <unquietwiki@gmail.com> - 0.11-1
 - Initial RPM package
