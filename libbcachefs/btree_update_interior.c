@@ -370,6 +370,9 @@ static struct btree *bch2_btree_node_alloc(struct btree_update *as, unsigned lev
 	set_btree_node_need_write(b);
 
 	bch2_bset_init_first(b, &b->data->keys);
+	b->level	= level;
+	b->btree_id	= as->btree_id;
+
 	memset(&b->nr, 0, sizeof(b->nr));
 	b->data->magic = cpu_to_le64(bset_magic(c));
 	b->data->flags = 0;
@@ -666,9 +669,15 @@ static void btree_update_nodes_written(struct closure *cl)
 	 * to child nodes that weren't written yet: now, the child nodes have
 	 * been written so we can write out the update to the interior node.
 	 */
-retry:
 	mutex_lock(&c->btree_interior_update_lock);
 	as->nodes_written = true;
+retry:
+	as = list_first_entry_or_null(&c->btree_interior_updates_unwritten,
+				      struct btree_update, unwritten_list);
+	if (!as || !as->nodes_written) {
+		mutex_unlock(&c->btree_interior_update_lock);
+		return;
+	}
 
 	switch (as->mode) {
 	case BTREE_INTERIOR_NO_UPDATE:
@@ -681,11 +690,12 @@ retry:
 			mutex_unlock(&c->btree_interior_update_lock);
 			btree_node_lock_type(c, b, SIX_LOCK_read);
 			six_unlock_read(&b->lock);
+			mutex_lock(&c->btree_interior_update_lock);
 			goto retry;
 		}
 
 		BUG_ON(!btree_node_dirty(b));
-		closure_wait(&btree_current_write(b)->wait, cl);
+		closure_wait(&btree_current_write(b)->wait, &as->cl);
 
 		list_del(&as->write_blocked_list);
 
@@ -694,6 +704,8 @@ retry:
 		 * nodes to be writeable:
 		 */
 		closure_wake_up(&c->btree_interior_update_wait);
+
+		list_del(&as->unwritten_list);
 		mutex_unlock(&c->btree_interior_update_lock);
 
 		/*
@@ -702,6 +714,7 @@ retry:
 		 */
 		bch2_btree_node_write_cond(c, b, true);
 		six_unlock_read(&b->lock);
+		continue_at(&as->cl, btree_update_nodes_reachable, system_wq);
 		break;
 
 	case BTREE_INTERIOR_UPDATING_AS:
@@ -716,8 +729,12 @@ retry:
 		/*
 		 * and then we have to wait on that btree_update to finish:
 		 */
-		closure_wait(&as->parent_as->wait, cl);
+		closure_wait(&as->parent_as->wait, &as->cl);
+
+		list_del(&as->unwritten_list);
 		mutex_unlock(&c->btree_interior_update_lock);
+
+		continue_at(&as->cl, btree_update_nodes_reachable, system_wq);
 		break;
 
 	case BTREE_INTERIOR_UPDATING_ROOT:
@@ -728,6 +745,7 @@ retry:
 			mutex_unlock(&c->btree_interior_update_lock);
 			btree_node_lock_type(c, b, SIX_LOCK_read);
 			six_unlock_read(&b->lock);
+			mutex_lock(&c->btree_interior_update_lock);
 			goto retry;
 		}
 
@@ -744,6 +762,8 @@ retry:
 		 * can reuse the old nodes it'll have to do a journal commit:
 		 */
 		six_unlock_read(&b->lock);
+
+		list_del(&as->unwritten_list);
 		mutex_unlock(&c->btree_interior_update_lock);
 
 		/*
@@ -762,11 +782,12 @@ retry:
 
 		as->journal_seq = bch2_journal_last_unwritten_seq(&c->journal);
 
-		btree_update_wait_on_journal(cl);
-		return;
+		btree_update_wait_on_journal(&as->cl);
+		break;
 	}
 
-	continue_at(cl, btree_update_nodes_reachable, system_wq);
+	mutex_lock(&c->btree_interior_update_lock);
+	goto retry;
 }
 
 /*
@@ -778,6 +799,7 @@ static void btree_update_updated_node(struct btree_update *as, struct btree *b)
 	struct bch_fs *c = as->c;
 
 	mutex_lock(&c->btree_interior_update_lock);
+	list_add_tail(&as->unwritten_list, &c->btree_interior_updates_unwritten);
 
 	BUG_ON(as->mode != BTREE_INTERIOR_NO_UPDATE);
 	BUG_ON(!btree_node_dirty(b));
@@ -858,6 +880,7 @@ static void btree_update_updated_root(struct btree_update *as)
 	struct btree_root *r = &c->btree_roots[as->btree_id];
 
 	mutex_lock(&c->btree_interior_update_lock);
+	list_add_tail(&as->unwritten_list, &c->btree_interior_updates_unwritten);
 
 	BUG_ON(as->mode != BTREE_INTERIOR_NO_UPDATE);
 

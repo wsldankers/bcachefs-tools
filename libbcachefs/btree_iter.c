@@ -912,6 +912,27 @@ static void btree_iter_prefetch(struct btree_iter *iter)
 		btree_node_unlock(iter, iter->level);
 }
 
+static noinline void btree_node_mem_ptr_set(struct btree_iter *iter,
+					    unsigned plevel, struct btree *b)
+{
+	struct btree_iter_level *l = &iter->l[plevel];
+	bool locked = btree_node_locked(iter, plevel);
+	struct bkey_packed *k;
+	struct bch_btree_ptr_v2 *bp;
+
+	if (!bch2_btree_node_relock(iter, plevel))
+		return;
+
+	k = bch2_btree_node_iter_peek_all(&l->iter, l->b);
+	BUG_ON(k->type != KEY_TYPE_btree_ptr_v2);
+
+	bp = (void *) bkeyp_val(&l->b->format, k);
+	bp->mem_ptr = (unsigned long)b;
+
+	if (!locked)
+		btree_node_unlock(iter, plevel);
+}
+
 static __always_inline int btree_iter_down(struct btree_iter *iter)
 {
 	struct bch_fs *c = iter->trans->c;
@@ -932,6 +953,10 @@ static __always_inline int btree_iter_down(struct btree_iter *iter)
 
 	mark_btree_node_locked(iter, level, lock_type);
 	btree_iter_node_set(iter, b);
+
+	if (tmp.k.k.type == KEY_TYPE_btree_ptr_v2 &&
+	    unlikely(b != btree_node_mem_ptr(&tmp.k)))
+		btree_node_mem_ptr_set(iter, level + 1, b);
 
 	if (iter->flags & BTREE_ITER_PREFETCH)
 		btree_iter_prefetch(iter);
@@ -1756,6 +1781,8 @@ int bch2_trans_iter_put(struct btree_trans *trans,
 	if (IS_ERR_OR_NULL(iter))
 		return 0;
 
+	BUG_ON(trans->iters + iter->idx != iter);
+
 	ret = btree_iter_err(iter);
 
 	if (!(trans->iters_touched & (1ULL << iter->idx)) &&
@@ -2080,16 +2107,11 @@ void bch2_trans_reset(struct btree_trans *trans, unsigned flags)
 
 	bch2_trans_unlink_iters(trans);
 
-	if (flags & TRANS_RESET_ITERS)
-		trans->iters_live = 0;
-
 	trans->iters_touched &= trans->iters_live;
 
 	trans->need_reset		= 0;
 	trans->nr_updates		= 0;
-
-	if (flags & TRANS_RESET_MEM)
-		trans->mem_top		= 0;
+	trans->mem_top			= 0;
 
 	if (trans->fs_usage_deltas) {
 		trans->fs_usage_deltas->used = 0;
@@ -2107,6 +2129,12 @@ void bch2_trans_init(struct btree_trans *trans, struct bch_fs *c,
 		     size_t expected_mem_bytes)
 {
 	memset(trans, 0, offsetof(struct btree_trans, iters_onstack));
+
+	/*
+	 * reallocating iterators currently completely breaks
+	 * bch2_trans_iter_put():
+	 */
+	expected_nr_iters = BTREE_ITER_MAX;
 
 	trans->c		= c;
 	trans->ip		= _RET_IP_;
