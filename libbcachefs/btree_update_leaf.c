@@ -212,6 +212,25 @@ static void bch2_insert_fixup_key(struct btree_trans *trans,
 		bch2_btree_journal_key(trans, iter, insert);
 }
 
+static void verify_key_order(struct btree *b, const char *msg)
+{
+	struct bset_tree *t = bset_tree_last(b);
+	struct bkey_packed *k;
+	struct bkey u;
+	struct bpos prev = POS_MIN;
+
+	bset_tree_for_each_key(b, t, k) {
+		u = bkey_unpack_key(b, k);
+
+		if (bkey_cmp(prev, bkey_start_pos(&u)) > 0) {
+			bch2_dump_bset(b, btree_bset_last(b), 0);
+			panic("keys out of order %s update\n", msg);
+		}
+
+		prev = u.p;
+	}
+}
+
 /**
  * btree_insert_key - insert a key one key into a leaf node
  */
@@ -228,10 +247,14 @@ static void btree_insert_key_leaf(struct btree_trans *trans,
 
 	insert->k.needs_whiteout = false;
 
+	verify_key_order(b, "before");
+
 	if (!btree_node_is_extents(b))
 		bch2_insert_fixup_key(trans, iter, insert);
 	else
 		bch2_insert_fixup_extent(trans, iter, insert);
+
+	verify_key_order(b, "after");
 
 	live_u64s_added = (int) b->nr.live_u64s - old_live_u64s;
 	u64s_added = (int) bset_u64s(t) - old_u64s;
