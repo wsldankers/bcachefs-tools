@@ -231,7 +231,7 @@ static void verify_key_order1(struct btree *b, const char *msg)
 	}
 }
 
-static void verify_key_order2(struct btree *b, const char *msg)
+void verify_key_order2(struct btree *b, const char *msg)
 {
 	struct btree_node_iter iter;
 	struct bkey unpacked;
@@ -241,7 +241,7 @@ static void verify_key_order2(struct btree *b, const char *msg)
 	for_each_btree_node_key_unpack(b, k, &iter, &unpacked) {
 		if (bkey_cmp(prev, bkey_start_pos(k.k)) > 0) {
 			bch2_dump_btree_node(b);
-			panic("overlapping keys in different bsets %s update\n", msg);
+			panic("overlapping keys in different bsets %s\n", msg);
 		}
 
 		prev = k.k->p;
@@ -264,16 +264,16 @@ static void btree_insert_key_leaf(struct btree_trans *trans,
 
 	insert->k.needs_whiteout = false;
 
-	verify_key_order1(b, "before");
-	verify_key_order2(b, "before");
+	verify_key_order1(b, "before update");
+	verify_key_order2(b, "before update");
 
 	if (!btree_node_is_extents(b))
 		bch2_insert_fixup_key(trans, iter, insert);
 	else
 		bch2_insert_fixup_extent(trans, iter, insert);
 
-	verify_key_order1(b, "after");
-	verify_key_order2(b, "after");
+	verify_key_order1(b, "after update");
+	verify_key_order2(b, "after update");
 
 	live_u64s_added = (int) b->nr.live_u64s - old_live_u64s;
 	u64s_added = (int) bset_u64s(t) - old_u64s;

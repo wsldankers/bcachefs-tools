@@ -21,6 +21,8 @@
 
 #include <trace/events/bcachefs.h>
 
+void verify_key_order2(struct btree *b, const char *msg);
+
 static void verify_no_dups(struct btree *b,
 			   struct bkey_packed *start,
 			   struct bkey_packed *end,
@@ -1058,6 +1060,8 @@ int bch2_btree_node_read_done(struct bch_fs *c, struct btree *b, bool have_retry
 	set_needs_whiteout(btree_bset_first(b), true);
 
 	btree_node_reset_sib_u64s(b);
+
+	verify_key_order2(b, "after read");
 out:
 	mempool_free(iter, &c->fill_iter);
 	return retry_read;

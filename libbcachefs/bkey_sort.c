@@ -111,6 +111,8 @@ bch2_key_sort_fix_overlapping(struct bch_fs *c, struct bset *dst,
 	struct bkey_packed *k;
 	struct btree_nr_keys nr;
 
+	pr_info("btree %u level %u", iter->b->btree_id, iter->b->level);
+
 	memset(&nr, 0, sizeof(nr));
 
 	sort_iter_sort(iter, key_sort_fix_overlapping_cmp);
@@ -154,6 +156,10 @@ static void extent_sort_append(struct bch_fs *c,
 {
 	if (bkey_whiteout(k.k))
 		return;
+
+	if (*prev &&
+	    bkey_cmp(packed_to_bkey(*prev)->k.p, bkey_start_pos(k.k)) > 0)
+		panic("extent_sort_append generating overlapping extents\n");
 
 	/*
 	 * prev is always unpacked, for key merging - until right before we
@@ -323,6 +329,8 @@ bch2_extent_sort_fix_overlapping(struct bch_fs *c, struct bset *dst,
 	struct bkey_s l, r;
 	struct btree_nr_keys nr;
 	struct bkey_on_stack split;
+
+	pr_info("btree %u level %u", b->btree_id, b->level);
 
 	memset(&nr, 0, sizeof(nr));
 	bkey_on_stack_init(&split);
