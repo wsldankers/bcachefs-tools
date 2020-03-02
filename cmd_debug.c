@@ -59,21 +59,38 @@ static void dump_one_device(struct bch_fs *c, struct bch_dev *ca, int fd)
 	/* Btree: */
 	for (i = 0; i < BTREE_ID_NR; i++) {
 		const struct bch_extent_ptr *ptr;
+		struct bkey_ptrs_c ptrs;
 		struct btree_trans trans;
 		struct btree_iter *iter;
 		struct btree *b;
 
 		bch2_trans_init(&trans, c, 0, 0);
 
-		for_each_btree_node(&trans, iter, i, POS_MIN, 0, b) {
-			struct bkey_ptrs_c ptrs =
-				bch2_bkey_ptrs_c(bkey_i_to_s_c(&b->key));
+		__for_each_btree_node(&trans, iter, i, POS_MIN, 0, 1, 0, b) {
+			struct btree_node_iter iter;
+			struct bkey u;
+			struct bkey_s_c k;
+
+			for_each_btree_node_key_unpack(b, k, &iter, &u) {
+				ptrs = bch2_bkey_ptrs_c(k);
+
+				bkey_for_each_ptr(ptrs, ptr)
+					if (ptr->dev == ca->dev_idx)
+						range_add(&data,
+							  ptr->offset << 9,
+							  btree_bytes(c));
+			}
+		}
+
+		b = c->btree_roots[i].b;
+		if (!btree_node_fake(b)) {
+			ptrs = bch2_bkey_ptrs_c(bkey_i_to_s_c(&b->key));
 
 			bkey_for_each_ptr(ptrs, ptr)
 				if (ptr->dev == ca->dev_idx)
 					range_add(&data,
 						  ptr->offset << 9,
-						  b->written << 9);
+						  btree_bytes(c));
 		}
 		bch2_trans_exit(&trans);
 	}
@@ -97,13 +114,16 @@ int cmd_dump(int argc, char *argv[])
 	opt_set(opts, errors,		BCH_ON_ERROR_CONTINUE);
 	opt_set(opts, fix_errors,	FSCK_OPT_YES);
 
-	while ((opt = getopt(argc, argv, "o:fh")) != -1)
+	while ((opt = getopt(argc, argv, "o:fvh")) != -1)
 		switch (opt) {
 		case 'o':
 			out = optarg;
 			break;
 		case 'f':
 			force = true;
+			break;
+		case 'v':
+			opt_set(opts, verbose, true);
 			break;
 		case 'h':
 			dump_usage();
