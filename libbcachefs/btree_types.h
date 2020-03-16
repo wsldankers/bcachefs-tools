@@ -235,9 +235,10 @@ struct btree_iter {
 	u16			flags;
 	u8			idx;
 
-	enum btree_iter_uptodate uptodate:4;
 	enum btree_id		btree_id:4;
+	enum btree_iter_uptodate uptodate:4;
 	unsigned		level:4,
+				min_depth:4,
 				locks_want:4,
 				nodes_locked:4,
 				nodes_intent_locked:4;
@@ -279,6 +280,7 @@ struct btree_trans {
 
 	u8			nr_iters;
 	u8			nr_updates;
+	u8			nr_updates2;
 	u8			size;
 	unsigned		used_mempool:1;
 	unsigned		error:1;
@@ -291,6 +293,7 @@ struct btree_trans {
 
 	struct btree_iter	*iters;
 	struct btree_insert_entry *updates;
+	struct btree_insert_entry *updates2;
 
 	/* update path: */
 	struct journal_res	journal_res;
@@ -304,6 +307,7 @@ struct btree_trans {
 
 	struct btree_iter	iters_onstack[2];
 	struct btree_insert_entry updates_onstack[2];
+	struct btree_insert_entry updates2_onstack[2];
 };
 
 #define BTREE_FLAG(flag)						\

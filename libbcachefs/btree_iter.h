@@ -96,11 +96,11 @@ __trans_next_iter_with_node(struct btree_trans *trans, struct btree *b,
 						 (_iter)->idx + 1))
 
 #ifdef CONFIG_BCACHEFS_DEBUG
-void bch2_btree_iter_verify(struct btree_iter *, struct btree *);
+void bch2_btree_trans_verify_iters(struct btree_trans *, struct btree *);
 void bch2_btree_trans_verify_locks(struct btree_trans *);
 #else
-static inline void bch2_btree_iter_verify(struct btree_iter *iter,
-					  struct btree *b) {}
+static inline void bch2_btree_trans_verify_iters(struct btree_trans *trans,
+						 struct btree *b) {}
 static inline void bch2_btree_trans_verify_locks(struct btree_trans *iter) {}
 #endif
 
@@ -154,10 +154,13 @@ bch2_btree_iter_traverse(struct btree_iter *iter)
 int bch2_btree_iter_traverse_all(struct btree_trans *);
 
 struct btree *bch2_btree_iter_peek_node(struct btree_iter *);
-struct btree *bch2_btree_iter_next_node(struct btree_iter *, unsigned);
+struct btree *bch2_btree_iter_next_node(struct btree_iter *);
 
 struct bkey_s_c bch2_btree_iter_peek(struct btree_iter *);
 struct bkey_s_c bch2_btree_iter_next(struct btree_iter *);
+
+struct bkey_s_c bch2_btree_iter_peek_with_updates(struct btree_iter *);
+struct bkey_s_c bch2_btree_iter_next_with_updates(struct btree_iter *);
 
 struct bkey_s_c bch2_btree_iter_peek_prev(struct btree_iter *);
 struct bkey_s_c bch2_btree_iter_prev(struct btree_iter *);
@@ -199,9 +202,7 @@ static inline int __btree_iter_cmp(enum btree_id id,
 				   struct bpos pos,
 				   const struct btree_iter *r)
 {
-	if (id != r->btree_id)
-		return id < r->btree_id ? -1 : 1;
-	return bkey_cmp(pos, r->pos);
+	return cmp_int(id, r->btree_id) ?: bkey_cmp(pos, r->pos);
 }
 
 static inline int btree_iter_cmp(const struct btree_iter *l,
@@ -231,7 +232,7 @@ static inline int bch2_trans_cond_resched(struct btree_trans *trans)
 				_start, _locks_want, _depth, _flags),	\
 	     _b = bch2_btree_iter_peek_node(_iter);			\
 	     (_b);							\
-	     (_b) = bch2_btree_iter_next_node(_iter, _depth))
+	     (_b) = bch2_btree_iter_next_node(_iter))
 
 #define for_each_btree_node(_trans, _iter, _btree_id, _start,		\
 			    _flags, _b)					\

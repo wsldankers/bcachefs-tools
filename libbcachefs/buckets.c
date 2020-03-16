@@ -1254,21 +1254,21 @@ inline int bch2_mark_overwrite(struct btree_trans *trans,
 			       struct bkey_s_c old,
 			       struct bkey_i *new,
 			       struct bch_fs_usage *fs_usage,
-			       unsigned flags)
+			       unsigned flags,
+			       bool is_extents)
 {
 	struct bch_fs		*c = trans->c;
-	struct btree		*b = iter->l[0].b;
 	unsigned		offset = 0;
-	s64			sectors = 0;
+	s64			sectors = -((s64) old.k->size);
 
 	flags |= BTREE_TRIGGER_OVERWRITE;
 
-	if (btree_node_is_extents(b)
+	if (is_extents
 	    ? bkey_cmp(new->k.p, bkey_start_pos(old.k)) <= 0
 	    : bkey_cmp(new->k.p, old.k->p))
 		return 0;
 
-	if (btree_node_is_extents(b)) {
+	if (is_extents) {
 		switch (bch2_extent_overlap(&new->k, old.k)) {
 		case BCH_EXTENT_OVERLAP_ALL:
 			offset = 0;
@@ -1341,7 +1341,8 @@ int bch2_mark_update(struct btree_trans *trans,
 		struct bkey_s_c		k = bkey_disassemble(b, _k, &unpacked);
 
 		ret = bch2_mark_overwrite(trans, iter, k, insert,
-					  fs_usage, flags);
+					  fs_usage, flags,
+					  btree_node_type_is_extents(iter->btree_id));
 		if (ret <= 0)
 			break;
 
@@ -1671,8 +1672,7 @@ static int __bch2_trans_mark_reflink_p(struct btree_trans *trans,
 	     k.k->p.offset > idx + sectors))
 		goto out;
 
-	bch2_btree_iter_set_pos(iter, bkey_start_pos(k.k));
-	BUG_ON(iter->uptodate > BTREE_ITER_NEED_PEEK);
+	sectors = k.k->p.offset - idx;
 
 	r_v = bch2_trans_kmalloc(trans, bkey_bytes(k.k));
 	ret = PTR_ERR_OR_ZERO(r_v);
@@ -1689,9 +1689,12 @@ static int __bch2_trans_mark_reflink_p(struct btree_trans *trans,
 		set_bkey_val_u64s(&r_v->k, 0);
 	}
 
+	bch2_btree_iter_set_pos(iter, bkey_start_pos(k.k));
+	BUG_ON(iter->uptodate > BTREE_ITER_NEED_PEEK);
+
 	bch2_trans_update(trans, iter, &r_v->k_i, 0);
 out:
-	ret = k.k->p.offset - idx;
+	ret = sectors;
 err:
 	bch2_trans_iter_put(trans, iter);
 	return ret;
