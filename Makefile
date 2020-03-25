@@ -39,7 +39,7 @@ ifdef D
 	CFLAGS+=-DCONFIG_VALGRIND=y
 endif
 
-PKGCONFIG_LIBS="blkid uuid liburcu libsodium zlib liblz4 libzstd"
+PKGCONFIG_LIBS="blkid uuid liburcu libsodium zlib liblz4 libzstd libkeyutils"
 ifdef BCACHEFS_FUSE
 	PKGCONFIG_LIBS+="fuse3 >= 3.7"
 	CFLAGS+=-DBCACHEFS_FUSE
