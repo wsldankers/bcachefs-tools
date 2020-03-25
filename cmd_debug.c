@@ -15,6 +15,7 @@
 #include "libbcachefs/buckets.h"
 #include "libbcachefs/error.h"
 #include "libbcachefs/journal.h"
+#include "libbcachefs/journal_io.h"
 #include "libbcachefs/super.h"
 
 static void dump_usage(void)
@@ -355,6 +356,61 @@ int cmd_list(int argc, char *argv[])
 	default:
 		die("Invalid mode");
 	}
+
+	bch2_fs_stop(c);
+	return 0;
+}
+
+static void list_journal_usage(void)
+{
+	puts("bcachefs list_journal - print contents of journal\n"
+	     "Usage: bcachefs list_journal [OPTION]... <devices>\n"
+	     "\n"
+	     "Options:\n"
+	     "  -h            Display this help and exit\n"
+	     "Report bugs to <linux-bcache@vger.kernel.org>");
+}
+
+int cmd_list_journal(int argc, char *argv[])
+{
+	struct bch_opts opts = bch2_opts_empty();
+	int opt;
+
+	opt_set(opts, nochanges,	true);
+	opt_set(opts, norecovery,	true);
+	opt_set(opts, degraded,		true);
+	opt_set(opts, errors,		BCH_ON_ERROR_CONTINUE);
+	opt_set(opts, fix_errors,	FSCK_OPT_YES);
+	opt_set(opts, keep_journal,	true);
+
+	while ((opt = getopt(argc, argv, "h")) != -1)
+		switch (opt) {
+		case 'h':
+			list_journal_usage();
+			exit(EXIT_SUCCESS);
+		}
+	args_shift(optind);
+
+	if (!argc)
+		die("Please supply device(s) to open");
+
+	struct bch_fs *c = bch2_fs_open(argv, argc, opts);
+	if (IS_ERR(c))
+		die("error opening %s: %s", argv[0], strerror(-PTR_ERR(c)));
+
+	struct journal_replay *p;
+	struct jset_entry *entry;
+	struct bkey_i *k, *_n;
+
+	/* This could be greatly expanded: */
+
+	list_for_each_entry(p, &c->journal_entries, list)
+		for_each_jset_key(k, _n, entry, &p->j) {
+			char buf[200];
+
+			bch2_bkey_val_to_text(&PBUF(buf), c, bkey_i_to_s_c(k));
+			printk(KERN_INFO "%s\n", buf);
+		}
 
 	bch2_fs_stop(c);
 	return 0;

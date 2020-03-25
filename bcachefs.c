@@ -75,6 +75,7 @@ static void usage(void)
 	     "These commands work on offline, unmounted filesystems\n"
 	     "  dump                 Dump filesystem metadata to a qcow2 image\n"
 	     "  list                 List filesystem metadata in textual form\n"
+	     "  list_journal         List contents of journal\n"
 	     "\n"
 	     "Miscellaneous:\n"
 	     "  version              Display the version of the invoked bcachefs tool\n");
@@ -199,6 +200,8 @@ int main(int argc, char *argv[])
 		return cmd_dump(argc, argv);
 	if (!strcmp(cmd, "list"))
 		return cmd_list(argc, argv);
+	if (!strcmp(cmd, "list_journal"))
+		return cmd_list_journal(argc, argv);
 
 	if (!strcmp(cmd, "setattr"))
 		return cmd_setattr(argc, argv);
