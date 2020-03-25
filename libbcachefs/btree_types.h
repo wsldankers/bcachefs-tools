@@ -53,7 +53,6 @@ struct bset_tree {
 
 struct btree_write {
 	struct journal_entry_pin	journal;
-	struct closure_waitlist		wait;
 };
 
 struct btree_alloc {
@@ -259,6 +258,11 @@ struct btree_iter {
 static inline enum btree_iter_type btree_iter_type(struct btree_iter *iter)
 {
 	return iter->flags & BTREE_ITER_TYPE;
+}
+
+static inline struct btree_iter_level *iter_l(struct btree_iter *iter)
+{
+	return iter->l + iter->level;
 }
 
 struct btree_insert_entry {
@@ -538,8 +542,6 @@ static inline bool btree_node_type_needs_gc(enum btree_node_type type)
 
 struct btree_root {
 	struct btree		*b;
-
-	struct btree_update	*as;
 
 	/* On disk root - see async splits: */
 	__BKEY_PADDED(key, BKEY_BTREE_PTR_VAL_U64s_MAX);
