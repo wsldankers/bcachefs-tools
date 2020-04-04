@@ -45,6 +45,8 @@ static void btree_node_interior_verify(struct btree *b)
 
 	while (1) {
 		k = bch2_btree_node_iter_peek_unpack(&iter, b, &unpacked);
+		if (k.k->type != KEY_TYPE_btree_ptr_v2)
+			break;
 		bp = bkey_s_c_to_btree_ptr_v2(k);
 
 		BUG_ON(bkey_cmp(next_node, bp.v->min_key));
@@ -725,7 +727,7 @@ again:
 
 	bch2_journal_res_put(&c->journal, &res);
 	bch2_journal_preres_put(&c->journal, &as->journal_preres);
-
+free_update:
 	/* Do btree write after dropping journal res: */
 	if (b) {
 		/*
@@ -736,8 +738,9 @@ again:
 		six_unlock_intent(&b->lock);
 	}
 
-	btree_update_nodes_reachable(as, res.seq);
-free_update:
+	if (!ret)
+		btree_update_nodes_reachable(as, res.seq);
+
 	__bch2_btree_update_free(as);
 	/*
 	 * for flush_held_btree_writes() waiting on updates to flush or
