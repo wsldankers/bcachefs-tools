@@ -954,6 +954,7 @@ int bchu_data(struct bchfs_handle fs, struct bch_ioctl_data cmd)
 			       e.p.pos.offset);
 		}
 
+		fflush(stdout);
 		sleep(1);
 	}
 	printf("\nDone\n");
