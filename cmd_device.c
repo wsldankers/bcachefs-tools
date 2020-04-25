@@ -304,6 +304,13 @@ int cmd_device_evacuate(int argc, char *argv[])
 	unsigned dev_idx;
 	struct bchfs_handle fs = bchu_fs_open_by_dev(dev_path, &dev_idx);
 
+	struct bch_ioctl_dev_usage u = bchu_dev_usage(fs, dev_idx);
+
+	if (u.state == BCH_MEMBER_STATE_RW) {
+		printf("Setting %s readonly\n", dev_path);
+		bchu_disk_set_state(fs, dev_idx, BCH_MEMBER_STATE_RO, 0);
+	}
+
 	return bchu_data(fs, (struct bch_ioctl_data) {
 		.op		= BCH_DATA_OP_MIGRATE,
 		.start		= POS_MIN,
