@@ -22,7 +22,7 @@ static inline void *kmalloc(size_t size, gfp_t flags)
 
 	p = size
 	    ? aligned_alloc(min(rounddown_pow_of_two(size),
-				PAGE_SIZE), size)
+				(size_t)PAGE_SIZE), size)
 	    : malloc(0);
 	if (p && (flags & __GFP_ZERO))
 		memset(p, 0, size);

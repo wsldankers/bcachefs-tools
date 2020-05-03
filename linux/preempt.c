@@ -15,7 +15,16 @@
  * correct to instead guarantee mutual exclusion for the critical sections.
  */
 
-static pthread_mutex_t preempt_lock = PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP;
+static pthread_mutex_t preempt_lock;
+
+__attribute__((constructor))
+static void preempt_init(void) {
+	pthread_mutexattr_t attr;
+	pthread_mutexattr_init(&attr);
+	pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+	pthread_mutex_init(&preempt_lock, &attr);
+	pthread_mutexattr_destroy(&attr);
+}
 
 void preempt_disable(void)
 {
