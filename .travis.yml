@@ -22,6 +22,7 @@ addons:
             - libsodium-dev
             - liburcu-dev
             - libzstd-dev
+            - libudev-dev
             - uuid-dev
             - zlib1g-dev
 

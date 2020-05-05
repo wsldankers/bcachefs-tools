@@ -39,7 +39,7 @@ ifdef D
 	CFLAGS+=-DCONFIG_VALGRIND=y
 endif
 
-PKGCONFIG_LIBS="blkid uuid liburcu libsodium zlib liblz4 libzstd"
+PKGCONFIG_LIBS="blkid uuid liburcu libsodium zlib liblz4 libzstd libudev"
 ifdef BCACHEFS_FUSE
 	PKGCONFIG_LIBS+="fuse3 >= 3.7"
 	CFLAGS+=-DBCACHEFS_FUSE
@@ -57,7 +57,7 @@ endif
 CFLAGS+=$(PKGCONFIG_CFLAGS)
 LDLIBS+=$(PKGCONFIG_LDLIBS)
 
-LDLIBS+=-lm -lpthread -lrt -lscrypt -lkeyutils -laio
+LDLIBS+=-lm -lpthread -lrt -lscrypt -lkeyutils -laio -ldl
 LDLIBS+=$(EXTRA_LDLIBS)
 
 ifeq ($(PREFIX),/usr)
@@ -69,7 +69,7 @@ else
 endif
 
 .PHONY: all
-all: bcachefs
+all: bcachefs mount.bcachefs
 
 .PHONY: tests
 tests: tests/test_helper
@@ -91,6 +91,16 @@ DEPS=$(SRCS:.c=.d)
 
 OBJS=$(SRCS:.c=.o)
 bcachefs: $(filter-out ./tests/%.o, $(OBJS))
+
+MOUNT_SRCS=$(shell find mount/src -type f -iname '*.rs') \
+    mount/Cargo.toml mount/Cargo.lock mount/build.rs
+libbcachefs_mount.a: $(MOUNT_SRCS)
+	LIBBCACHEFS_INCLUDE=$(CURDIR) cargo build --manifest-path mount/Cargo.toml --release
+	cp mount/target/release/libbcachefs_mount.a $@
+
+MOUNT_OBJ=$(filter-out ./bcachefs.o ./tests/%.o ./cmd_%.o , $(OBJS))
+mount.bcachefs: libbcachefs_mount.a $(MOUNT_OBJ)
+	$(CC) -Wl,--gc-sections libbcachefs_mount.a $(MOUNT_OBJ) -o $@ $(LDLIBS)
 
 tests/test_helper: $(filter ./tests/%.o, $(OBJS))
 
@@ -119,7 +129,8 @@ install: bcachefs
 
 .PHONY: clean
 clean:
-	$(RM) bcachefs tests/test_helper .version $(OBJS) $(DEPS)
+	$(RM) bcachefs mount.bcachefs libbcachefs_mount.a tests/test_helper .version $(OBJS) $(DEPS)
+	$(RM) -rf mount/target
 
 .PHONY: deb
 deb: all
