@@ -179,6 +179,7 @@
 #undef pr_fmt
 #define pr_fmt(fmt) "bcachefs: %s() " fmt "\n", __func__
 
+#include <linux/stddef.h>
 #include <linux/bug.h>
 #include <linux/bio.h>
 #include <linux/closure.h>
