@@ -404,13 +404,29 @@ int cmd_list_journal(int argc, char *argv[])
 
 	/* This could be greatly expanded: */
 
-	list_for_each_entry(p, &c->journal_entries, list)
+	list_for_each_entry(p, &c->journal_entries, list) {
+		printf("journal entry   %8llu\n"
+		       "    version     %8u\n"
+		       "    last seq    %8llu\n"
+		       "    read clock  %8u\n"
+		       "    write clock %8u\n"
+		       ,
+		       le64_to_cpu(p->j.seq),
+		       le32_to_cpu(p->j.seq),
+		       le64_to_cpu(p->j.last_seq),
+		       le16_to_cpu(p->j.read_clock),
+		       le16_to_cpu(p->j.write_clock));
+
 		for_each_jset_key(k, _n, entry, &p->j) {
 			char buf[200];
 
 			bch2_bkey_val_to_text(&PBUF(buf), c, bkey_i_to_s_c(k));
-			printk(KERN_INFO "%s\n", buf);
+			printf("btree %s l %u: %s\n",
+			       bch2_btree_ids[entry->btree_id],
+			       entry->level,
+			       buf);
 		}
+	}
 
 	bch2_fs_stop(c);
 	return 0;
