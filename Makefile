@@ -69,7 +69,7 @@ else
 endif
 
 .PHONY: all
-all: bcachefs mount.bcachefs
+all: bcachefs
 
 .PHONY: tests
 tests: tests/test_helper
