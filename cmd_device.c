@@ -326,6 +326,7 @@ static void device_set_state_usage(void)
 	     "\n"
 	     "Options:\n"
 	     "  -f, --force		    Force, if data redundancy will be degraded\n"
+	     "  -o, --offline               Set state of an offline device\n"
 	     "  -h, --help                  display this help and exit\n"
 	     "Report bugs to <linux-bcache@vger.kernel.org>");
 	exit(EXIT_SUCCESS);
@@ -335,15 +336,20 @@ int cmd_device_set_state(int argc, char *argv[])
 {
 	static const struct option longopts[] = {
 		{ "force",			0, NULL, 'f' },
+		{ "offline",			0, NULL, 'o' },
 		{ "help",			0, NULL, 'h' },
 		{ NULL }
 	};
 	int opt, flags = 0;
+	bool offline = false;
 
-	while ((opt = getopt_long(argc, argv, "fh", longopts, NULL)) != -1)
+	while ((opt = getopt_long(argc, argv, "foh", longopts, NULL)) != -1)
 		switch (opt) {
 		case 'f':
 			flags |= BCH_FORCE_IF_DEGRADED;
+			break;
+		case 'o':
+			offline = true;
 			break;
 		case 'h':
 			device_set_state_usage();
@@ -361,10 +367,31 @@ int cmd_device_set_state(int argc, char *argv[])
 	unsigned new_state = read_string_list_or_die(new_state_str,
 					bch2_dev_state, "device state");
 
-	unsigned dev_idx;
-	struct bchfs_handle fs = bchu_fs_open_by_dev(dev_path, &dev_idx);
+	if (!offline) {
+		unsigned dev_idx;
+		struct bchfs_handle fs = bchu_fs_open_by_dev(dev_path, &dev_idx);
 
-	bchu_disk_set_state(fs, dev_idx, new_state, flags);
+		bchu_disk_set_state(fs, dev_idx, new_state, flags);
+
+		bcache_fs_close(fs);
+	} else {
+		struct bch_opts opts = bch2_opts_empty();
+		struct bch_sb_handle sb = { NULL };
+
+		int ret = bch2_read_super(dev_path, &opts, &sb);
+		if (ret)
+			die("error opening %s: %s", dev_path, strerror(-ret));
+
+		struct bch_member *m = bch2_sb_get_members(sb.sb)->members + sb.sb->dev_idx;
+
+		SET_BCH_MEMBER_STATE(m, new_state);
+
+		le64_add_cpu(&sb.sb->seq, 1);
+
+		bch2_super_write(sb.bdev->bd_fd, sb.sb);
+		bch2_free_super(&sb);
+	}
+
 	return 0;
 }
 
