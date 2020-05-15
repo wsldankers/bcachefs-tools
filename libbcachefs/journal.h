@@ -269,7 +269,7 @@ static inline void bch2_journal_res_put(struct journal *j,
 	if (!res->ref)
 		return;
 
-	lock_release(&j->res_map, 0, _THIS_IP_);
+	lock_release(&j->res_map, _THIS_IP_);
 
 	while (res->u64s)
 		bch2_journal_add_entry(j, res,
@@ -344,7 +344,9 @@ static inline int bch2_journal_res_get(struct journal *j, struct journal_res *re
 		return ret;
 out:
 	if (!(flags & JOURNAL_RES_GET_CHECK)) {
-		lock_acquire_shared(&j->res_map, 0, 0, NULL, _THIS_IP_);
+		lock_acquire_shared(&j->res_map, 0,
+				    (flags & JOURNAL_RES_GET_NONBLOCK) != 0,
+				    NULL, _THIS_IP_);
 		EBUG_ON(!res->ref);
 	}
 	return 0;

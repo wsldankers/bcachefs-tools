@@ -143,10 +143,16 @@ update-bcachefs-sources:
 	git rm -rf --ignore-unmatch libbcachefs
 	test -d libbcachefs || mkdir libbcachefs
 	cp $(LINUX_DIR)/fs/bcachefs/*.[ch] libbcachefs/
+	git add libbcachefs/*.[ch]
 	cp $(LINUX_DIR)/include/trace/events/bcachefs.h include/trace/events/
+	git add include/trace/events/bcachefs.h
+	cp $(LINUX_DIR)/kernel/locking/six.c linux/
+	git add linux/six.c
+	cp $(LINUX_DIR)/include/linux/six.h include/linux/
+	git add include/linux/six.h
 	$(RM) libbcachefs/*.mod.c
 	git -C $(LINUX_DIR) rev-parse HEAD | tee .bcachefs_revision
-	git add libbcachefs/*.[ch] include/trace/events/bcachefs.h .bcachefs_revision
+	git add .bcachefs_revision
 
 .PHONE: update-commit-bcachefs-sources
 update-commit-bcachefs-sources: update-bcachefs-sources

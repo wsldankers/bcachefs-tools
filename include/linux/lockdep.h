@@ -5,7 +5,7 @@ struct lock_class_key {};
 struct task_struct;
 
 # define lock_acquire(l, s, t, r, c, n, i)	do { } while (0)
-# define lock_release(l, n, i)			do { } while (0)
+# define lock_release(l, i)			do { } while (0)
 # define lock_set_class(l, n, k, s, i)		do { } while (0)
 # define lock_set_subclass(l, s, i)		do { } while (0)
 # define lockdep_set_current_reclaim_state(g)	do { } while (0)

@@ -72,7 +72,6 @@
  * inode number, 64 bit offset, 96 bit version field, etc.) for negligible cost.
  */
 
-#include <linux/stddef.h>
 #include <asm/types.h>
 #include <asm/byteorder.h>
 #include <linux/kernel.h>
