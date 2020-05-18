@@ -1,4 +1,5 @@
 
+#include <getopt.h>
 #include "cmds.h"
 #include "libbcachefs/error.h"
 #include "libbcachefs.h"
@@ -11,17 +12,22 @@ static void usage(void)
 	     "Usage: bcachefs fsck [OPTION]... <devices>\n"
 	     "\n"
 	     "Options:\n"
-	     "  -p     Automatic repair (no questions)\n"
-	     "  -n     Don't repair, only check for errors\n"
-	     "  -y     Assume \"yes\" to all questions\n"
-	     "  -f     Force checking even if filesystem is marked clean\n"
-	     "  -v     Be verbose\n"
-	     " --h     Display this help and exit\n"
-	     "Report bugs to <linux-bcache@vger.kernel.org>");
+	     "  -p                     Automatic repair (no questions)\n"
+	     "  -n                     Don't repair, only check for errors\n"
+	     "  -y                     Assume \"yes\" to all questions\n"
+	     "  -f                     Force checking even if filesystem is marked clean\n"
+	     " --reconstruct_alloc     Reconstruct the alloc btree\n"
+	     "  -v                     Be verbose\n"
+	     " --h                     Display this help and exit\n"
+	     "Report bugs to <linux-bcachefs@vger.kernel.org>");
 }
 
 int cmd_fsck(int argc, char *argv[])
 {
+	static const struct option longopts[] = {
+		{ "reconstruct_alloc",	no_argument,		NULL, 'R' },
+		{ NULL }
+	};
 	struct bch_opts opts = bch2_opts_empty();
 	unsigned i;
 	int opt, ret = 0;
@@ -30,7 +36,9 @@ int cmd_fsck(int argc, char *argv[])
 	opt_set(opts, fsck, true);
 	opt_set(opts, fix_errors, FSCK_OPT_ASK);
 
-	while ((opt = getopt(argc, argv, "apynfo:vh")) != -1)
+	while ((opt = getopt_long(argc, argv,
+				  "apynfo:vh",
+				  longopts, NULL)) != -1)
 		switch (opt) {
 		case 'a': /* outdated alias for -p */
 		case 'p':
@@ -50,6 +58,9 @@ int cmd_fsck(int argc, char *argv[])
 			ret = bch2_parse_mount_opts(&opts, optarg);
 			if (ret)
 				return ret;
+			break;
+		case 'R':
+			opt_set(opts, reconstruct_alloc, true);
 			break;
 		case 'v':
 			opt_set(opts, verbose, true);
