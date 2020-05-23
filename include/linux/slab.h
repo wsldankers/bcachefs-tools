@@ -20,12 +20,14 @@ static inline void *kmalloc(size_t size, gfp_t flags)
 
 	run_shrinkers();
 
-	size_t alignment = min(rounddown_pow_of_two(size),
-				(size_t)PAGE_SIZE);
-	size = roundup(size, alignment);
-	p = size
-	    ? aligned_alloc(alignment, size)
-	    : malloc(0);
+	if (size) {
+		size_t alignment = min(rounddown_pow_of_two(size), (size_t)PAGE_SIZE);
+		alignment = max(sizeof(void *), alignment);
+		if (posix_memalign(&p, alignment, size))
+			p = NULL;
+	} else {
+		p = malloc(0);
+	}
 	if (p && (flags & __GFP_ZERO))
 		memset(p, 0, size);
 
