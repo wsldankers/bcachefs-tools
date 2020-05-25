@@ -216,6 +216,27 @@ static void list_btree_formats(struct bch_fs *c, enum btree_id btree_id,
 	bch2_trans_exit(&trans);
 }
 
+static void list_nodes(struct bch_fs *c, enum btree_id btree_id,
+			    struct bpos start, struct bpos end)
+{
+	struct btree_trans trans;
+	struct btree_iter *iter;
+	struct btree *b;
+	char buf[4096];
+
+	bch2_trans_init(&trans, c, 0, 0);
+
+	for_each_btree_node(&trans, iter, btree_id, start, 0, b) {
+		if (bkey_cmp(b->key.k.p, end) > 0)
+			break;
+
+		bch2_bkey_val_to_text(&PBUF(buf), c, bkey_i_to_s_c(&b->key));
+		fputs(buf, stdout);
+		putchar('\n');
+	}
+	bch2_trans_exit(&trans);
+}
+
 static void list_nodes_keys(struct bch_fs *c, enum btree_id btree_id,
 			    struct bpos start, struct bpos end)
 {
@@ -285,13 +306,16 @@ static const char * const list_modes[] = {
 	"keys",
 	"formats",
 	"nodes",
+	"nodes_keys",
 	NULL
 };
 
 int cmd_list(int argc, char *argv[])
 {
 	struct bch_opts opts = bch2_opts_empty();
-	enum btree_id btree_id = BTREE_ID_EXTENTS;
+	enum btree_id btree_id_start	= 0;
+	enum btree_id btree_id_end	= BTREE_ID_NR;
+	enum btree_id btree_id;
 	struct bpos start = POS_MIN, end = POS_MAX;
 	u64 inum;
 	int mode = 0, opt;
@@ -304,8 +328,9 @@ int cmd_list(int argc, char *argv[])
 	while ((opt = getopt(argc, argv, "b:s:e:i:m:fvh")) != -1)
 		switch (opt) {
 		case 'b':
-			btree_id = read_string_list_or_die(optarg,
+			btree_id_start = read_string_list_or_die(optarg,
 						bch2_btree_ids, "btree id");
+			btree_id_end = btree_id_start + 1;
 			break;
 		case 's':
 			start	= parse_pos(optarg);
@@ -343,18 +368,26 @@ int cmd_list(int argc, char *argv[])
 	if (IS_ERR(c))
 		die("error opening %s: %s", argv[0], strerror(-PTR_ERR(c)));
 
-	switch (mode) {
-	case 0:
-		list_keys(c, btree_id, start, end);
-		break;
-	case 1:
-		list_btree_formats(c, btree_id, start, end);
-		break;
-	case 2:
-		list_nodes_keys(c, btree_id, start, end);
-		break;
-	default:
-		die("Invalid mode");
+
+	for (btree_id = btree_id_start;
+	     btree_id < btree_id_end;
+	     btree_id++) {
+		switch (mode) {
+		case 0:
+			list_keys(c, btree_id, start, end);
+			break;
+		case 1:
+			list_btree_formats(c, btree_id, start, end);
+			break;
+		case 2:
+			list_nodes(c, btree_id, start, end);
+			break;
+		case 3:
+			list_nodes_keys(c, btree_id, start, end);
+			break;
+		default:
+			die("Invalid mode");
+		}
 	}
 
 	bch2_fs_stop(c);
