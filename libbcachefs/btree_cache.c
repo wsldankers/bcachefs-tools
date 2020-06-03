@@ -553,7 +553,6 @@ out_unlock:
 
 	list_del_init(&b->list);
 	mutex_unlock(&bc->lock);
-	memalloc_nofs_restore(flags);
 out:
 	b->flags		= 0;
 	b->written		= 0;
@@ -566,6 +565,7 @@ out:
 	bch2_time_stats_update(&c->times[BCH_TIME_btree_node_mem_alloc],
 			       start_time);
 
+	memalloc_nofs_restore(flags);
 	return b;
 err:
 	/* Try to cannibalize another cached btree node: */
@@ -581,6 +581,7 @@ err:
 	}
 
 	mutex_unlock(&bc->lock);
+	memalloc_nofs_restore(flags);
 	return ERR_PTR(-ENOMEM);
 }
 
@@ -848,6 +849,18 @@ struct btree *bch2_btree_node_get_sibling(struct bch_fs *c,
 	parent = btree_iter_node(iter, level + 1);
 	if (!parent)
 		return NULL;
+
+	/*
+	 * There's a corner case where a btree_iter might have a node locked
+	 * that is just outside its current pos - when
+	 * bch2_btree_iter_set_pos_same_leaf() gets to the end of the node.
+	 *
+	 * But the lock ordering checks in __bch2_btree_node_lock() go off of
+	 * iter->pos, not the node's key: so if the iterator is marked as
+	 * needing to be traversed, we risk deadlock if we don't bail out here:
+	 */
+	if (iter->uptodate >= BTREE_ITER_NEED_TRAVERSE)
+		return ERR_PTR(-EINTR);
 
 	if (!bch2_btree_node_relock(iter, level + 1)) {
 		ret = ERR_PTR(-EINTR);

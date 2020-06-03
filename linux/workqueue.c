@@ -5,6 +5,7 @@
 #include <linux/workqueue.h>
 
 static pthread_mutex_t	wq_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t	work_finished = PTHREAD_COND_INITIALIZER;
 static LIST_HEAD(wq_list);
 
 struct workqueue_struct {
@@ -13,8 +14,6 @@ struct workqueue_struct {
 	struct work_struct	*current_work;
 	struct list_head	pending_work;
 
-	pthread_cond_t		work_finished;
-
 	struct task_struct	*worker;
 	char			name[24];
 };
@@ -22,6 +21,11 @@ struct workqueue_struct {
 enum {
 	WORK_PENDING_BIT,
 };
+
+static bool work_pending(struct work_struct *work)
+{
+	return test_bit(WORK_PENDING_BIT, work_data_bits(work));
+}
 
 static void clear_work_pending(struct work_struct *work)
 {
@@ -36,7 +40,7 @@ static bool set_work_pending(struct work_struct *work)
 static void __queue_work(struct workqueue_struct *wq,
 			 struct work_struct *work)
 {
-	BUG_ON(!test_bit(WORK_PENDING_BIT, work_data_bits(work)));
+	BUG_ON(!work_pending(work));
 	BUG_ON(!list_empty(&work->entry));
 
 	list_add_tail(&work->entry, &wq->pending_work);
@@ -130,17 +134,39 @@ retry:
 	goto retry;
 }
 
-static bool __flush_work(struct work_struct *work)
+static bool work_running(struct work_struct *work)
 {
 	struct workqueue_struct *wq;
-	bool ret = false;
-retry:
+
 	list_for_each_entry(wq, &wq_list, list)
-		if (wq->current_work == work) {
-			pthread_cond_wait(&wq->work_finished, &wq_lock);
-			ret = true;
-			goto retry;
-		}
+		if (wq->current_work == work)
+			return true;
+
+	return false;
+}
+
+bool flush_work(struct work_struct *work)
+{
+	bool ret = false;
+
+	pthread_mutex_lock(&wq_lock);
+	while (work_pending(work) || work_running(work)) {
+		pthread_cond_wait(&work_finished, &wq_lock);
+		ret = true;
+	}
+	pthread_mutex_unlock(&wq_lock);
+
+	return ret;
+}
+
+static bool __flush_work(struct work_struct *work)
+{
+	bool ret = false;
+
+	while (work_running(work)) {
+		pthread_cond_wait(&work_finished, &wq_lock);
+		ret = true;
+	}
 
 	return ret;
 }
@@ -228,7 +254,7 @@ static int worker_thread(void *arg)
 			continue;
 		}
 
-		BUG_ON(!test_bit(WORK_PENDING_BIT, work_data_bits(work)));
+		BUG_ON(!work_pending(work));
 		list_del_init(&work->entry);
 		clear_work_pending(work);
 
@@ -236,7 +262,7 @@ static int worker_thread(void *arg)
 		work->func(work);
 		pthread_mutex_lock(&wq_lock);
 
-		pthread_cond_broadcast(&wq->work_finished);
+		pthread_cond_broadcast(&work_finished);
 	}
 	pthread_mutex_unlock(&wq_lock);
 
@@ -268,8 +294,6 @@ struct workqueue_struct *alloc_workqueue(const char *fmt,
 
 	INIT_LIST_HEAD(&wq->list);
 	INIT_LIST_HEAD(&wq->pending_work);
-
-	pthread_cond_init(&wq->work_finished, NULL);
 
 	va_start(args, max_active);
 	vsnprintf(wq->name, sizeof(wq->name), fmt, args);

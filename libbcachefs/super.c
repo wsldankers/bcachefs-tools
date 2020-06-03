@@ -207,7 +207,7 @@ int bch2_congested(void *data, int bdi_bits)
 static void __bch2_fs_read_only(struct bch_fs *c)
 {
 	struct bch_dev *ca;
-	bool wrote;
+	bool wrote = false;
 	unsigned i, clean_passes = 0;
 	int ret;
 
@@ -224,47 +224,67 @@ static void __bch2_fs_read_only(struct bch_fs *c)
 	 */
 	bch2_journal_flush_all_pins(&c->journal);
 
+	/*
+	 * If the allocator threads didn't all start up, the btree updates to
+	 * write out alloc info aren't going to work:
+	 */
 	if (!test_bit(BCH_FS_ALLOCATOR_RUNNING, &c->flags))
-		goto allocator_not_running;
+		goto nowrote_alloc;
+
+	bch_verbose(c, "writing alloc info");
+	/*
+	 * This should normally just be writing the bucket read/write clocks:
+	 */
+	ret = bch2_stripes_write(c, BTREE_INSERT_NOCHECK_RW, &wrote) ?:
+		bch2_alloc_write(c, BTREE_INSERT_NOCHECK_RW, &wrote);
+	bch_verbose(c, "writing alloc info complete");
+
+	if (ret && !test_bit(BCH_FS_EMERGENCY_RO, &c->flags))
+		bch2_fs_inconsistent(c, "error writing out alloc info %i", ret);
+
+	if (ret)
+		goto nowrote_alloc;
+
+	bch_verbose(c, "flushing journal and stopping allocators");
+
+	bch2_journal_flush_all_pins(&c->journal);
+	set_bit(BCH_FS_ALLOCATOR_STOPPING, &c->flags);
 
 	do {
-		wrote = false;
+		clean_passes++;
 
-		ret = bch2_stripes_write(c, BTREE_INSERT_NOCHECK_RW, &wrote) ?:
-			bch2_alloc_write(c, BTREE_INSERT_NOCHECK_RW, &wrote);
-
-		if (ret && !test_bit(BCH_FS_EMERGENCY_RO, &c->flags))
-			bch2_fs_inconsistent(c, "error writing out alloc info %i", ret);
-
-		if (ret)
-			break;
-
-		for_each_member_device(ca, c, i)
-			bch2_dev_allocator_quiesce(c, ca);
-
-		bch2_journal_flush_all_pins(&c->journal);
+		if (bch2_journal_flush_all_pins(&c->journal))
+			clean_passes = 0;
 
 		/*
-		 * We need to explicitly wait on btree interior updates to complete
-		 * before stopping the journal, flushing all journal pins isn't
-		 * sufficient, because in the BTREE_INTERIOR_UPDATING_ROOT case btree
-		 * interior updates have to drop their journal pin before they're
-		 * fully complete:
+		 * In flight interior btree updates will generate more journal
+		 * updates and btree updates (alloc btree):
 		 */
-		closure_wait_event(&c->btree_interior_update_wait,
-				   !bch2_btree_interior_updates_nr_pending(c));
+		if (bch2_btree_interior_updates_nr_pending(c)) {
+			closure_wait_event(&c->btree_interior_update_wait,
+					   !bch2_btree_interior_updates_nr_pending(c));
+			clean_passes = 0;
+		}
+		flush_work(&c->btree_interior_update_work);
 
-		clean_passes = wrote ? 0 : clean_passes + 1;
+		if (bch2_journal_flush_all_pins(&c->journal))
+			clean_passes = 0;
 	} while (clean_passes < 2);
-allocator_not_running:
+	bch_verbose(c, "flushing journal and stopping allocators complete");
+
+	set_bit(BCH_FS_ALLOC_CLEAN, &c->flags);
+nowrote_alloc:
+	closure_wait_event(&c->btree_interior_update_wait,
+			   !bch2_btree_interior_updates_nr_pending(c));
+	flush_work(&c->btree_interior_update_work);
+
 	for_each_member_device(ca, c, i)
 		bch2_dev_allocator_stop(ca);
 
 	clear_bit(BCH_FS_ALLOCATOR_RUNNING, &c->flags);
+	clear_bit(BCH_FS_ALLOCATOR_STOPPING, &c->flags);
 
 	bch2_fs_journal_stop(&c->journal);
-
-	/* XXX: mark super that alloc info is persistent */
 
 	/*
 	 * the journal kicks off btree writes via reclaim - wait for in flight
@@ -338,8 +358,11 @@ void bch2_fs_read_only(struct bch_fs *c)
 	    !test_bit(BCH_FS_ERROR, &c->flags) &&
 	    !test_bit(BCH_FS_EMERGENCY_RO, &c->flags) &&
 	    test_bit(BCH_FS_STARTED, &c->flags) &&
-	    !c->opts.norecovery)
+	    test_bit(BCH_FS_ALLOC_CLEAN, &c->flags) &&
+	    !c->opts.norecovery) {
+		bch_verbose(c, "marking filesystem clean");
 		bch2_fs_mark_clean(c);
+	}
 
 	clear_bit(BCH_FS_RW, &c->flags);
 }
@@ -426,6 +449,8 @@ static int __bch2_fs_read_write(struct bch_fs *c, bool early)
 	if (ret)
 		goto err;
 
+	clear_bit(BCH_FS_ALLOC_CLEAN, &c->flags);
+
 	for_each_rw_member(ca, c, i)
 		bch2_dev_allocator_add(c, ca);
 	bch2_recalc_capacity(c);
@@ -494,6 +519,7 @@ static void bch2_fs_free(struct bch_fs *c)
 	bch2_fs_ec_exit(c);
 	bch2_fs_encryption_exit(c);
 	bch2_fs_io_exit(c);
+	bch2_fs_btree_interior_update_exit(c);
 	bch2_fs_btree_iter_exit(c);
 	bch2_fs_btree_cache_exit(c);
 	bch2_fs_journal_exit(&c->journal);
@@ -511,8 +537,6 @@ static void bch2_fs_free(struct bch_fs *c)
 	mempool_exit(&c->large_bkey_pool);
 	mempool_exit(&c->btree_bounce_pool);
 	bioset_exit(&c->btree_bio);
-	mempool_exit(&c->btree_interior_update_pool);
-	mempool_exit(&c->btree_reserve_pool);
 	mempool_exit(&c->fill_iter);
 	percpu_ref_exit(&c->writes);
 	kfree(c->replicas.entries);
@@ -675,11 +699,6 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 
 	INIT_LIST_HEAD(&c->list);
 
-	INIT_LIST_HEAD(&c->btree_interior_update_list);
-	INIT_LIST_HEAD(&c->btree_interior_updates_unwritten);
-	mutex_init(&c->btree_reserve_cache_lock);
-	mutex_init(&c->btree_interior_update_lock);
-
 	mutex_init(&c->usage_scratch_lock);
 
 	mutex_init(&c->bio_bounce_pages_lock);
@@ -752,10 +771,6 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 				WQ_FREEZABLE|WQ_MEM_RECLAIM|WQ_HIGHPRI, 1)) ||
 	    percpu_ref_init(&c->writes, bch2_writes_disabled,
 			    PERCPU_REF_INIT_DEAD, GFP_KERNEL) ||
-	    mempool_init_kmalloc_pool(&c->btree_reserve_pool, 1,
-				      sizeof(struct btree_reserve)) ||
-	    mempool_init_kmalloc_pool(&c->btree_interior_update_pool, 1,
-				      sizeof(struct btree_update)) ||
 	    mempool_init_kmalloc_pool(&c->fill_iter, 1, iter_size) ||
 	    bioset_init(&c->btree_bio, 1,
 			max(offsetof(struct btree_read_bio, bio),
@@ -771,6 +786,7 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 	    bch2_fs_replicas_init(c) ||
 	    bch2_fs_btree_cache_init(c) ||
 	    bch2_fs_btree_iter_init(c) ||
+	    bch2_fs_btree_interior_update_init(c) ||
 	    bch2_fs_io_init(c) ||
 	    bch2_fs_encryption_init(c) ||
 	    bch2_fs_compress_init(c) ||

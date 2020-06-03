@@ -172,17 +172,10 @@ void bch2_btree_iter_set_pos_same_leaf(struct btree_iter *, struct bpos);
 void __bch2_btree_iter_set_pos(struct btree_iter *, struct bpos, bool);
 void bch2_btree_iter_set_pos(struct btree_iter *, struct bpos);
 
-static inline int __btree_iter_cmp(enum btree_id id,
-				   struct bpos pos,
-				   const struct btree_iter *r)
-{
-	return cmp_int(id, r->btree_id) ?: bkey_cmp(pos, r->pos);
-}
-
 static inline int btree_iter_cmp(const struct btree_iter *l,
 				 const struct btree_iter *r)
 {
-	return __btree_iter_cmp(l->btree_id, l->pos, r);
+	return cmp_int(l->btree_id, r->btree_id) ?: bkey_cmp(l->pos, r->pos);
 }
 
 /*
@@ -302,6 +295,8 @@ static inline void bch2_trans_begin(struct btree_trans *trans)
 void *bch2_trans_kmalloc(struct btree_trans *, size_t);
 void bch2_trans_init(struct btree_trans *, struct bch_fs *, unsigned, size_t);
 int bch2_trans_exit(struct btree_trans *);
+
+void bch2_btree_trans_to_text(struct printbuf *, struct bch_fs *);
 
 void bch2_fs_btree_iter_exit(struct bch_fs *);
 int bch2_fs_btree_iter_init(struct bch_fs *);

@@ -845,7 +845,7 @@ retry:
 		sectors = k.k->size - offset_into_extent;
 
 		ret = bch2_read_indirect_extent(trans,
-					&offset_into_extent, sk.k);
+					&offset_into_extent, &sk);
 		if (ret)
 			break;
 
@@ -2843,6 +2843,9 @@ loff_t bch2_remap_file_range(struct file *file_src, loff_t pos_src,
 	s64 i_sectors_delta = 0;
 	u64 aligned_len;
 	loff_t ret = 0;
+
+	if (!c->opts.reflink)
+		return -EOPNOTSUPP;
 
 	if (remap_flags & ~(REMAP_FILE_DEDUP|REMAP_FILE_ADVISORY))
 		return -EINVAL;

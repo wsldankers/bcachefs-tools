@@ -38,7 +38,7 @@ static inline void bch2_journal_pin_add(struct journal *j, u64 seq,
 					struct journal_entry_pin *pin,
 					journal_pin_flush_fn flush_fn)
 {
-	if (unlikely(!journal_pin_active(pin)))
+	if (unlikely(!journal_pin_active(pin) || pin->seq > seq))
 		__bch2_journal_pin_add(j, seq, pin, flush_fn);
 }
 
@@ -53,11 +53,11 @@ void bch2_journal_do_discards(struct journal *);
 void bch2_journal_reclaim(struct journal *);
 void bch2_journal_reclaim_work(struct work_struct *);
 
-void bch2_journal_flush_pins(struct journal *, u64);
+bool bch2_journal_flush_pins(struct journal *, u64);
 
-static inline void bch2_journal_flush_all_pins(struct journal *j)
+static inline bool bch2_journal_flush_all_pins(struct journal *j)
 {
-	bch2_journal_flush_pins(j, U64_MAX);
+	return bch2_journal_flush_pins(j, U64_MAX);
 }
 
 int bch2_journal_flush_device_pins(struct journal *, int);

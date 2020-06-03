@@ -7,6 +7,7 @@
 #include "super-io.h"
 
 #include <linux/lz4.h>
+#include <linux/sched/mm.h>
 #include <linux/zlib.h>
 #include <linux/zstd.h>
 
@@ -63,7 +64,7 @@ static struct bbuf __bio_map_or_bounce(struct bch_fs *c, struct bio *bio,
 	struct bbuf ret;
 	struct bio_vec bv;
 	struct bvec_iter iter;
-	unsigned nr_pages = 0;
+	unsigned nr_pages = 0, flags;
 	struct page *stack_pages[16];
 	struct page **pages = NULL;
 	void *data;
@@ -103,7 +104,10 @@ static struct bbuf __bio_map_or_bounce(struct bch_fs *c, struct bio *bio,
 	__bio_for_each_segment(bv, bio, iter, start)
 		pages[nr_pages++] = bv.bv_page;
 
+	flags = memalloc_nofs_save();
 	data = vmap(pages, nr_pages, VM_MAP, PAGE_KERNEL);
+	memalloc_nofs_restore(flags);
+
 	if (pages != stack_pages)
 		kfree(pages);
 
@@ -603,7 +607,7 @@ have_compressed:
 	}
 
 	if (!mempool_initialized(&c->decompress_workspace)) {
-		ret = mempool_init_kmalloc_pool(
+		ret = mempool_init_kvpmalloc_pool(
 				&c->decompress_workspace,
 				1, decompress_workspace_size);
 		if (ret)

@@ -477,8 +477,10 @@ struct bch_dev {
 enum {
 	/* startup: */
 	BCH_FS_ALLOC_READ_DONE,
+	BCH_FS_ALLOC_CLEAN,
 	BCH_FS_ALLOCATOR_STARTED,
 	BCH_FS_ALLOCATOR_RUNNING,
+	BCH_FS_ALLOCATOR_STOPPING,
 	BCH_FS_INITIAL_GC_DONE,
 	BCH_FS_FSCK_DONE,
 	BCH_FS_STARTED,
@@ -600,12 +602,9 @@ struct bch_fs {
 	struct bio_set		btree_bio;
 
 	struct btree_root	btree_roots[BTREE_ID_NR];
-	bool			btree_roots_dirty;
 	struct mutex		btree_root_lock;
 
 	struct btree_cache	btree_cache;
-
-	mempool_t		btree_reserve_pool;
 
 	/*
 	 * Cache of allocated btree nodes - if we allocate a btree node and
@@ -624,6 +623,12 @@ struct bch_fs {
 	struct mutex		btree_interior_update_lock;
 	struct closure_waitlist	btree_interior_update_wait;
 
+	struct workqueue_struct	*btree_interior_update_worker;
+	struct work_struct	btree_interior_update_work;
+
+	/* btree_iter.c: */
+	struct mutex		btree_trans_lock;
+	struct list_head	btree_trans_list;
 	mempool_t		btree_iters_pool;
 
 	struct workqueue_struct	*wq;

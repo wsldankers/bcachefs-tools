@@ -208,29 +208,25 @@ void bch2_alloc_to_text(struct printbuf *out, struct bch_fs *c,
 			       get_alloc_field(a.v, &d, i));
 }
 
-int bch2_alloc_read(struct bch_fs *c, struct journal_keys *journal_keys)
+static int bch2_alloc_read_fn(struct bch_fs *c, enum btree_id id,
+			      unsigned level, struct bkey_s_c k)
 {
-	struct btree_trans trans;
-	struct btree_and_journal_iter iter;
-	struct bkey_s_c k;
-	struct bch_dev *ca;
-	unsigned i;
-	int ret = 0;
-
-	bch2_trans_init(&trans, c, 0, 0);
-
-	bch2_btree_and_journal_iter_init(&iter, &trans, journal_keys,
-					 BTREE_ID_ALLOC, POS_MIN);
-
-	while ((k = bch2_btree_and_journal_iter_peek(&iter)).k) {
+	if (!level)
 		bch2_mark_key(c, k, 0, 0, NULL, 0,
 			      BTREE_TRIGGER_ALLOC_READ|
 			      BTREE_TRIGGER_NOATOMIC);
 
-		bch2_btree_and_journal_iter_advance(&iter);
-	}
+	return 0;
+}
 
-	ret = bch2_trans_exit(&trans) ?: ret;
+int bch2_alloc_read(struct bch_fs *c, struct journal_keys *journal_keys)
+{
+	struct bch_dev *ca;
+	unsigned i;
+	int ret = 0;
+
+	ret = bch2_btree_and_journal_walk(c, journal_keys, BTREE_ID_ALLOC,
+					  NULL, bch2_alloc_read_fn);
 	if (ret) {
 		bch_err(c, "error reading alloc info: %i", ret);
 		return ret;
@@ -847,7 +843,7 @@ static int bch2_invalidate_one_bucket2(struct btree_trans *trans,
 	struct bkey_s_c k;
 	bool invalidating_cached_data;
 	size_t b;
-	int ret;
+	int ret = 0;
 
 	BUG_ON(!ca->alloc_heap.used ||
 	       !ca->alloc_heap.data[0].nr);
@@ -861,10 +857,26 @@ static int bch2_invalidate_one_bucket2(struct btree_trans *trans,
 
 	BUG_ON(!fifo_push(&ca->free_inc, b));
 
+	g = bucket(ca, b);
+	m = READ_ONCE(g->mark);
+
 	bch2_mark_alloc_bucket(c, ca, b, true, gc_pos_alloc(c, NULL), 0);
 
 	spin_unlock(&c->freelist_lock);
 	percpu_up_read(&c->mark_lock);
+
+	invalidating_cached_data = m.cached_sectors != 0;
+	if (!invalidating_cached_data)
+		goto out;
+
+	/*
+	 * If the read-only path is trying to shut down, we can't be generating
+	 * new btree updates:
+	 */
+	if (test_bit(BCH_FS_ALLOCATOR_STOPPING, &c->flags)) {
+		ret = 1;
+		goto out;
+	}
 
 	BUG_ON(BKEY_ALLOC_VAL_U64s_MAX > 8);
 
@@ -919,7 +931,7 @@ retry:
 				flags);
 	if (ret == -EINTR)
 		goto retry;
-
+out:
 	if (!ret) {
 		/* remove from alloc_heap: */
 		struct alloc_heap_entry e, *top = ca->alloc_heap.data;
@@ -953,7 +965,7 @@ retry:
 		percpu_up_read(&c->mark_lock);
 	}
 
-	return ret;
+	return ret < 0 ? ret : 0;
 }
 
 static bool bch2_invalidate_one_bucket(struct bch_fs *c, struct bch_dev *ca,
@@ -1464,11 +1476,6 @@ again:
 			}
 		}
 	rcu_read_unlock();
-
-	if (c->btree_roots_dirty) {
-		bch2_journal_meta(&c->journal);
-		goto again;
-	}
 
 	return !nodes_unwritten &&
 		!bch2_btree_interior_updates_nr_pending(c);

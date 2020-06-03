@@ -205,8 +205,9 @@ bool __bch2_btree_node_lock(struct btree *b, struct bpos pos,
 		if (!linked->nodes_locked)
 			continue;
 
-		/* * Must lock btree nodes in key order: */
-		if (__btree_iter_cmp(iter->btree_id, pos, linked) < 0)
+		/* Must lock btree nodes in key order: */
+		if ((cmp_int(iter->btree_id, linked->btree_id) ?:
+		     bkey_cmp(pos, linked->pos)) < 0)
 			ret = false;
 
 		/*
@@ -1320,6 +1321,16 @@ void bch2_btree_iter_set_pos_same_leaf(struct btree_iter *iter, struct bpos new_
 
 	btree_iter_advance_to_pos(iter, l, -1);
 
+	/*
+	 * XXX:
+	 * keeping a node locked that's outside (even just outside) iter->pos
+	 * breaks __bch2_btree_node_lock(). This seems to only affect
+	 * bch2_btree_node_get_sibling so for now it's fixed there, but we
+	 * should try to get rid of this corner case.
+	 *
+	 * (this behaviour is currently needed for BTREE_INSERT_NOUNLOCK)
+	 */
+
 	if (bch2_btree_node_iter_end(&l->iter) &&
 	    btree_iter_pos_after_node(iter, l->b))
 		btree_iter_set_dirty(iter, BTREE_ITER_NEED_TRAVERSE);
@@ -1912,7 +1923,7 @@ static struct btree_iter *btree_trans_iter_alloc(struct btree_trans *trans)
 			struct btree_iter *iter;
 
 			trans_for_each_iter(trans, iter) {
-				pr_err("iter: btree %s pos %llu:%llu%s%s%s %pf",
+				pr_err("iter: btree %s pos %llu:%llu%s%s%s %ps",
 				       bch2_btree_ids[iter->btree_id],
 				       iter->pos.inode,
 				       iter->pos.offset,
@@ -2153,6 +2164,9 @@ void bch2_trans_reset(struct btree_trans *trans, unsigned flags)
 	trans->nr_updates2		= 0;
 	trans->mem_top			= 0;
 
+	trans->extra_journal_entries	= NULL;
+	trans->extra_journal_entry_u64s	= 0;
+
 	if (trans->fs_usage_deltas) {
 		trans->fs_usage_deltas->used = 0;
 		memset(&trans->fs_usage_deltas->memset_start, 0,
@@ -2189,11 +2203,24 @@ void bch2_trans_init(struct btree_trans *trans, struct bch_fs *c,
 
 	if (expected_mem_bytes)
 		bch2_trans_preload_mem(trans, expected_mem_bytes);
+
+#ifdef CONFIG_BCACHEFS_DEBUG
+	trans->pid = current->pid;
+	mutex_lock(&c->btree_trans_lock);
+	list_add(&trans->list, &c->btree_trans_list);
+	mutex_unlock(&c->btree_trans_lock);
+#endif
 }
 
 int bch2_trans_exit(struct btree_trans *trans)
 {
 	bch2_trans_unlock(trans);
+
+#ifdef CONFIG_BCACHEFS_DEBUG
+	mutex_lock(&trans->c->btree_trans_lock);
+	list_del(&trans->list);
+	mutex_unlock(&trans->c->btree_trans_lock);
+#endif
 
 	kfree(trans->fs_usage_deltas);
 	kfree(trans->mem);
@@ -2207,6 +2234,51 @@ int bch2_trans_exit(struct btree_trans *trans)
 	return trans->error ? -EIO : 0;
 }
 
+void bch2_btree_trans_to_text(struct printbuf *out, struct bch_fs *c)
+{
+#ifdef CONFIG_BCACHEFS_DEBUG
+	struct btree_trans *trans;
+	struct btree_iter *iter;
+	struct btree *b;
+	unsigned l;
+
+	mutex_lock(&c->btree_trans_lock);
+	list_for_each_entry(trans, &c->btree_trans_list, list) {
+		pr_buf(out, "%i %ps\n", trans->pid, (void *) trans->ip);
+
+		trans_for_each_iter(trans, iter) {
+			if (!iter->nodes_locked)
+				continue;
+
+			pr_buf(out, "  iter %s:", bch2_btree_ids[iter->btree_id]);
+			bch2_bpos_to_text(out, iter->pos);
+			pr_buf(out, "\n");
+
+			for (l = 0; l < BTREE_MAX_DEPTH; l++) {
+				if (btree_node_locked(iter, l)) {
+					b = iter->l[l].b;
+
+					pr_buf(out, "    %p l=%u %s ",
+					       b, l, btree_node_intent_locked(iter, l) ? "i" : "r");
+					bch2_bpos_to_text(out, b->key.k.p);
+					pr_buf(out, "\n");
+				}
+			}
+		}
+
+		b = READ_ONCE(trans->locking);
+		if (b) {
+			pr_buf(out, "  locking %px l=%u %s:",
+			       b, b->level,
+			       bch2_btree_ids[b->btree_id]);
+			bch2_bpos_to_text(out, b->key.k.p);
+			pr_buf(out, "\n");
+		}
+	}
+	mutex_unlock(&c->btree_trans_lock);
+#endif
+}
+
 void bch2_fs_btree_iter_exit(struct bch_fs *c)
 {
 	mempool_exit(&c->btree_iters_pool);
@@ -2215,6 +2287,9 @@ void bch2_fs_btree_iter_exit(struct bch_fs *c)
 int bch2_fs_btree_iter_init(struct bch_fs *c)
 {
 	unsigned nr = BTREE_ITER_MAX;
+
+	INIT_LIST_HEAD(&c->btree_trans_list);
+	mutex_init(&c->btree_trans_lock);
 
 	return mempool_init_kmalloc_pool(&c->btree_iters_pool, 1,
 			sizeof(struct btree_iter) * nr +

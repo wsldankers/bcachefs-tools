@@ -281,6 +281,11 @@ struct btree_insert_entry {
 
 struct btree_trans {
 	struct bch_fs		*c;
+#ifdef CONFIG_BCACHEFS_DEBUG
+	struct list_head	list;
+	struct btree		*locking;
+	pid_t			pid;
+#endif
 	unsigned long		ip;
 
 	u64			iters_linked;
@@ -305,6 +310,10 @@ struct btree_trans {
 	struct btree_insert_entry *updates2;
 
 	/* update path: */
+	struct jset_entry	*extra_journal_entries;
+	unsigned		extra_journal_entry_u64s;
+	struct journal_entry_pin *journal_pin;
+
 	struct journal_res	journal_res;
 	struct journal_preres	journal_preres;
 	u64			*journal_seq;
