@@ -85,6 +85,8 @@ struct task_struct {
 
 	bool			on_cpu;
 	char			comm[TASK_COMM_LEN];
+	pid_t			pid;
+
 	struct bio_list		*bio_list;
 };
 
