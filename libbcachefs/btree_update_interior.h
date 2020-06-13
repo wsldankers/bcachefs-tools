@@ -92,9 +92,9 @@ struct btree_update {
 	struct btree			*new_nodes[BTREE_UPDATE_NODES_MAX];
 	unsigned			nr_new_nodes;
 
-	u8				open_buckets[BTREE_UPDATE_NODES_MAX *
+	open_bucket_idx_t		open_buckets[BTREE_UPDATE_NODES_MAX *
 						     BCH_REPLICAS_MAX];
-	u8				nr_open_buckets;
+	open_bucket_idx_t		nr_open_buckets;
 
 	unsigned			journal_u64s;
 	u64				journal_entries[BTREE_UPDATE_JOURNAL_RES];
@@ -173,7 +173,7 @@ void bch2_btree_root_alloc(struct bch_fs *, enum btree_id);
 static inline unsigned btree_update_reserve_required(struct bch_fs *c,
 						     struct btree *b)
 {
-	unsigned depth = btree_node_root(c, b)->level + 1;
+	unsigned depth = btree_node_root(c, b)->c.level + 1;
 
 	/*
 	 * Number of nodes we might have to allocate in a worst case btree
@@ -181,9 +181,9 @@ static inline unsigned btree_update_reserve_required(struct bch_fs *c,
 	 * a new root, unless we're already at max depth:
 	 */
 	if (depth < BTREE_MAX_DEPTH)
-		return (depth - b->level) * 2 + 1;
+		return (depth - b->c.level) * 2 + 1;
 	else
-		return (depth - b->level) * 2 - 1;
+		return (depth - b->c.level) * 2 - 1;
 }
 
 static inline void btree_node_reset_sib_u64s(struct btree *b)

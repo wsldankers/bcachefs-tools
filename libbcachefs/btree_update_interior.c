@@ -35,7 +35,7 @@ static void btree_node_interior_verify(struct btree *b)
 	struct bkey_s_c_btree_ptr_v2 bp;
 	struct bkey unpacked;
 
-	BUG_ON(!b->level);
+	BUG_ON(!b->c.level);
 
 	bch2_btree_node_iter_init_from_start(&iter, b);
 
@@ -135,6 +135,8 @@ static void __btree_node_free(struct bch_fs *c, struct btree *b)
 
 	bch2_btree_node_hash_remove(&c->btree_cache, b);
 
+	six_lock_wakeup_all(&b->c.lock);
+
 	mutex_lock(&c->btree_cache.lock);
 	list_move(&b->list, &c->btree_cache.freeable);
 	mutex_unlock(&c->btree_cache.lock);
@@ -150,7 +152,7 @@ void bch2_btree_node_free_never_inserted(struct bch_fs *c, struct btree *b)
 
 	btree_node_lock_type(c, b, SIX_LOCK_write);
 	__btree_node_free(c, b);
-	six_unlock_write(&b->lock);
+	six_unlock_write(&b->c.lock);
 
 	bch2_open_buckets_put(c, &ob);
 }
@@ -161,12 +163,12 @@ void bch2_btree_node_free_inmem(struct bch_fs *c, struct btree *b,
 	struct btree_iter *linked;
 
 	trans_for_each_iter(iter->trans, linked)
-		BUG_ON(linked->l[b->level].b == b);
+		BUG_ON(linked->l[b->c.level].b == b);
 
-	six_lock_write(&b->lock);
+	six_lock_write(&b->c.lock, NULL, NULL);
 	__btree_node_free(c, b);
-	six_unlock_write(&b->lock);
-	six_unlock_intent(&b->lock);
+	six_unlock_write(&b->c.lock);
+	six_unlock_intent(&b->c.lock);
 }
 
 static struct btree *__bch2_btree_node_alloc(struct bch_fs *c,
@@ -265,8 +267,8 @@ static struct btree *bch2_btree_node_alloc(struct btree_update *as, unsigned lev
 	set_btree_node_need_write(b);
 
 	bch2_bset_init_first(b, &b->data->keys);
-	b->level	= level;
-	b->btree_id	= as->btree_id;
+	b->c.level	= level;
+	b->c.btree_id	= as->btree_id;
 
 	memset(&b->nr, 0, sizeof(b->nr));
 	b->data->magic = cpu_to_le64(bset_magic(c));
@@ -319,7 +321,7 @@ struct btree *__bch2_btree_node_alloc_replacement(struct btree_update *as,
 {
 	struct btree *n;
 
-	n = bch2_btree_node_alloc(as, b->level);
+	n = bch2_btree_node_alloc(as, b->c.level);
 
 	SET_BTREE_NODE_SEQ(n->data, BTREE_NODE_SEQ(b->data) + 1);
 
@@ -364,7 +366,7 @@ static struct btree *__btree_root_alloc(struct btree_update *as, unsigned level)
 	bch2_btree_build_aux_trees(b);
 
 	bch2_btree_update_add_new_node(as, b);
-	six_unlock_write(&b->lock);
+	six_unlock_write(&b->c.lock);
 
 	return b;
 }
@@ -378,7 +380,7 @@ static void bch2_btree_reserve_put(struct btree_update *as)
 	while (as->nr_prealloc_nodes) {
 		struct btree *b = as->prealloc_nodes[--as->nr_prealloc_nodes];
 
-		six_unlock_write(&b->lock);
+		six_unlock_write(&b->c.lock);
 
 		if (c->btree_reserve_cache_nr <
 		    ARRAY_SIZE(c->btree_reserve_cache)) {
@@ -394,9 +396,9 @@ static void bch2_btree_reserve_put(struct btree_update *as)
 
 		btree_node_lock_type(c, b, SIX_LOCK_write);
 		__btree_node_free(c, b);
-		six_unlock_write(&b->lock);
+		six_unlock_write(&b->c.lock);
 
-		six_unlock_intent(&b->lock);
+		six_unlock_intent(&b->c.lock);
 	}
 
 	mutex_unlock(&c->btree_reserve_cache_lock);
@@ -527,9 +529,20 @@ static void btree_update_nodes_written(struct btree_update *as)
 	 * to child nodes that weren't written yet: now, the child nodes have
 	 * been written so we can write out the update to the interior node.
 	 */
+
+	/*
+	 * We can't call into journal reclaim here: we'd block on the journal
+	 * reclaim lock, but we may need to release the open buckets we have
+	 * pinned in order for other btree updates to make forward progress, and
+	 * journal reclaim does btree updates when flushing bkey_cached entries,
+	 * which may require allocations as well.
+	 */
 	ret = bch2_trans_do(c, &as->disk_res, &journal_seq,
 			    BTREE_INSERT_NOFAIL|
+			    BTREE_INSERT_USE_RESERVE|
+			    BTREE_INSERT_USE_ALLOC_RESERVE|
 			    BTREE_INSERT_NOCHECK_RW|
+			    BTREE_INSERT_JOURNAL_RECLAIM|
 			    BTREE_INSERT_JOURNAL_RESERVED,
 			    btree_update_nodes_written_trans(&trans, as));
 	BUG_ON(ret && !bch2_journal_error(&c->journal));
@@ -556,7 +569,7 @@ static void btree_update_nodes_written(struct btree_update *as)
 		if (!ret && as->b == b) {
 			struct bset *i = btree_bset_last(b);
 
-			BUG_ON(!b->level);
+			BUG_ON(!b->c.level);
 			BUG_ON(!btree_node_dirty(b));
 
 			i->journal_seq = cpu_to_le64(
@@ -567,10 +580,10 @@ static void btree_update_nodes_written(struct btree_update *as)
 		}
 
 		mutex_unlock(&c->btree_interior_update_lock);
-		six_unlock_write(&b->lock);
+		six_unlock_write(&b->c.lock);
 
 		btree_node_write_if_need(c, b, SIX_LOCK_intent);
-		six_unlock_intent(&b->lock);
+		six_unlock_intent(&b->c.lock);
 	}
 
 	bch2_journal_pin_drop(&c->journal, &as->journal);
@@ -591,7 +604,7 @@ static void btree_update_nodes_written(struct btree_update *as)
 
 		btree_node_lock_type(c, b, SIX_LOCK_read);
 		btree_node_write_if_need(c, b, SIX_LOCK_read);
-		six_unlock_read(&b->lock);
+		six_unlock_read(&b->c.lock);
 	}
 
 	for (i = 0; i < as->nr_open_buckets; i++)
@@ -690,7 +703,7 @@ static void btree_update_updated_root(struct btree_update *as, struct btree *b)
 	as->journal_u64s +=
 		journal_entry_set((void *) &as->journal_entries[as->journal_u64s],
 				  BCH_JSET_ENTRY_btree_root,
-				  b->btree_id, b->level,
+				  b->c.btree_id, b->c.level,
 				  insert, insert->k.u64s);
 
 	mutex_lock(&c->btree_interior_update_lock);
@@ -801,7 +814,7 @@ void bch2_btree_interior_update_will_free_node(struct btree_update *as,
 	 * operations complete
 	 */
 	list_for_each_entry_safe(p, n, &b->write_blocked, write_blocked_list) {
-		list_del(&p->write_blocked_list);
+		list_del_init(&p->write_blocked_list);
 		btree_update_reparent(as, p);
 
 		/*
@@ -862,8 +875,11 @@ bch2_btree_update_start(struct btree_trans *trans, enum btree_id id,
 {
 	struct bch_fs *c = trans->c;
 	struct btree_update *as;
-	int ret, disk_res_flags = (flags & BTREE_INSERT_NOFAIL)
+	int disk_res_flags = (flags & BTREE_INSERT_NOFAIL)
 		? BCH_DISK_RESERVATION_NOFAIL : 0;
+	int journal_flags = (flags & BTREE_INSERT_JOURNAL_RESERVED)
+		? JOURNAL_RES_GET_RECLAIM : 0;
+	int ret = 0;
 
 	/*
 	 * This check isn't necessary for correctness - it's just to potentially
@@ -888,7 +904,7 @@ bch2_btree_update_start(struct btree_trans *trans, enum btree_id id,
 
 	ret = bch2_journal_preres_get(&c->journal, &as->journal_preres,
 				      BTREE_UPDATE_JOURNAL_RES,
-				      JOURNAL_RES_GET_NONBLOCK);
+				      journal_flags|JOURNAL_RES_GET_NONBLOCK);
 	if (ret == -EAGAIN) {
 		if (flags & BTREE_INSERT_NOUNLOCK)
 			return ERR_PTR(-EINTR);
@@ -896,7 +912,8 @@ bch2_btree_update_start(struct btree_trans *trans, enum btree_id id,
 		bch2_trans_unlock(trans);
 
 		ret = bch2_journal_preres_get(&c->journal, &as->journal_preres,
-					      BTREE_UPDATE_JOURNAL_RES, 0);
+				BTREE_UPDATE_JOURNAL_RES,
+				journal_flags);
 		if (ret)
 			return ERR_PTR(ret);
 
@@ -938,7 +955,7 @@ static void bch2_btree_set_root_inmem(struct bch_fs *c, struct btree *b)
 
 	mutex_lock(&c->btree_root_lock);
 	BUG_ON(btree_node_root(c, b) &&
-	       (b->level < btree_node_root(c, b)->level ||
+	       (b->c.level < btree_node_root(c, b)->c.level ||
 		!btree_node_dying(btree_node_root(c, b))));
 
 	btree_node_root(c, b) = b;
@@ -1006,7 +1023,7 @@ static void bch2_insert_fixup_btree_ptr(struct btree_update *as, struct btree *b
 	as->journal_u64s +=
 		journal_entry_set((void *) &as->journal_entries[as->journal_u64s],
 				  BCH_JSET_ENTRY_btree_keys,
-				  b->btree_id, b->level,
+				  b->c.btree_id, b->c.level,
 				  insert, insert->k.u64s);
 
 	while ((k = bch2_btree_node_iter_peek_all(node_iter, b)) &&
@@ -1031,7 +1048,7 @@ static struct btree *__btree_split_node(struct btree_update *as,
 	struct bset *set1, *set2;
 	struct bkey_packed *k, *prev = NULL;
 
-	n2 = bch2_btree_node_alloc(as, n1->level);
+	n2 = bch2_btree_node_alloc(as, n1->c.level);
 	bch2_btree_update_add_new_node(as, n2);
 
 	n2->data->max_key	= n1->data->max_key;
@@ -1100,7 +1117,7 @@ static struct btree *__btree_split_node(struct btree_update *as,
 	bch2_verify_btree_nr_keys(n1);
 	bch2_verify_btree_nr_keys(n2);
 
-	if (n1->level) {
+	if (n1->c.level) {
 		btree_node_interior_verify(n1);
 		btree_node_interior_verify(n2);
 	}
@@ -1174,7 +1191,7 @@ static void btree_split(struct btree_update *as, struct btree *b,
 	u64 start_time = local_clock();
 
 	BUG_ON(!parent && (b != btree_node_root(c, b)));
-	BUG_ON(!btree_node_intent_locked(iter, btree_node_root(c, b)->level));
+	BUG_ON(!btree_node_intent_locked(iter, btree_node_root(c, b)->c.level));
 
 	bch2_btree_interior_update_will_free_node(as, b);
 
@@ -1191,8 +1208,8 @@ static void btree_split(struct btree_update *as, struct btree *b,
 
 		bch2_btree_build_aux_trees(n2);
 		bch2_btree_build_aux_trees(n1);
-		six_unlock_write(&n2->lock);
-		six_unlock_write(&n1->lock);
+		six_unlock_write(&n2->c.lock);
+		six_unlock_write(&n1->c.lock);
 
 		bch2_btree_node_write(c, n2, SIX_LOCK_intent);
 
@@ -1206,7 +1223,7 @@ static void btree_split(struct btree_update *as, struct btree *b,
 
 		if (!parent) {
 			/* Depth increases, make a new root */
-			n3 = __btree_root_alloc(as, b->level + 1);
+			n3 = __btree_root_alloc(as, b->c.level + 1);
 
 			n3->sib_u64s[0] = U16_MAX;
 			n3->sib_u64s[1] = U16_MAX;
@@ -1219,7 +1236,7 @@ static void btree_split(struct btree_update *as, struct btree *b,
 		trace_btree_compact(c, b);
 
 		bch2_btree_build_aux_trees(n1);
-		six_unlock_write(&n1->lock);
+		six_unlock_write(&n1->c.lock);
 
 		if (parent)
 			bch2_keylist_add(&as->parent_keys, &n1->key);
@@ -1247,7 +1264,7 @@ static void btree_split(struct btree_update *as, struct btree *b,
 
 	/* Successful split, update the iterator to point to the new nodes: */
 
-	six_lock_increment(&b->lock, SIX_LOCK_intent);
+	six_lock_increment(&b->c.lock, SIX_LOCK_intent);
 	bch2_btree_iter_node_drop(iter, b);
 	if (n3)
 		bch2_btree_iter_node_replace(iter, n3);
@@ -1264,10 +1281,10 @@ static void btree_split(struct btree_update *as, struct btree *b,
 	bch2_btree_node_free_inmem(c, b, iter);
 
 	if (n3)
-		six_unlock_intent(&n3->lock);
+		six_unlock_intent(&n3->c.lock);
 	if (n2)
-		six_unlock_intent(&n2->lock);
-	six_unlock_intent(&n1->lock);
+		six_unlock_intent(&n2->c.lock);
+	six_unlock_intent(&n1->c.lock);
 
 	bch2_btree_trans_verify_locks(iter->trans);
 
@@ -1285,7 +1302,7 @@ bch2_btree_insert_keys_interior(struct btree_update *as, struct btree *b,
 	struct bkey_packed *k;
 
 	/* Don't screw up @iter's position: */
-	node_iter = iter->l[b->level].iter;
+	node_iter = iter->l[b->c.level].iter;
 
 	/*
 	 * btree_split(), btree_gc_coalesce() will insert keys before
@@ -1302,7 +1319,7 @@ bch2_btree_insert_keys_interior(struct btree_update *as, struct btree *b,
 	btree_update_updated_node(as, b);
 
 	trans_for_each_iter_with_node(iter->trans, b, linked)
-		bch2_btree_node_iter_peek(&linked->l[b->level].iter, b);
+		bch2_btree_node_iter_peek(&linked->l[b->c.level].iter, b);
 
 	bch2_btree_trans_verify_iters(iter->trans, b);
 }
@@ -1328,8 +1345,8 @@ void bch2_btree_insert_node(struct btree_update *as, struct btree *b,
 	int old_live_u64s = b->nr.live_u64s;
 	int live_u64s_added, u64s_added;
 
-	BUG_ON(!btree_node_intent_locked(iter, btree_node_root(c, b)->level));
-	BUG_ON(!b->level);
+	BUG_ON(!btree_node_intent_locked(iter, btree_node_root(c, b)->c.level));
+	BUG_ON(!b->c.level);
 	BUG_ON(!as || as->b);
 	bch2_verify_keylist_sorted(keys);
 
@@ -1366,7 +1383,7 @@ void bch2_btree_insert_node(struct btree_update *as, struct btree *b,
 	 * the btree iterator yet, so the merge path's unlock/wait/relock dance
 	 * won't work:
 	 */
-	bch2_foreground_maybe_merge(c, iter, b->level,
+	bch2_foreground_maybe_merge(c, iter, b->c.level,
 				    flags|BTREE_INSERT_NOUNLOCK);
 	return;
 split:
@@ -1518,7 +1535,7 @@ retry:
 	b->sib_u64s[sib] = sib_u64s;
 
 	if (b->sib_u64s[sib] > BTREE_FOREGROUND_MERGE_THRESHOLD(c)) {
-		six_unlock_intent(&m->lock);
+		six_unlock_intent(&m->c.lock);
 		goto out;
 	}
 
@@ -1548,7 +1565,7 @@ retry:
 	bch2_btree_interior_update_will_free_node(as, b);
 	bch2_btree_interior_update_will_free_node(as, m);
 
-	n = bch2_btree_node_alloc(as, b->level);
+	n = bch2_btree_node_alloc(as, b->c.level);
 	bch2_btree_update_add_new_node(as, n);
 
 	btree_set_min(n, prev->data->min_key);
@@ -1561,7 +1578,7 @@ retry:
 	bch2_btree_sort_into(c, n, next);
 
 	bch2_btree_build_aux_trees(n);
-	six_unlock_write(&n->lock);
+	six_unlock_write(&n->c.lock);
 
 	bkey_init(&delete.k);
 	delete.k.p = prev->key.k.p;
@@ -1574,7 +1591,7 @@ retry:
 
 	bch2_btree_update_get_open_buckets(as, n);
 
-	six_lock_increment(&b->lock, SIX_LOCK_intent);
+	six_lock_increment(&b->c.lock, SIX_LOCK_intent);
 	bch2_btree_iter_node_drop(iter, b);
 	bch2_btree_iter_node_drop(iter, m);
 
@@ -1585,7 +1602,7 @@ retry:
 	bch2_btree_node_free_inmem(c, b, iter);
 	bch2_btree_node_free_inmem(c, m, iter);
 
-	six_unlock_intent(&n->lock);
+	six_unlock_intent(&n->c.lock);
 
 	bch2_btree_update_done(as);
 
@@ -1607,7 +1624,7 @@ out:
 	return;
 
 err_cycle_gc_lock:
-	six_unlock_intent(&m->lock);
+	six_unlock_intent(&m->c.lock);
 
 	if (flags & BTREE_INSERT_NOUNLOCK)
 		goto out;
@@ -1620,7 +1637,7 @@ err_cycle_gc_lock:
 	goto err;
 
 err_unlock:
-	six_unlock_intent(&m->lock);
+	six_unlock_intent(&m->c.lock);
 	if (!(flags & BTREE_INSERT_GC_LOCK_HELD))
 		up_read(&c->gc_lock);
 err:
@@ -1663,7 +1680,7 @@ static int __btree_node_rewrite(struct bch_fs *c, struct btree_iter *iter,
 	bch2_btree_update_add_new_node(as, n);
 
 	bch2_btree_build_aux_trees(n);
-	six_unlock_write(&n->lock);
+	six_unlock_write(&n->c.lock);
 
 	trace_btree_gc_rewrite_node(c, b);
 
@@ -1678,11 +1695,11 @@ static int __btree_node_rewrite(struct bch_fs *c, struct btree_iter *iter,
 
 	bch2_btree_update_get_open_buckets(as, n);
 
-	six_lock_increment(&b->lock, SIX_LOCK_intent);
+	six_lock_increment(&b->c.lock, SIX_LOCK_intent);
 	bch2_btree_iter_node_drop(iter, b);
 	bch2_btree_iter_node_replace(iter, n);
 	bch2_btree_node_free_inmem(c, b, iter);
-	six_unlock_intent(&n->lock);
+	six_unlock_intent(&n->c.lock);
 
 	bch2_btree_update_done(as);
 	return 0;
@@ -1759,7 +1776,7 @@ static void __bch2_btree_node_update_key(struct bch_fs *c,
 		if (new_hash) {
 			bkey_copy(&new_hash->key, new_key);
 			ret = bch2_btree_node_hash_insert(&c->btree_cache,
-					new_hash, b->level, b->btree_id);
+					new_hash, b->c.level, b->c.btree_id);
 			BUG_ON(ret);
 		}
 
@@ -1885,8 +1902,8 @@ err:
 		list_move(&new_hash->list, &c->btree_cache.freeable);
 		mutex_unlock(&c->btree_cache.lock);
 
-		six_unlock_write(&new_hash->lock);
-		six_unlock_intent(&new_hash->lock);
+		six_unlock_write(&new_hash->c.lock);
+		six_unlock_intent(&new_hash->c.lock);
 	}
 	up_read(&c->gc_lock);
 	closure_sync(&cl);
@@ -1926,8 +1943,8 @@ void bch2_btree_root_alloc(struct bch_fs *c, enum btree_id id)
 	bch2_btree_cache_cannibalize_unlock(c);
 
 	set_btree_node_fake(b);
-	b->level	= 0;
-	b->btree_id	= id;
+	b->c.level	= 0;
+	b->c.btree_id	= id;
 
 	bkey_btree_ptr_init(&b->key);
 	b->key.k.p = POS_MAX;
@@ -1942,13 +1959,14 @@ void bch2_btree_root_alloc(struct bch_fs *c, enum btree_id id)
 	b->data->format = bch2_btree_calc_format(b);
 	btree_node_set_format(b, b->data->format);
 
-	ret = bch2_btree_node_hash_insert(&c->btree_cache, b, b->level, b->btree_id);
+	ret = bch2_btree_node_hash_insert(&c->btree_cache, b,
+					  b->c.level, b->c.btree_id);
 	BUG_ON(ret);
 
 	bch2_btree_set_root_inmem(c, b);
 
-	six_unlock_write(&b->lock);
-	six_unlock_intent(&b->lock);
+	six_unlock_write(&b->c.lock);
+	six_unlock_intent(&b->c.lock);
 }
 
 ssize_t bch2_btree_updates_print(struct bch_fs *c, char *buf)

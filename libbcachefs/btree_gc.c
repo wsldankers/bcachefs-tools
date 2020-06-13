@@ -186,7 +186,7 @@ static int btree_gc_mark_node(struct bch_fs *c, struct btree *b, u8 *max_stale,
 
 		bch2_btree_node_iter_advance(&iter, b);
 
-		if (b->level) {
+		if (b->c.level) {
 			ret = bch2_gc_check_topology(c, k,
 					&next_node_start,
 					b->data->max_key,
@@ -252,7 +252,7 @@ static int bch2_gc_btree(struct bch_fs *c, enum btree_id btree_id,
 	if (!btree_node_fake(b))
 		ret = bch2_gc_mark_key(c, bkey_i_to_s_c(&b->key),
 				       &max_stale, initial);
-	gc_pos_set(c, gc_pos_btree_root(b->btree_id));
+	gc_pos_set(c, gc_pos_btree_root(b->c.btree_id));
 	mutex_unlock(&c->btree_root_lock);
 
 	return ret;
@@ -280,7 +280,7 @@ static int bch2_gc_btree_init_recurse(struct bch_fs *c, struct btree *b,
 		if (ret)
 			break;
 
-		if (b->level) {
+		if (b->c.level) {
 			struct btree *child;
 			BKEY_PADDED(k) tmp;
 
@@ -296,16 +296,16 @@ static int bch2_gc_btree_init_recurse(struct bch_fs *c, struct btree *b,
 			if (ret)
 				break;
 
-			if (b->level > target_depth) {
+			if (b->c.level > target_depth) {
 				child = bch2_btree_node_get_noiter(c, &tmp.k,
-							b->btree_id, b->level - 1);
+							b->c.btree_id, b->c.level - 1);
 				ret = PTR_ERR_OR_ZERO(child);
 				if (ret)
 					break;
 
 				ret = bch2_gc_btree_init_recurse(c, child,
 						journal_keys, target_depth);
-				six_unlock_read(&child->lock);
+				six_unlock_read(&child->c.lock);
 
 				if (ret)
 					break;
@@ -336,7 +336,7 @@ static int bch2_gc_btree_init(struct bch_fs *c,
 	if (btree_node_fake(b))
 		return 0;
 
-	six_lock_read(&b->lock);
+	six_lock_read(&b->c.lock, NULL, NULL);
 	if (fsck_err_on(bkey_cmp(b->data->min_key, POS_MIN), c,
 			"btree root with incorrect min_key: %llu:%llu",
 			b->data->min_key.inode,
@@ -351,7 +351,7 @@ static int bch2_gc_btree_init(struct bch_fs *c,
 		BUG();
 	}
 
-	if (b->level >= target_depth)
+	if (b->c.level >= target_depth)
 		ret = bch2_gc_btree_init_recurse(c, b,
 					journal_keys, target_depth);
 
@@ -359,7 +359,7 @@ static int bch2_gc_btree_init(struct bch_fs *c,
 		ret = bch2_gc_mark_key(c, bkey_i_to_s_c(&b->key),
 				       &max_stale, true);
 fsck_err:
-	six_unlock_read(&b->lock);
+	six_unlock_read(&b->c.lock);
 
 	return ret;
 }
@@ -798,6 +798,7 @@ int bch2_gc(struct bch_fs *c, struct journal_keys *journal_keys,
 	unsigned i, iter = 0;
 	int ret;
 
+	lockdep_assert_held(&c->state_lock);
 	trace_gc_start(c);
 
 	down_write(&c->gc_lock);
@@ -881,6 +882,76 @@ out:
 	 * allocator thread - issue wakeup in case they blocked on gc_lock:
 	 */
 	closure_wake_up(&c->freelist_wait);
+	return ret;
+}
+
+/*
+ * For recalculating oldest gen, we only need to walk keys in leaf nodes; btree
+ * node pointers currently never have cached pointers that can become stale:
+ */
+static int bch2_gc_btree_gens(struct bch_fs *c, enum btree_id id)
+{
+	struct btree_trans trans;
+	struct btree_iter *iter;
+	struct bkey_s_c k;
+	int ret;
+
+	bch2_trans_init(&trans, c, 0, 0);
+
+	for_each_btree_key(&trans, iter, id, POS_MIN, BTREE_ITER_PREFETCH, k, ret) {
+		struct bkey_ptrs_c ptrs = bch2_bkey_ptrs_c(k);
+		const struct bch_extent_ptr *ptr;
+
+		bkey_for_each_ptr(ptrs, ptr) {
+			struct bch_dev *ca = bch_dev_bkey_exists(c, ptr->dev);
+			struct bucket *g = PTR_BUCKET(ca, ptr, false);
+
+			if (gen_after(g->gc_gen, ptr->gen))
+				g->gc_gen = ptr->gen;
+
+			if (gen_after(g->mark.gen, ptr->gen) > 32) {
+				/* rewrite btree node */
+
+			}
+		}
+	}
+
+	bch2_trans_exit(&trans);
+	return ret;
+}
+
+int bch2_gc_gens(struct bch_fs *c)
+{
+	struct bch_dev *ca;
+	unsigned i;
+	int ret;
+
+	down_read(&c->state_lock);
+
+	for_each_member_device(ca, c, i) {
+		struct bucket_array *buckets = bucket_array(ca);
+		struct bucket *g;
+
+		for_each_bucket(g, buckets)
+			g->gc_gen = g->mark.gen;
+	}
+
+	for (i = 0; i < BTREE_ID_NR; i++)
+		if (btree_node_type_needs_gc(i)) {
+			ret = bch2_gc_btree_gens(c, i);
+			if (ret)
+				goto err;
+		}
+
+	for_each_member_device(ca, c, i) {
+		struct bucket_array *buckets = bucket_array(ca);
+		struct bucket *g;
+
+		for_each_bucket(g, buckets)
+			g->oldest_gen = g->gc_gen;
+	}
+err:
+	up_read(&c->state_lock);
 	return ret;
 }
 
@@ -1007,9 +1078,9 @@ static void bch2_coalesce_nodes(struct bch_fs *c, struct btree_iter *iter,
 
 			set_btree_bset_end(n1, n1->set);
 
-			six_unlock_write(&n2->lock);
+			six_unlock_write(&n2->c.lock);
 			bch2_btree_node_free_never_inserted(c, n2);
-			six_unlock_intent(&n2->lock);
+			six_unlock_intent(&n2->c.lock);
 
 			memmove(new_nodes + i - 1,
 				new_nodes + i,
@@ -1045,7 +1116,7 @@ static void bch2_coalesce_nodes(struct bch_fs *c, struct btree_iter *iter,
 		bch2_btree_build_aux_trees(n);
 
 		bch2_btree_update_add_new_node(as, n);
-		six_unlock_write(&n->lock);
+		six_unlock_write(&n->c.lock);
 
 		bch2_btree_node_write(c, n, SIX_LOCK_intent);
 	}
@@ -1088,7 +1159,7 @@ next:
 
 	BUG_ON(!bch2_keylist_empty(&keylist));
 
-	BUG_ON(iter->l[old_nodes[0]->level].b != old_nodes[0]);
+	BUG_ON(iter->l[old_nodes[0]->c.level].b != old_nodes[0]);
 
 	bch2_btree_iter_node_replace(iter, new_nodes[0]);
 
@@ -1113,7 +1184,7 @@ next:
 	}
 
 	for (i = 0; i < nr_new_nodes; i++)
-		six_unlock_intent(&new_nodes[i]->lock);
+		six_unlock_intent(&new_nodes[i]->c.lock);
 
 	bch2_btree_update_done(as);
 	bch2_keylist_free(&keylist, NULL);
@@ -1154,11 +1225,11 @@ static int bch2_coalesce_btree(struct bch_fs *c, enum btree_id btree_id)
 
 		for (i = 1; i < GC_MERGE_NODES; i++) {
 			if (!merge[i] ||
-			    !six_relock_intent(&merge[i]->lock, lock_seq[i]))
+			    !six_relock_intent(&merge[i]->c.lock, lock_seq[i]))
 				break;
 
-			if (merge[i]->level != merge[0]->level) {
-				six_unlock_intent(&merge[i]->lock);
+			if (merge[i]->c.level != merge[0]->c.level) {
+				six_unlock_intent(&merge[i]->c.lock);
 				break;
 			}
 		}
@@ -1167,11 +1238,11 @@ static int bch2_coalesce_btree(struct bch_fs *c, enum btree_id btree_id)
 		bch2_coalesce_nodes(c, iter, merge);
 
 		for (i = 1; i < GC_MERGE_NODES && merge[i]; i++) {
-			lock_seq[i] = merge[i]->lock.state.seq;
-			six_unlock_intent(&merge[i]->lock);
+			lock_seq[i] = merge[i]->c.lock.state.seq;
+			six_unlock_intent(&merge[i]->c.lock);
 		}
 
-		lock_seq[0] = merge[0]->lock.state.seq;
+		lock_seq[0] = merge[0]->c.lock.state.seq;
 
 		if (kthread && kthread_should_stop()) {
 			bch2_trans_exit(&trans);
@@ -1259,7 +1330,14 @@ static int bch2_gc_thread(void *arg)
 		last = atomic_long_read(&clock->now);
 		last_kick = atomic_read(&c->kick_gc);
 
+		/*
+		 * Full gc is currently incompatible with btree key cache:
+		 */
+#if 0
 		ret = bch2_gc(c, NULL, false, false);
+#else
+		ret = bch2_gc_gens(c);
+#endif
 		if (ret)
 			bch_err(c, "btree gc failed: %i", ret);
 

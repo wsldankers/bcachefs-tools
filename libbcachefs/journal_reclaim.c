@@ -28,16 +28,8 @@ unsigned bch2_journal_dev_buckets_available(struct journal *j,
 					    struct journal_device *ja,
 					    enum journal_space_from from)
 {
-	struct bch_fs *c = container_of(j, struct bch_fs, journal);
 	unsigned available = (journal_space_from(ja, from) -
 			      ja->cur_idx - 1 + ja->nr) % ja->nr;
-
-	/*
-	 * Allocator startup needs some journal space before we can do journal
-	 * replay:
-	 */
-	if (available && test_bit(BCH_FS_ALLOCATOR_STARTED, &c->flags))
-		--available;
 
 	/*
 	 * Don't use the last bucket unless writing the new last_seq
@@ -354,6 +346,37 @@ void __bch2_journal_pin_add(struct journal *j, u64 seq,
 	journal_wake(j);
 }
 
+void bch2_journal_pin_update(struct journal *j, u64 seq,
+			     struct journal_entry_pin *pin,
+			     journal_pin_flush_fn flush_fn)
+{
+	if (journal_pin_active(pin) && pin->seq < seq)
+		return;
+
+	spin_lock(&j->lock);
+
+	if (pin->seq != seq) {
+		bch2_journal_pin_add_locked(j, seq, pin, flush_fn);
+	} else {
+		struct journal_entry_pin_list *pin_list =
+			journal_seq_pin(j, seq);
+
+		/*
+		 * If the pin is already pinning the right sequence number, it
+		 * still might've already been flushed:
+		 */
+		list_move(&pin->list, &pin_list->list);
+	}
+
+	spin_unlock(&j->lock);
+
+	/*
+	 * If the journal is currently full,  we might want to call flush_fn
+	 * immediately:
+	 */
+	journal_wake(j);
+}
+
 void bch2_journal_pin_copy(struct journal *j,
 			   struct journal_entry_pin *dst,
 			   struct journal_entry_pin *src,
@@ -392,6 +415,9 @@ journal_get_next_pin(struct journal *j, u64 max_seq, u64 *seq)
 {
 	struct journal_entry_pin_list *pin_list;
 	struct journal_entry_pin *ret = NULL;
+
+	if (!test_bit(JOURNAL_RECLAIM_STARTED, &j->flags))
+		return NULL;
 
 	spin_lock(&j->lock);
 

@@ -428,9 +428,10 @@ int bch2_journal_res_get_slowpath(struct journal *j, struct journal_res *res,
 
 static bool journal_preres_available(struct journal *j,
 				     struct journal_preres *res,
-				     unsigned new_u64s)
+				     unsigned new_u64s,
+				     unsigned flags)
 {
-	bool ret = bch2_journal_preres_get_fast(j, res, new_u64s);
+	bool ret = bch2_journal_preres_get_fast(j, res, new_u64s, flags);
 
 	if (!ret)
 		bch2_journal_reclaim_work(&j->reclaim_work.work);
@@ -440,13 +441,14 @@ static bool journal_preres_available(struct journal *j,
 
 int __bch2_journal_preres_get(struct journal *j,
 			      struct journal_preres *res,
-			      unsigned new_u64s)
+			      unsigned new_u64s,
+			      unsigned flags)
 {
 	int ret;
 
 	closure_wait_event(&j->preres_wait,
 		   (ret = bch2_journal_error(j)) ||
-		   journal_preres_available(j, res, new_u64s));
+		   journal_preres_available(j, res, new_u64s, flags));
 	return ret;
 }
 
@@ -985,9 +987,8 @@ int bch2_fs_journal_start(struct journal *j, u64 cur_seq,
 	u64 last_seq = cur_seq, nr, seq;
 
 	if (!list_empty(journal_entries))
-		last_seq = le64_to_cpu(list_first_entry(journal_entries,
-							struct journal_replay,
-							list)->j.seq);
+		last_seq = le64_to_cpu(list_last_entry(journal_entries,
+				struct journal_replay, list)->j.last_seq);
 
 	nr = cur_seq - last_seq;
 
@@ -1016,8 +1017,10 @@ int bch2_fs_journal_start(struct journal *j, u64 cur_seq,
 
 	list_for_each_entry(i, journal_entries, list) {
 		seq = le64_to_cpu(i->j.seq);
+		BUG_ON(seq >= cur_seq);
 
-		BUG_ON(seq < last_seq || seq >= cur_seq);
+		if (seq < last_seq)
+			continue;
 
 		journal_seq_pin(j, seq)->devs = i->devs;
 	}
