@@ -400,6 +400,7 @@ static void list_journal_usage(void)
 	     "Usage: bcachefs list_journal [OPTION]... <devices>\n"
 	     "\n"
 	     "Options:\n"
+	     "  -a            Read entire journal, not just dirty entries\n"
 	     "  -h            Display this help and exit\n"
 	     "Report bugs to <linux-bcache@vger.kernel.org>");
 }
@@ -416,8 +417,11 @@ int cmd_list_journal(int argc, char *argv[])
 	opt_set(opts, fix_errors,	FSCK_OPT_YES);
 	opt_set(opts, keep_journal,	true);
 
-	while ((opt = getopt(argc, argv, "h")) != -1)
+	while ((opt = getopt(argc, argv, "ah")) != -1)
 		switch (opt) {
+		case 'a':
+			opt_set(opts, read_entire_journal, true);
+			break;
 		case 'h':
 			list_journal_usage();
 			exit(EXIT_SUCCESS);
