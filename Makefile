@@ -114,6 +114,9 @@ endif
 # Rebuild the 'version' command any time the version string changes
 cmd_version.o : .version
 
+doc/bcachefs.5: doc/bcachefs.5.txt
+	a2x -f manpage doc/bcachefs.5.txt
+
 .PHONY: install
 install: INITRAMFS_HOOK=$(INITRAMFS_DIR)/hooks/bcachefs
 install: INITRAMFS_SCRIPT=$(INITRAMFS_DIR)/scripts/local-premount/bcachefs
