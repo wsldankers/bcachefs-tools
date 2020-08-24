@@ -948,8 +948,8 @@ int bchu_data(struct bchfs_handle fs, struct bch_ioctl_data cmd)
 		       bch2_data_types[e.p.data_type]);
 
 		switch (e.p.data_type) {
-		case BCH_DATA_BTREE:
-		case BCH_DATA_USER:
+		case BCH_DATA_btree:
+		case BCH_DATA_user:
 			printf(" %s:%llu:%llu",
 			       bch2_btree_ids[e.p.btree_id],
 			       e.p.pos.inode,
