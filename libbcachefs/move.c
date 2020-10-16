@@ -95,10 +95,6 @@ static int bch2_migrate_index_update(struct bch_write_op *op)
 		    !bch2_bkey_matches_ptr(c, k, m->ptr, m->offset))
 			goto nomatch;
 
-		if (m->data_cmd == DATA_REWRITE &&
-		    !bch2_bkey_has_device(k, m->data_opts.rewrite_dev))
-			goto nomatch;
-
 		bkey_reassemble(&_insert.k, k);
 		insert = &_insert.k;
 
@@ -110,9 +106,19 @@ static int bch2_migrate_index_update(struct bch_write_op *op)
 		bch2_cut_back(new->k.p,		insert);
 		bch2_cut_back(insert->k.p,	&new->k_i);
 
-		if (m->data_cmd == DATA_REWRITE)
-			bch2_bkey_drop_device(bkey_i_to_s(insert),
-					      m->data_opts.rewrite_dev);
+		if (m->data_cmd == DATA_REWRITE) {
+			struct bch_extent_ptr *new_ptr, *old_ptr = (void *)
+				bch2_bkey_has_device(bkey_i_to_s_c(insert),
+						     m->data_opts.rewrite_dev);
+			if (!old_ptr)
+				goto nomatch;
+
+			if (old_ptr->cached)
+				extent_for_each_ptr(extent_i_to_s(new), new_ptr)
+					new_ptr->cached = true;
+
+			bch2_bkey_drop_ptr(bkey_i_to_s(insert), old_ptr);
+		}
 
 		extent_for_each_ptr_decode(extent_i_to_s(new), p, entry) {
 			if (bch2_bkey_has_device(bkey_i_to_s_c(insert), p.ptr.dev)) {
@@ -291,14 +297,14 @@ int bch2_migrate_write_init(struct bch_fs *c, struct migrate_write *m,
 		unsigned compressed_sectors = 0;
 
 		bkey_for_each_ptr_decode(k.k, ptrs, p, entry)
-			if (!p.ptr.cached &&
-			    crc_is_compressed(p.crc) &&
-			    bch2_dev_in_target(c, p.ptr.dev, data_opts.target))
+			if (p.ptr.dev == data_opts.rewrite_dev &&
+			    !p.ptr.cached &&
+			    crc_is_compressed(p.crc))
 				compressed_sectors += p.crc.compressed_size;
 
 		if (compressed_sectors) {
 			ret = bch2_disk_reservation_add(c, &m->op.res,
-					compressed_sectors,
+					k.k->size * m->op.nr_replicas,
 					BCH_DISK_RESERVATION_NOFAIL);
 			if (ret)
 				return ret;
