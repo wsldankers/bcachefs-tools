@@ -149,44 +149,6 @@ struct bch_fs *bch2_uuid_to_fs(uuid_le uuid)
 	return c;
 }
 
-int bch2_congested(void *data, int bdi_bits)
-{
-	struct bch_fs *c = data;
-	struct backing_dev_info *bdi;
-	struct bch_dev *ca;
-	unsigned i;
-	int ret = 0;
-
-	rcu_read_lock();
-	if (bdi_bits & (1 << WB_sync_congested)) {
-		/* Reads - check all devices: */
-		for_each_readable_member(ca, c, i) {
-			bdi = ca->disk_sb.bdev->bd_bdi;
-
-			if (bdi_congested(bdi, bdi_bits)) {
-				ret = 1;
-				break;
-			}
-		}
-	} else {
-		const struct bch_devs_mask *devs =
-			bch2_target_to_mask(c, c->opts.foreground_target) ?:
-			&c->rw_devs[BCH_DATA_user];
-
-		for_each_member_device_rcu(ca, c, i, devs) {
-			bdi = ca->disk_sb.bdev->bd_bdi;
-
-			if (bdi_congested(bdi, bdi_bits)) {
-				ret = 1;
-				break;
-			}
-		}
-	}
-	rcu_read_unlock();
-
-	return ret;
-}
-
 /* Filesystem RO/RW: */
 
 /*
@@ -207,9 +169,7 @@ int bch2_congested(void *data, int bdi_bits)
 static void __bch2_fs_read_only(struct bch_fs *c)
 {
 	struct bch_dev *ca;
-	bool wrote = false;
 	unsigned i, clean_passes = 0;
-	int ret;
 
 	bch2_rebalance_stop(c);
 	bch2_copygc_stop(c);
@@ -226,20 +186,6 @@ static void __bch2_fs_read_only(struct bch_fs *c)
 	 * write out alloc info aren't going to work:
 	 */
 	if (!test_bit(BCH_FS_ALLOCATOR_RUNNING, &c->flags))
-		goto nowrote_alloc;
-
-	bch_verbose(c, "writing alloc info");
-	/*
-	 * This should normally just be writing the bucket read/write clocks:
-	 */
-	ret = bch2_stripes_write(c, BTREE_INSERT_NOCHECK_RW, &wrote) ?:
-		bch2_alloc_write(c, BTREE_INSERT_NOCHECK_RW, &wrote);
-	bch_verbose(c, "writing alloc info complete");
-
-	if (ret && !test_bit(BCH_FS_EMERGENCY_RO, &c->flags))
-		bch2_fs_inconsistent(c, "error writing out alloc info %i", ret);
-
-	if (ret)
 		goto nowrote_alloc;
 
 	bch_verbose(c, "flushing journal and stopping allocators");
@@ -277,6 +223,9 @@ nowrote_alloc:
 
 	for_each_member_device(ca, c, i)
 		bch2_dev_allocator_stop(ca);
+
+	bch2_io_timer_del(&c->io_clock[READ], &c->bucket_clock[READ].rescale);
+	bch2_io_timer_del(&c->io_clock[WRITE], &c->bucket_clock[WRITE].rescale);
 
 	clear_bit(BCH_FS_ALLOCATOR_RUNNING, &c->flags);
 	clear_bit(BCH_FS_ALLOCATOR_STOPPING, &c->flags);
@@ -453,6 +402,9 @@ static int __bch2_fs_read_write(struct bch_fs *c, bool early)
 	for_each_rw_member(ca, c, i)
 		bch2_dev_allocator_add(c, ca);
 	bch2_recalc_capacity(c);
+
+	bch2_io_timer_add(&c->io_clock[READ], &c->bucket_clock[READ].rescale);
+	bch2_io_timer_add(&c->io_clock[WRITE], &c->bucket_clock[WRITE].rescale);
 
 	for_each_rw_member(ca, c, i) {
 		ret = bch2_dev_allocator_start(ca);
@@ -1700,6 +1652,11 @@ have_slot:
 
 	bch2_write_super(c);
 	mutex_unlock(&c->sb_lock);
+
+	err = "alloc write failed";
+	ret = bch2_dev_alloc_write(c, ca, 0);
+	if (ret)
+		goto err;
 
 	if (ca->mi.state == BCH_MEMBER_STATE_RW) {
 		err = __bch2_dev_read_write(c, ca);

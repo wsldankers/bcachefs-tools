@@ -1527,8 +1527,6 @@ got_sb:
 	if (ret)
 		goto err_put_super;
 
-	sb->s_bdi->congested_fn		= bch2_congested;
-	sb->s_bdi->congested_data	= c;
 	sb->s_bdi->ra_pages		= VM_READAHEAD_PAGES;
 
 	for_each_online_member(ca, c, i) {

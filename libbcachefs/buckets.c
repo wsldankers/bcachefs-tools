@@ -254,6 +254,7 @@ void bch2_fs_usage_acc_to_base(struct bch_fs *c, unsigned idx)
 
 	BUG_ON(idx >= 2);
 
+	preempt_disable();
 	write_seqcount_begin(&c->usage_lock);
 
 	acc_u64s_percpu((u64 *) c->usage_base,
@@ -261,6 +262,7 @@ void bch2_fs_usage_acc_to_base(struct bch_fs *c, unsigned idx)
 	percpu_memset(c->usage[idx], 0, u64s * sizeof(u64));
 
 	write_seqcount_end(&c->usage_lock);
+	preempt_enable();
 }
 
 void bch2_fs_usage_to_text(struct printbuf *out,
@@ -482,6 +484,7 @@ static void bch2_dev_usage_update(struct bch_fs *c, struct bch_dev *ca,
 		bch2_wake_allocator(ca);
 }
 
+__flatten
 void bch2_dev_usage_from_buckets(struct bch_fs *c)
 {
 	struct bch_dev *ca;
@@ -755,8 +758,7 @@ static int bch2_mark_alloc(struct bch_fs *c,
 		}
 	}));
 
-	if (!(flags & BTREE_TRIGGER_ALLOC_READ))
-		bch2_dev_usage_update(c, ca, fs_usage, old_m, m, gc);
+	bch2_dev_usage_update(c, ca, fs_usage, old_m, m, gc);
 
 	g->io_time[READ]	= u.read_time;
 	g->io_time[WRITE]	= u.write_time;
