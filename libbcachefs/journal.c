@@ -226,16 +226,19 @@ static bool journal_entry_close(struct journal *j)
  */
 static int journal_entry_open(struct journal *j)
 {
+	struct bch_fs *c = container_of(j, struct bch_fs, journal);
 	struct journal_buf *buf = journal_cur_buf(j);
 	union journal_res_state old, new;
 	int u64s;
 	u64 v;
 
+	BUG_ON(BCH_SB_CLEAN(c->disk_sb.sb));
+
 	lockdep_assert_held(&j->lock);
 	BUG_ON(journal_entry_is_open(j));
 
 	if (j->blocked)
-		return -EAGAIN;
+		return cur_entry_blocked;
 
 	if (j->cur_entry_error)
 		return j->cur_entry_error;
@@ -251,7 +254,7 @@ static int journal_entry_open(struct journal *j)
 	u64s  = clamp_t(int, u64s, 0, JOURNAL_ENTRY_CLOSED_VAL - 1);
 
 	if (u64s <= le32_to_cpu(buf->data->u64s))
-		return -ENOSPC;
+		return cur_entry_journal_full;
 
 	/*
 	 * Must be set before marking the journal entry as open:
@@ -263,7 +266,7 @@ static int journal_entry_open(struct journal *j)
 		old.v = new.v = v;
 
 		if (old.cur_entry_offset == JOURNAL_ENTRY_ERROR_VAL)
-			return -EROFS;
+			return cur_entry_insufficient_devices;
 
 		/* Handle any already added entries */
 		new.cur_entry_offset = le32_to_cpu(buf->data->u64s);
@@ -376,7 +379,7 @@ retry:
 		 * Don't want to close current journal entry, just need to
 		 * invoke reclaim:
 		 */
-		ret = -ENOSPC;
+		ret = cur_entry_journal_full;
 		goto unlock;
 	}
 
@@ -399,14 +402,16 @@ retry:
 		 * there's still a previous one in flight:
 		 */
 		trace_journal_entry_full(c);
-		ret = -EAGAIN;
+		ret = cur_entry_blocked;
 	} else {
 		ret = journal_entry_open(j);
 	}
 unlock:
-	if ((ret == -EAGAIN || ret == -ENOSPC) &&
-	    !j->res_get_blocked_start)
+	if ((ret && ret != cur_entry_insufficient_devices) &&
+	    !j->res_get_blocked_start) {
 		j->res_get_blocked_start = local_clock() ?: 1;
+		trace_journal_full(c);
+	}
 
 	can_discard = j->can_discard;
 	spin_unlock(&j->lock);
@@ -414,41 +419,39 @@ unlock:
 	if (!ret)
 		goto retry;
 
-	if (ret == -ENOSPC) {
-		if (WARN_ONCE(!can_discard && (flags & JOURNAL_RES_GET_RESERVED),
-			      "JOURNAL_RES_GET_RESERVED set but journal full")) {
-			char *buf;
+	if (WARN_ONCE(ret == cur_entry_journal_full &&
+		      !can_discard &&
+		      (flags & JOURNAL_RES_GET_RESERVED),
+		      "JOURNAL_RES_GET_RESERVED set but journal full")) {
+		char *buf;
 
-			buf = kmalloc(4096, GFP_NOFS);
-			if (buf) {
-				bch2_journal_debug_to_text(&PBUF(buf), j);
-				pr_err("\n%s", buf);
-				kfree(buf);
-			}
+		buf = kmalloc(4096, GFP_NOFS);
+		if (buf) {
+			bch2_journal_debug_to_text(&_PBUF(buf, 4096), j);
+			pr_err("\n%s", buf);
+			kfree(buf);
 		}
-
-		/*
-		 * Journal is full - can't rely on reclaim from work item due to
-		 * freezing:
-		 */
-		trace_journal_full(c);
-
-		if (!(flags & JOURNAL_RES_GET_NONBLOCK)) {
-			if (can_discard) {
-				bch2_journal_do_discards(j);
-				goto retry;
-			}
-
-			if (mutex_trylock(&j->reclaim_lock)) {
-				bch2_journal_reclaim(j);
-				mutex_unlock(&j->reclaim_lock);
-			}
-		}
-
-		ret = -EAGAIN;
 	}
 
-	return ret;
+	/*
+	 * Journal is full - can't rely on reclaim from work item due to
+	 * freezing:
+	 */
+	if ((ret == cur_entry_journal_full ||
+	     ret == cur_entry_journal_pin_full) &&
+	    !(flags & JOURNAL_RES_GET_NONBLOCK)) {
+		if (can_discard) {
+			bch2_journal_do_discards(j);
+			goto retry;
+		}
+
+		if (mutex_trylock(&j->reclaim_lock)) {
+			bch2_journal_reclaim(j);
+			mutex_unlock(&j->reclaim_lock);
+		}
+	}
+
+	return ret == cur_entry_insufficient_devices ? -EROFS : -EAGAIN;
 }
 
 /*
@@ -481,8 +484,10 @@ static bool journal_preres_available(struct journal *j,
 {
 	bool ret = bch2_journal_preres_get_fast(j, res, new_u64s, flags);
 
-	if (!ret)
-		bch2_journal_reclaim_work(&j->reclaim_work.work);
+	if (!ret && mutex_trylock(&j->reclaim_lock)) {
+		bch2_journal_reclaim(j);
+		mutex_unlock(&j->reclaim_lock);
+	}
 
 	return ret;
 }
@@ -543,12 +548,20 @@ out:
  * necessary
  */
 int bch2_journal_flush_seq_async(struct journal *j, u64 seq,
-				  struct closure *parent)
+				 struct closure *parent)
 {
 	struct journal_buf *buf;
 	int ret = 0;
 
+	if (seq <= j->err_seq)
+		return -EIO;
+
+	if (seq <= j->seq_ondisk)
+		return 1;
+
 	spin_lock(&j->lock);
+
+	/* Recheck under lock: */
 	if (seq <= j->err_seq) {
 		ret = -EIO;
 		goto out;
@@ -678,16 +691,19 @@ static int __bch2_set_nr_journal_buckets(struct bch_dev *ca, unsigned nr,
 	if (nr <= ja->nr)
 		return 0;
 
-	ret = -ENOMEM;
 	new_buckets	= kzalloc(nr * sizeof(u64), GFP_KERNEL);
 	new_bucket_seq	= kzalloc(nr * sizeof(u64), GFP_KERNEL);
-	if (!new_buckets || !new_bucket_seq)
+	if (!new_buckets || !new_bucket_seq) {
+		ret = -ENOMEM;
 		goto err;
+	}
 
 	journal_buckets = bch2_sb_resize_journal(&ca->disk_sb,
 					nr + sizeof(*journal_buckets) / sizeof(u64));
-	if (!journal_buckets)
+	if (!journal_buckets) {
+		ret = -ENOSPC;
 		goto err;
+	}
 
 	/*
 	 * We may be called from the device add path, before the new device has
@@ -716,8 +732,10 @@ static int __bch2_set_nr_journal_buckets(struct bch_dev *ca, unsigned nr,
 				goto err;
 			}
 		} else {
+			rcu_read_lock();
 			ob = bch2_bucket_alloc(c, ca, RESERVE_ALLOC,
 					       false, cl);
+			rcu_read_unlock();
 			if (IS_ERR(ob)) {
 				ret = cl ? -EAGAIN : -ENOSPC;
 				goto err;
@@ -769,8 +787,6 @@ static int __bch2_set_nr_journal_buckets(struct bch_dev *ca, unsigned nr,
 		if (!new_fs)
 			bch2_open_bucket_put(c, ob);
 	}
-
-	ret = 0;
 err:
 	bch2_sb_resize_journal(&ca->disk_sb,
 		ja->nr + sizeof(*journal_buckets) / sizeof(u64));
@@ -889,7 +905,7 @@ void bch2_fs_journal_stop(struct journal *j)
 		j->last_empty_seq + 1 != journal_cur_seq(j)));
 
 	cancel_delayed_work_sync(&j->write_work);
-	cancel_delayed_work_sync(&j->reclaim_work);
+	bch2_journal_reclaim_stop(j);
 }
 
 int bch2_fs_journal_start(struct journal *j, u64 cur_seq,
@@ -1017,7 +1033,6 @@ int bch2_fs_journal_init(struct journal *j)
 	spin_lock_init(&j->err_lock);
 	init_waitqueue_head(&j->wait);
 	INIT_DELAYED_WORK(&j->write_work, journal_write_work);
-	INIT_DELAYED_WORK(&j->reclaim_work, bch2_journal_reclaim_work);
 	init_waitqueue_head(&j->pin_flush_wait);
 	mutex_init(&j->reclaim_lock);
 	mutex_init(&j->discard_lock);
@@ -1069,7 +1084,10 @@ void bch2_journal_debug_to_text(struct printbuf *out, struct journal *j)
 	       "last_seq:\t\t%llu\n"
 	       "last_seq_ondisk:\t%llu\n"
 	       "prereserved:\t\t%u/%u\n"
+	       "nr direct reclaim:\t%llu\n"
+	       "nr background reclaim:\t%llu\n"
 	       "current entry sectors:\t%u\n"
+	       "current entry error:\t%u\n"
 	       "current entry:\t\t",
 	       fifo_used(&j->pin),
 	       journal_cur_seq(j),
@@ -1077,7 +1095,10 @@ void bch2_journal_debug_to_text(struct printbuf *out, struct journal *j)
 	       j->last_seq_ondisk,
 	       j->prereserved.reserved,
 	       j->prereserved.remaining,
-	       j->cur_entry_sectors);
+	       j->nr_direct_reclaim,
+	       j->nr_background_reclaim,
+	       j->cur_entry_sectors,
+	       j->cur_entry_error);
 
 	switch (s.cur_entry_offset) {
 	case JOURNAL_ENTRY_ERROR_VAL:

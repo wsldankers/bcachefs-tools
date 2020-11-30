@@ -2044,16 +2044,6 @@ static u64 bch2_recalc_sectors_available(struct bch_fs *c)
 	return avail_factor(__bch2_fs_usage_read_short(c).free);
 }
 
-void __bch2_disk_reservation_put(struct bch_fs *c, struct disk_reservation *res)
-{
-	percpu_down_read(&c->mark_lock);
-	this_cpu_sub(c->usage[0]->online_reserved,
-		     res->sectors);
-	percpu_up_read(&c->mark_lock);
-
-	res->sectors = 0;
-}
-
 #define SECTORS_CACHE	1024
 
 int bch2_disk_reservation_add(struct bch_fs *c, struct disk_reservation *res,

@@ -293,11 +293,13 @@ static inline struct btree_iter_level *iter_l(struct btree_iter *iter)
 struct btree_key_cache {
 	struct mutex		lock;
 	struct rhashtable	table;
+	bool			table_init_done;
 	struct list_head	freed;
 	struct list_head	clean;
 	struct list_head	dirty;
 	struct shrinker		shrink;
 
+	size_t			nr_freed;
 	size_t			nr_keys;
 	size_t			nr_dirty;
 };
@@ -307,7 +309,8 @@ struct bkey_cached_key {
 	struct bpos		pos;
 } __attribute__((packed, aligned(4)));
 
-#define BKEY_CACHED_DIRTY		0
+#define BKEY_CACHED_ACCESSED		0
+#define BKEY_CACHED_DIRTY		1
 
 struct bkey_cached {
 	struct btree_bkey_cached_common c;
@@ -647,6 +650,7 @@ enum btree_insert_ret {
 	BTREE_INSERT_ENOSPC,
 	BTREE_INSERT_NEED_MARK_REPLICAS,
 	BTREE_INSERT_NEED_JOURNAL_RES,
+	BTREE_INSERT_NEED_JOURNAL_RECLAIM,
 };
 
 enum btree_gc_coalesce_fail_reason {

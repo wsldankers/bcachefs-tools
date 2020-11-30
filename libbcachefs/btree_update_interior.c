@@ -49,12 +49,27 @@ static void btree_node_interior_verify(struct bch_fs *c, struct btree *b)
 			break;
 		bp = bkey_s_c_to_btree_ptr_v2(k);
 
-		BUG_ON(bkey_cmp(next_node, bp.v->min_key));
+		if (bkey_cmp(next_node, bp.v->min_key)) {
+			bch2_dump_btree_node(c, b);
+			panic("expected next min_key %llu:%llu got %llu:%llu\n",
+			      next_node.inode,
+			      next_node.offset,
+			      bp.v->min_key.inode,
+			      bp.v->min_key.offset);
+		}
 
 		bch2_btree_node_iter_advance(&iter, b);
 
 		if (bch2_btree_node_iter_end(&iter)) {
-			BUG_ON(bkey_cmp(k.k->p, b->key.k.p));
+
+			if (bkey_cmp(k.k->p, b->key.k.p)) {
+				bch2_dump_btree_node(c, b);
+				panic("expected end %llu:%llu got %llu:%llu\n",
+				      b->key.k.p.inode,
+				      b->key.k.p.offset,
+				      k.k->p.inode,
+				      k.k->p.offset);
+			}
 			break;
 		}
 
@@ -1026,7 +1041,8 @@ static void bch2_insert_fixup_btree_ptr(struct btree_update *as, struct btree *b
 	struct bkey_packed *k;
 	const char *invalid;
 
-	invalid = bch2_bkey_invalid(c, bkey_i_to_s_c(insert), btree_node_type(b));
+	invalid = bch2_bkey_invalid(c, bkey_i_to_s_c(insert), btree_node_type(b)) ?:
+		bch2_bkey_in_btree_node(b, bkey_i_to_s_c(insert));
 	if (invalid) {
 		char buf[160];
 
@@ -1368,15 +1384,14 @@ void bch2_btree_insert_node(struct btree_update *as, struct btree *b,
 	BUG_ON(!as || as->b);
 	bch2_verify_keylist_sorted(keys);
 
-	if (as->must_rewrite)
-		goto split;
-
 	bch2_btree_node_lock_for_insert(c, b, iter);
 
 	if (!bch2_btree_node_insert_fits(c, b, bch2_keylist_u64s(keys))) {
 		bch2_btree_node_unlock_write(b, iter);
 		goto split;
 	}
+
+	btree_node_interior_verify(c, b);
 
 	bch2_btree_insert_keys_interior(as, b, iter, keys);
 
