@@ -1576,9 +1576,6 @@ static int trans_get_key(struct btree_trans *trans,
 
 	*iter = bch2_trans_get_iter(trans, btree_id, pos,
 				    flags|BTREE_ITER_INTENT);
-	if (IS_ERR(*iter))
-		return PTR_ERR(*iter);
-
 	*k = __bch2_btree_iter_peek(*iter, flags);
 	ret = bkey_err(*k);
 	if (ret)
@@ -1606,9 +1603,6 @@ static int bch2_trans_start_alloc_update(struct btree_trans *trans, struct btree
 					   BTREE_ITER_CACHED|
 					   BTREE_ITER_CACHED_NOFILL|
 					   BTREE_ITER_INTENT);
-		if (IS_ERR(iter))
-			return PTR_ERR(iter);
-
 		ret = bch2_btree_iter_traverse(iter);
 		if (ret) {
 			bch2_trans_iter_put(trans, iter);
@@ -2042,6 +2036,16 @@ static u64 bch2_recalc_sectors_available(struct bch_fs *c)
 	percpu_u64_set(&c->pcpu->sectors_available, 0);
 
 	return avail_factor(__bch2_fs_usage_read_short(c).free);
+}
+
+void __bch2_disk_reservation_put(struct bch_fs *c, struct disk_reservation *res)
+{
+	percpu_down_read(&c->mark_lock);
+	this_cpu_sub(c->usage[0]->online_reserved,
+		     res->sectors);
+	percpu_up_read(&c->mark_lock);
+
+	res->sectors = 0;
 }
 
 #define SECTORS_CACHE	1024

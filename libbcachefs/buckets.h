@@ -272,11 +272,13 @@ void bch2_trans_fs_usage_apply(struct btree_trans *, struct bch_fs_usage *);
 
 /* disk reservations: */
 
+void __bch2_disk_reservation_put(struct bch_fs *, struct disk_reservation *);
+
 static inline void bch2_disk_reservation_put(struct bch_fs *c,
 					     struct disk_reservation *res)
 {
-	this_cpu_sub(c->usage[0]->online_reserved, res->sectors);
-	res->sectors = 0;
+	if (res->sectors)
+		__bch2_disk_reservation_put(c, res);
 }
 
 #define BCH_DISK_RESERVATION_NOFAIL		(1 << 0)

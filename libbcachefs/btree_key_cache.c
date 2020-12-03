@@ -169,9 +169,6 @@ static int btree_key_cache_fill(struct btree_trans *trans,
 
 	iter = bch2_trans_get_iter(trans, ck->key.btree_id,
 				   ck->key.pos, BTREE_ITER_SLOTS);
-	if (IS_ERR(iter))
-		return PTR_ERR(iter);
-
 	k = bch2_btree_iter_peek_slot(iter);
 	ret = bkey_err(k);
 	if (ret) {
@@ -319,24 +316,17 @@ static int btree_key_cache_flush_pos(struct btree_trans *trans,
 	struct bch_fs *c = trans->c;
 	struct journal *j = &c->journal;
 	struct btree_iter *c_iter = NULL, *b_iter = NULL;
-	struct bkey_cached *ck;
+	struct bkey_cached *ck = NULL;
 	int ret;
 
 	b_iter = bch2_trans_get_iter(trans, key.btree_id, key.pos,
 				     BTREE_ITER_SLOTS|
 				     BTREE_ITER_INTENT);
-	ret = PTR_ERR_OR_ZERO(b_iter);
-	if (ret)
-		goto out;
-
 	c_iter = bch2_trans_get_iter(trans, key.btree_id, key.pos,
 				     BTREE_ITER_CACHED|
 				     BTREE_ITER_CACHED_NOFILL|
 				     BTREE_ITER_CACHED_NOCREATE|
 				     BTREE_ITER_INTENT);
-	ret = PTR_ERR_OR_ZERO(c_iter);
-	if (ret)
-		goto out;
 retry:
 	ret = bch2_btree_iter_traverse(c_iter);
 	if (ret)
@@ -367,10 +357,11 @@ err:
 	if (ret == -EINTR)
 		goto retry;
 
-	BUG_ON(ret && !bch2_journal_error(j));
-
-	if (ret)
+	if (ret) {
+		bch2_fs_fatal_err_on(!bch2_journal_error(j), c,
+			"error flushing key cache: %i", ret);
 		goto out;
+	}
 
 	bch2_journal_pin_drop(j, &ck->journal);
 	bch2_journal_preres_put(j, &ck->res);
