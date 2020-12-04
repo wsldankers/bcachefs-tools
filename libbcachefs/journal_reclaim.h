@@ -4,12 +4,6 @@
 
 #define JOURNAL_PIN	(32 * 1024)
 
-enum journal_space_from {
-	journal_space_discarded,
-	journal_space_clean_ondisk,
-	journal_space_clean,
-};
-
 static inline void journal_reclaim_kick(struct journal *j)
 {
 	struct task_struct *p = READ_ONCE(j->reclaim_thread);
@@ -39,6 +33,7 @@ journal_seq_pin(struct journal *j, u64 seq)
 	return &j->pin.data[seq & j->pin.mask];
 }
 
+void __bch2_journal_pin_put(struct journal *, u64);
 void bch2_journal_pin_put(struct journal *, u64);
 void bch2_journal_pin_drop(struct journal *, struct journal_entry_pin *);
 
@@ -73,7 +68,7 @@ static inline void bch2_journal_pin_update(struct journal *j, u64 seq,
 void bch2_journal_pin_flush(struct journal *, struct journal_entry_pin *);
 
 void bch2_journal_do_discards(struct journal *);
-void bch2_journal_reclaim(struct journal *);
+int bch2_journal_reclaim(struct journal *);
 
 void bch2_journal_reclaim_stop(struct journal *);
 int bch2_journal_reclaim_start(struct journal *);
