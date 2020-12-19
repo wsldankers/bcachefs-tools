@@ -3019,8 +3019,8 @@ static loff_t page_hole_offset(struct address_space *mapping, loff_t offset)
 	int pg_offset;
 	loff_t ret = -1;
 
-	page = find_lock_entry(mapping, index);
-	if (!page || xa_is_value(page))
+	page = find_lock_page(mapping, index);
+	if (!page)
 		return offset;
 
 	pg_offset = __page_hole_offset(page, offset & (PAGE_SIZE - 1));

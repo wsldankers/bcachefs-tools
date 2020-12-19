@@ -875,9 +875,19 @@ static void btree_iter_verify_new_node(struct btree_iter *iter, struct btree *b)
 		char buf[100];
 		struct bkey uk = bkey_unpack_key(b, k);
 
+		bch2_dump_btree_node(iter->trans->c, l->b);
 		bch2_bkey_to_text(&PBUF(buf), &uk);
-		panic("parent iter doesn't point to new node:\n%s\n%llu:%llu\n",
-		      buf, b->key.k.p.inode, b->key.k.p.offset);
+		panic("parent iter doesn't point to new node:\n"
+		      "iter pos %s %llu:%llu\n"
+		      "iter key %s\n"
+		      "new node %llu:%llu-%llu:%llu\n",
+		      bch2_btree_ids[iter->btree_id],
+		      iter->pos.inode,
+		      iter->pos.offset,
+		      buf,
+		      b->data->min_key.inode,
+		      b->data->min_key.offset,
+		      b->key.k.p.inode, b->key.k.p.offset);
 	}
 
 	if (!parent_locked)
@@ -891,6 +901,13 @@ static inline void __btree_iter_init(struct btree_iter *iter,
 	struct btree_iter_level *l = &iter->l[level];
 
 	bch2_btree_node_iter_init(&l->iter, l->b, &pos);
+
+	/*
+	 * Iterators to interior nodes should always be pointed at the first non
+	 * whiteout:
+	 */
+	if (level)
+		bch2_btree_node_iter_peek(&l->iter, l->b);
 
 	btree_iter_set_dirty(iter, BTREE_ITER_NEED_PEEK);
 }
@@ -2007,9 +2024,10 @@ static void btree_trans_iter_alloc_fail(struct btree_trans *trans)
 {
 
 	struct btree_iter *iter;
+	struct btree_insert_entry *i;
 
 	trans_for_each_iter(trans, iter)
-		pr_err("iter: btree %s pos %llu:%llu%s%s%s %ps",
+		printk(KERN_ERR "iter: btree %s pos %llu:%llu%s%s%s %ps\n",
 		       bch2_btree_ids[iter->btree_id],
 		       iter->pos.inode,
 		       iter->pos.offset,
@@ -2017,6 +2035,14 @@ static void btree_trans_iter_alloc_fail(struct btree_trans *trans)
 		       (trans->iters_touched & (1ULL << iter->idx)) ? " touched" : "",
 		       iter->flags & BTREE_ITER_KEEP_UNTIL_COMMIT ? " keep" : "",
 		       (void *) iter->ip_allocated);
+
+	trans_for_each_update(trans, i) {
+		char buf[300];
+
+		bch2_bkey_val_to_text(&PBUF(buf), trans->c, bkey_i_to_s_c(i->k));
+		printk(KERN_ERR "update: btree %s %s\n",
+		       bch2_btree_ids[i->iter->btree_id], buf);
+	}
 	panic("trans iter oveflow\n");
 }
 
