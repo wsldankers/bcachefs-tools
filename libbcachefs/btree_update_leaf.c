@@ -869,8 +869,8 @@ int __bch2_trans_commit(struct btree_trans *trans)
 		trans_trigger_run = false;
 
 		trans_for_each_update(trans, i) {
-			if (unlikely(i->iter->uptodate > BTREE_ITER_NEED_PEEK &&
-				     (ret = bch2_btree_iter_traverse(i->iter)))) {
+			ret = bch2_btree_iter_traverse(i->iter);
+			if (unlikely(ret)) {
 				trace_trans_restart_traverse(trans->ip);
 				goto out;
 			}
@@ -879,8 +879,8 @@ int __bch2_trans_commit(struct btree_trans *trans)
 			 * We're not using bch2_btree_iter_upgrade here because
 			 * we know trans->nounlock can't be set:
 			 */
-			if (unlikely(i->iter->locks_want < 1 &&
-				     !__bch2_btree_iter_upgrade(i->iter, 1))) {
+			if (unlikely(!btree_node_intent_locked(i->iter, i->iter->level) &&
+				     !__bch2_btree_iter_upgrade(i->iter, i->iter->level + 1))) {
 				trace_trans_restart_upgrade(trans->ip);
 				ret = -EINTR;
 				goto out;
@@ -1084,8 +1084,7 @@ int bch2_btree_delete_at(struct btree_trans *trans,
 
 	bch2_trans_update(trans, iter, &k, 0);
 	return bch2_trans_commit(trans, NULL, NULL,
-				 BTREE_INSERT_NOFAIL|
-				 BTREE_INSERT_USE_RESERVE|flags);
+				 BTREE_INSERT_NOFAIL|flags);
 }
 
 int bch2_btree_delete_range_trans(struct btree_trans *trans, enum btree_id id,
