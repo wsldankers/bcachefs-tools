@@ -1351,7 +1351,8 @@ static int bch2_gc_walk_inodes(struct bch_fs *c,
 	nlinks_iter = genradix_iter_init(links, 0);
 
 	while ((k = bch2_btree_iter_peek(iter)).k &&
-	       !(ret2 = bkey_err(k))) {
+	       !(ret2 = bkey_err(k)) &&
+	       iter->pos.offset < range_end) {
 peek_nlinks:	link = genradix_iter_peek(&nlinks_iter, links);
 
 		if (!link && (!k.k || iter->pos.offset >= range_end))
