@@ -282,6 +282,8 @@ struct bch_sb *bch2_format(struct bch_opt_strs	fs_opt_strs,
 		parse_target(&sb, devs, nr_devs, fs_opt_strs.background_target));
 	SET_BCH_SB_PROMOTE_TARGET(sb.sb,
 		parse_target(&sb, devs, nr_devs, fs_opt_strs.promote_target));
+	SET_BCH_SB_METADATA_TARGET(sb.sb,
+		parse_target(&sb, devs, nr_devs, fs_opt_strs.metadata_target));
 
 	/* Crypt: */
 	if (opts.encrypted) {
@@ -681,6 +683,7 @@ void bch2_sb_print(struct bch_sb *sb, bool print_layout,
 	char foreground_str[64];
 	char background_str[64];
 	char promote_str[64];
+	char metadata_str[64];
 	struct bch_sb_field *f;
 	u64 fields_have = 0;
 	unsigned nr_devices = 0;
@@ -720,6 +723,9 @@ void bch2_sb_print(struct bch_sb *sb, bool print_layout,
 	bch2_sb_get_target(sb, promote_str, sizeof(promote_str),
 		BCH_SB_PROMOTE_TARGET(sb));
 
+	bch2_sb_get_target(sb, metadata_str, sizeof(metadata_str),
+		BCH_SB_METADATA_TARGET(sb));
+
 	bch2_flags_to_text(&PBUF(features_str),
 			   bch2_sb_features,
 			   le64_to_cpu(sb->features[0]));
@@ -752,6 +758,7 @@ void bch2_sb_print(struct bch_sb *sb, bool print_layout,
 	       "Foreground write target:	%s\n"
 	       "Background write target:	%s\n"
 	       "Promote target:			%s\n"
+               "Metadata target:                %s\n"
 
 	       "String hash type:		%s (%llu)\n"
 	       "32 bit inodes:			%llu\n"
@@ -799,6 +806,7 @@ void bch2_sb_print(struct bch_sb *sb, bool print_layout,
 	       foreground_str,
 	       background_str,
 	       promote_str,
+               metadata_str,
 
 	       BCH_SB_STR_HASH_TYPE(sb) < BCH_STR_HASH_NR
 	       ? bch2_str_hash_types[BCH_SB_STR_HASH_TYPE(sb)]
