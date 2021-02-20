@@ -247,6 +247,8 @@ enum btree_iter_uptodate {
 struct btree_iter {
 	struct btree_trans	*trans;
 	struct bpos		pos;
+	/* what we're searching for/what the iterator actually points to: */
+	struct bpos		real_pos;
 	struct bpos		pos_after_commit;
 
 	u16			flags;
@@ -413,7 +415,6 @@ enum btree_flags {
 	BTREE_NODE_just_written,
 	BTREE_NODE_dying,
 	BTREE_NODE_fake,
-	BTREE_NODE_old_extent_overwrite,
 	BTREE_NODE_need_rewrite,
 	BTREE_NODE_never_write,
 };
@@ -428,7 +429,6 @@ BTREE_FLAG(write_in_flight);
 BTREE_FLAG(just_written);
 BTREE_FLAG(dying);
 BTREE_FLAG(fake);
-BTREE_FLAG(old_extent_overwrite);
 BTREE_FLAG(need_rewrite);
 BTREE_FLAG(never_write);
 
