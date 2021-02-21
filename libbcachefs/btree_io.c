@@ -949,7 +949,7 @@ int bch2_btree_node_read_done(struct bch_fs *c, struct bch_dev *ca,
 	bkey_for_each_ptr(bch2_bkey_ptrs(bkey_i_to_s(&b->key)), ptr) {
 		struct bch_dev *ca = bch_dev_bkey_exists(c, ptr->dev);
 
-		if (ca->mi.state != BCH_MEMBER_STATE_RW)
+		if (ca->mi.state != BCH_MEMBER_STATE_rw)
 			set_btree_node_need_rewrite(b);
 	}
 out:
@@ -1313,7 +1313,7 @@ static int validate_bset_for_write(struct bch_fs *c, struct btree *b,
 	unsigned whiteout_u64s = 0;
 	int ret;
 
-	if (bch2_bkey_invalid(c, bkey_i_to_s_c(&b->key), BKEY_TYPE_BTREE))
+	if (bch2_bkey_invalid(c, bkey_i_to_s_c(&b->key), BKEY_TYPE_btree))
 		return -1;
 
 	ret = validate_bset(c, NULL, b, i, sectors, WRITE, false) ?:
