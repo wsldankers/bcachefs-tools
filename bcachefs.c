@@ -58,6 +58,11 @@ static void usage(void)
 	     "  device resize            Resize filesystem on a device\n"
 	     "  device journal-resize    Resize journal on a device\n"
 	     "\n"
+	     "Commands for managing subvolumes and snapshots:\n"
+	     "  subvolume create     Create a new subvolume\n"
+	     "  subvolume delete     Delete an existing subvolume\n"
+	     "  subvolume snapshot   Create a snapshot\n"
+	     "\n"
 	     "Commands for managing filesystem data:\n"
 	     "  data rereplicate         Rereplicate degraded data\n"
 	     "  data job                 Kick off low level data jobs\n"
@@ -150,6 +155,21 @@ static int data_cmds(int argc, char *argv[])
 	return 0;
 }
 
+static int subvolume_cmds(int argc, char *argv[])
+{
+	char *cmd = pop_cmd(&argc, argv);
+
+	if (!strcmp(cmd, "create"))
+		return cmd_subvolume_create(argc, argv);
+	if (!strcmp(cmd, "delete"))
+		return cmd_subvolume_delete(argc, argv);
+	if (!strcmp(cmd, "snapshot"))
+		return cmd_subvolume_snapshot(argc, argv);
+
+	usage();
+	return 0;
+}
+
 int main(int argc, char *argv[])
 {
 	raid_init();
@@ -189,6 +209,8 @@ int main(int argc, char *argv[])
 
 	if (!strcmp(cmd, "data"))
 		return data_cmds(argc, argv);
+	if (!strcmp(cmd, "subvolume"))
+		return subvolume_cmds(argc, argv);
 
 	if (!strcmp(cmd, "unlock"))
 		return cmd_unlock(argc, argv);
