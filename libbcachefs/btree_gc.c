@@ -73,12 +73,13 @@ static int bch2_gc_check_topology(struct bch_fs *c,
 	if (cur.k->k.type == KEY_TYPE_btree_ptr_v2) {
 		struct bkey_i_btree_ptr_v2 *bp = bkey_i_to_btree_ptr_v2(cur.k);
 
-		if (bkey_deleted(&prev->k->k))
-			scnprintf(buf1, sizeof(buf1), "start of node: %llu:%llu",
-				  node_start.inode,
-				  node_start.offset);
-		else
+		if (bkey_deleted(&prev->k->k)) {
+			struct printbuf out = PBUF(buf1);
+			pr_buf(&out, "start of node: ");
+			bch2_bpos_to_text(&out, node_start);
+		} else {
 			bch2_bkey_val_to_text(&PBUF(buf1), c, bkey_i_to_s_c(prev->k));
+		}
 
 		if (fsck_err_on(bkey_cmp(expected_start, bp->v.min_key), c,
 				"btree node with incorrect min_key at btree %s level %u:\n"
@@ -115,8 +116,10 @@ static int bch2_gc_check_topology(struct bch_fs *c,
 		}
 
 		new = kmalloc(bkey_bytes(&cur.k->k), GFP_KERNEL);
-		if (!new)
+		if (!new) {
+			bch_err(c, "%s: error allocating new key", __func__);
 			return -ENOMEM;
+		}
 
 		bkey_copy(new, cur.k);
 
@@ -220,6 +223,11 @@ static int bch2_check_fix_ptrs(struct bch_fs *c, enum btree_id btree_id,
 					"pointer to nonexistent stripe %llu",
 					(u64) p.ec.idx))
 				do_update = true;
+
+			if (fsck_err_on(!bch2_ptr_matches_stripe_m(m, p), c,
+					"pointer does not match stripe %llu",
+					(u64) p.ec.idx))
+				do_update = true;
 		}
 	}
 
@@ -235,8 +243,10 @@ static int bch2_check_fix_ptrs(struct bch_fs *c, enum btree_id btree_id,
 		}
 
 		new = kmalloc(bkey_bytes(k->k), GFP_KERNEL);
-		if (!new)
+		if (!new) {
+			bch_err(c, "%s: error allocating new key", __func__);
 			return -ENOMEM;
+		}
 
 		bkey_reassemble(new, *k);
 
@@ -256,7 +266,8 @@ again:
 				struct stripe *m = genradix_ptr(&c->stripes[true],
 								entry->stripe_ptr.idx);
 
-				if (!m || !m->alive) {
+				if (!m || !m->alive ||
+				    !bch2_ptr_matches_stripe_m(m, p)) {
 					bch2_bkey_extent_entry_drop(new, entry);
 					goto again;
 				}
@@ -302,8 +313,10 @@ static int bch2_gc_mark_key(struct bch_fs *c, enum btree_id btree_id,
 				"superblock not marked as containing replicas (type %u)",
 				k.k->type)) {
 			ret = bch2_mark_bkey_replicas(c, k);
-			if (ret)
-				return ret;
+			if (ret) {
+				bch_err(c, "error marking bkey replicas: %i", ret);
+				goto err;
+			}
 		}
 
 		ret = bch2_check_fix_ptrs(c, btree_id, level, is_root, &k);
@@ -321,6 +334,9 @@ static int bch2_gc_mark_key(struct bch_fs *c, enum btree_id btree_id,
 
 	bch2_mark_key(c, k, 0, k.k->size, NULL, 0, flags);
 fsck_err:
+err:
+	if (ret)
+		bch_err(c, "%s: ret %i", __func__, ret);
 	return ret;
 }
 
@@ -448,8 +464,10 @@ static int bch2_gc_btree_init_recurse(struct bch_fs *c, struct btree *b,
 
 		ret = bch2_gc_mark_key(c, b->c.btree_id, b->c.level, false,
 				       k, &max_stale, true);
-		if (ret)
+		if (ret) {
+			bch_err(c, "%s: error %i from bch2_gc_mark_key", __func__, ret);
 			break;
+		}
 
 		if (b->c.level) {
 			bch2_bkey_buf_reassemble(&cur, c, k);
@@ -493,8 +511,11 @@ static int bch2_gc_btree_init_recurse(struct bch_fs *c, struct btree *b,
 				continue;
 			}
 
-			if (ret)
+			if (ret) {
+				bch_err(c, "%s: error %i getting btree node",
+					__func__, ret);
 				break;
+			}
 
 			ret = bch2_gc_btree_init_recurse(c, child,
 							 target_depth);
@@ -519,6 +540,7 @@ static int bch2_gc_btree_init(struct bch_fs *c,
 		: !btree_node_type_needs_gc(btree_id)		? 1
 		: 0;
 	u8 max_stale = 0;
+	char buf[100];
 	int ret = 0;
 
 	b = c->btree_roots[btree_id].b;
@@ -528,16 +550,14 @@ static int bch2_gc_btree_init(struct bch_fs *c,
 
 	six_lock_read(&b->c.lock, NULL, NULL);
 	if (fsck_err_on(bkey_cmp(b->data->min_key, POS_MIN), c,
-			"btree root with incorrect min_key: %llu:%llu",
-			b->data->min_key.inode,
-			b->data->min_key.offset)) {
+			"btree root with incorrect min_key: %s",
+			(bch2_bpos_to_text(&PBUF(buf), b->data->min_key), buf))) {
 		BUG();
 	}
 
 	if (fsck_err_on(bkey_cmp(b->data->max_key, POS_MAX), c,
-			"btree root with incorrect min_key: %llu:%llu",
-			b->data->max_key.inode,
-			b->data->max_key.offset)) {
+			"btree root with incorrect max_key: %s",
+			(bch2_bpos_to_text(&PBUF(buf), b->data->max_key), buf))) {
 		BUG();
 	}
 
@@ -551,6 +571,8 @@ static int bch2_gc_btree_init(struct bch_fs *c,
 fsck_err:
 	six_unlock_read(&b->c.lock);
 
+	if (ret)
+		bch_err(c, "%s: ret %i", __func__, ret);
 	return ret;
 }
 
@@ -574,8 +596,10 @@ static int bch2_gc_btrees(struct bch_fs *c, bool initial)
 		int ret = initial
 			? bch2_gc_btree_init(c, id)
 			: bch2_gc_btree(c, id, initial);
-		if (ret)
+		if (ret) {
+			bch_err(c, "%s: ret %i", __func__, ret);
 			return ret;
+		}
 	}
 
 	return 0;
@@ -881,6 +905,8 @@ static int bch2_gc_done(struct bch_fs *c,
 #undef copy_stripe_field
 #undef copy_field
 fsck_err:
+	if (ret)
+		bch_err(c, "%s: ret %i", __func__, ret);
 	return ret;
 }
 
@@ -1601,8 +1627,10 @@ int bch2_gc_thread_start(struct bch_fs *c)
 	BUG_ON(c->gc_thread);
 
 	p = kthread_create(bch2_gc_thread, c, "bch-gc/%s", c->name);
-	if (IS_ERR(p))
+	if (IS_ERR(p)) {
+		bch_err(c, "error creating gc thread: %li", PTR_ERR(p));
 		return PTR_ERR(p);
+	}
 
 	get_task_struct(p);
 	c->gc_thread = p;

@@ -1196,6 +1196,8 @@ static int bch2_mark_stripe(struct bch_fs *c,
 			m->block_sectors[i] =
 				stripe_blockcount_get(new_s, i);
 			m->blocks_nonempty += !!m->block_sectors[i];
+
+			m->ptrs[i] = new_s->ptrs[i];
 		}
 
 		bch2_bkey_to_replicas(&m->r.e, new);
@@ -1847,8 +1849,6 @@ static int __bch2_trans_mark_reflink_p(struct btree_trans *trans,
 	}
 
 	bch2_btree_iter_set_pos(iter, bkey_start_pos(k.k));
-	BUG_ON(iter->uptodate > BTREE_ITER_NEED_PEEK);
-
 	bch2_trans_update(trans, iter, n, 0);
 out:
 	ret = sectors;

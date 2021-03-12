@@ -171,10 +171,10 @@ struct bkey_s_c bch2_btree_iter_prev(struct btree_iter *);
 
 struct bkey_s_c bch2_btree_iter_peek_slot(struct btree_iter *);
 struct bkey_s_c bch2_btree_iter_next_slot(struct btree_iter *);
+struct bkey_s_c bch2_btree_iter_prev_slot(struct btree_iter *);
 
 struct bkey_s_c bch2_btree_iter_peek_cached(struct btree_iter *);
 
-void __bch2_btree_iter_set_pos(struct btree_iter *, struct bpos, bool);
 void bch2_btree_iter_set_pos(struct btree_iter *, struct bpos);
 
 /* Sort order for locking btree iterators: */
@@ -242,11 +242,9 @@ static inline int bkey_err(struct bkey_s_c k)
 			   _start, _flags, _k, _ret)			\
 	for ((_iter) = bch2_trans_get_iter((_trans), (_btree_id),	\
 					   (_start), (_flags)),		\
-	     (_ret) = PTR_ERR_OR_ZERO(((_k) =				\
-			__bch2_btree_iter_peek(_iter, _flags)).k);	\
-	     !_ret && (_k).k;						\
-	     (_ret) = PTR_ERR_OR_ZERO(((_k) =				\
-			__bch2_btree_iter_next(_iter, _flags)).k))
+	     (_k) = __bch2_btree_iter_peek(_iter, _flags);		\
+	     !((_ret) = bkey_err(_k)) && (_k).k;			\
+	     (_k) = __bch2_btree_iter_next(_iter, _flags))
 
 #define for_each_btree_key_continue(_iter, _flags, _k, _ret)		\
 	for ((_k) = __bch2_btree_iter_peek(_iter, _flags);		\
@@ -288,6 +286,17 @@ bch2_trans_copy_iter(struct btree_trans *trans, struct btree_iter *src)
 struct btree_iter *bch2_trans_get_node_iter(struct btree_trans *,
 				enum btree_id, struct bpos,
 				unsigned, unsigned, unsigned);
+
+static inline bool btree_iter_live(struct btree_trans *trans, struct btree_iter *iter)
+{
+	return (trans->iters_live & (1ULL << iter->idx)) != 0;
+}
+
+static inline bool btree_iter_keep(struct btree_trans *trans, struct btree_iter *iter)
+{
+	return btree_iter_live(trans, iter) ||
+		(iter->flags & BTREE_ITER_KEEP_UNTIL_COMMIT);
+}
 
 #define TRANS_RESET_NOTRAVERSE		(1 << 0)
 

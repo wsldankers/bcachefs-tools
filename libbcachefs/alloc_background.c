@@ -1068,6 +1068,12 @@ static int discard_invalidated_buckets(struct bch_fs *c, struct bch_dev *ca)
 	return 0;
 }
 
+static inline bool allocator_thread_running(struct bch_dev *ca)
+{
+	return ca->mi.state == BCH_MEMBER_STATE_rw &&
+		test_bit(BCH_FS_ALLOCATOR_RUNNING, &ca->fs->flags);
+}
+
 /**
  * bch_allocator_thread - move buckets from free_inc to reserves
  *
@@ -1084,9 +1090,16 @@ static int bch2_allocator_thread(void *arg)
 	int ret;
 
 	set_freezable();
-	ca->allocator_state = ALLOCATOR_RUNNING;
 
 	while (1) {
+		if (!allocator_thread_running(ca)) {
+			ca->allocator_state = ALLOCATOR_STOPPED;
+			if (kthread_wait_freezable(allocator_thread_running(ca)))
+				break;
+		}
+
+		ca->allocator_state = ALLOCATOR_RUNNING;
+
 		cond_resched();
 		if (kthread_should_stop())
 			break;
@@ -1387,8 +1400,11 @@ int bch2_dev_allocator_start(struct bch_dev *ca)
 
 	p = kthread_create(bch2_allocator_thread, ca,
 			   "bch-alloc/%s", ca->name);
-	if (IS_ERR(p))
+	if (IS_ERR(p)) {
+		bch_err(ca->fs, "error creating allocator thread: %li",
+			PTR_ERR(p));
 		return PTR_ERR(p);
+	}
 
 	get_task_struct(p);
 	rcu_assign_pointer(ca->alloc_thread, p);

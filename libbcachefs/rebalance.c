@@ -280,10 +280,10 @@ void bch2_rebalance_work_to_text(struct printbuf *out, struct bch_fs *c)
 		       h1);
 		break;
 	case REBALANCE_RUNNING:
-		pr_buf(out, "running\n");
-		pr_buf(out, "pos %llu:%llu\n",
-		       r->move_stats.pos.inode,
-		       r->move_stats.pos.offset);
+		pr_buf(out, "running\n"
+		       "pos ");
+		bch2_bpos_to_text(out, r->move_stats.pos);
+		pr_buf(out, "\n");
 		break;
 	}
 }
@@ -315,8 +315,10 @@ int bch2_rebalance_start(struct bch_fs *c)
 		return 0;
 
 	p = kthread_create(bch2_rebalance_thread, c, "bch-rebalance/%s", c->name);
-	if (IS_ERR(p))
+	if (IS_ERR(p)) {
+		bch_err(c, "error creating rebalance thread: %li", PTR_ERR(p));
 		return PTR_ERR(p);
+	}
 
 	get_task_struct(p);
 	rcu_assign_pointer(c->rebalance.thread, p);

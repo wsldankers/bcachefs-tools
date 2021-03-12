@@ -122,8 +122,11 @@ int bch2_journal_key_insert(struct bch_fs *c, enum btree_id id,
 		};
 
 		new_keys.d = kvmalloc(sizeof(new_keys.d[0]) * new_keys.size, GFP_KERNEL);
-		if (!new_keys.d)
+		if (!new_keys.d) {
+			bch_err(c, "%s: error allocating new key array (size %zu)",
+				__func__, new_keys.size);
 			return -ENOMEM;
+		}
 
 		memcpy(new_keys.d, keys->d, sizeof(keys->d[0]) * keys->nr);
 		kvfree(keys->d);
@@ -145,8 +148,10 @@ int bch2_journal_key_delete(struct bch_fs *c, enum btree_id id,
 		kmalloc(sizeof(struct bkey), GFP_KERNEL);
 	int ret;
 
-	if (!whiteout)
+	if (!whiteout) {
+		bch_err(c, "%s: error allocating new key", __func__);
 		return -ENOMEM;
+	}
 
 	bkey_init(&whiteout->k);
 	whiteout->k.p = pos;
@@ -523,7 +528,7 @@ static int __bch2_journal_replay_key(struct btree_trans *trans,
 	 * want that here, journal replay is supposed to treat extents like
 	 * regular keys:
 	 */
-	__bch2_btree_iter_set_pos(iter, k->k.p, false);
+	BUG_ON(iter->flags & BTREE_ITER_IS_EXTENTS);
 
 	ret   = bch2_btree_iter_traverse(iter) ?:
 		bch2_trans_update(trans, iter, k, BTREE_TRIGGER_NORUN);
@@ -902,9 +907,11 @@ static struct bch_sb_field_clean *read_superblock_clean(struct bch_fs *c)
 		return ERR_PTR(-ENOMEM);
 	}
 
-	if (le16_to_cpu(c->disk_sb.sb->version) <
-	    bcachefs_metadata_version_bkey_renumber)
-		bch2_sb_clean_renumber(clean, READ);
+	ret = bch2_sb_clean_validate(c, clean, READ);
+	if (ret) {
+		mutex_unlock(&c->sb_lock);
+		return ERR_PTR(ret);
+	}
 
 	mutex_unlock(&c->sb_lock);
 
@@ -1336,8 +1343,10 @@ int bch2_fs_initialize(struct bch_fs *c)
 				  &lostfound,
 				  0, 0, S_IFDIR|0700, 0,
 				  NULL, NULL));
-	if (ret)
+	if (ret) {
+		bch_err(c, "error creating lost+found");
 		goto err;
+	}
 
 	if (enabled_qtypes(c)) {
 		ret = bch2_fs_quota_read(c);
