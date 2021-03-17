@@ -41,8 +41,10 @@ int cmd_data_rereplicate(int argc, char *argv[])
 		die("too many arguments");
 
 	return bchu_data(bcache_fs_open(fs_path), (struct bch_ioctl_data) {
-		.op	= BCH_DATA_OP_REREPLICATE,
-		.start	= POS_MIN,
-		.end	= POS_MAX,
+		.op		= BCH_DATA_OP_REREPLICATE,
+		.start_btree	= 0,
+		.start_pos	= POS_MIN,
+		.end_btree	= BTREE_ID_NR,
+		.end_pos	= POS_MAX,
 	});
 }

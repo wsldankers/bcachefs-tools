@@ -320,8 +320,10 @@ int cmd_device_evacuate(int argc, char *argv[])
 
 	return bchu_data(fs, (struct bch_ioctl_data) {
 		.op		= BCH_DATA_OP_MIGRATE,
-		.start		= POS_MIN,
-		.end		= POS_MAX,
+		.start_btree	= 0,
+		.start_pos	= POS_MIN,
+		.end_btree	= BTREE_ID_NR,
+		.end_pos	= POS_MAX,
 		.migrate.dev	= dev_idx,
 	});
 }

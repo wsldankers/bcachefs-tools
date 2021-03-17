@@ -368,11 +368,11 @@ static struct dentry *bch2_lookup(struct inode *vdir, struct dentry *dentry,
 {
 	struct bch_fs *c = vdir->i_sb->s_fs_info;
 	struct bch_inode_info *dir = to_bch_ei(vdir);
+	struct bch_hash_info hash = bch2_hash_info_init(c, &dir->ei_inode);
 	struct inode *vinode = NULL;
 	u64 inum;
 
-	inum = bch2_dirent_lookup(c, dir->v.i_ino,
-				  &dir->ei_str_hash,
+	inum = bch2_dirent_lookup(c, dir->v.i_ino, &hash,
 				  &dentry->d_name);
 
 	if (inum)
@@ -412,16 +412,12 @@ static int __bch2_link(struct bch_fs *c,
 	mutex_lock(&inode->ei_update_lock);
 	bch2_trans_init(&trans, c, 4, 1024);
 
-	do {
-		bch2_trans_begin(&trans);
-		ret   = bch2_link_trans(&trans,
+	ret = __bch2_trans_do(&trans, NULL, &inode->ei_journal_seq,
+			      BTREE_INSERT_NOUNLOCK,
+			bch2_link_trans(&trans,
 					dir->v.i_ino,
 					inode->v.i_ino, &dir_u, &inode_u,
-					&dentry->d_name) ?:
-			bch2_trans_commit(&trans, NULL,
-					&inode->ei_journal_seq,
-					BTREE_INSERT_NOUNLOCK);
-	} while (ret == -EINTR);
+					&dentry->d_name));
 
 	if (likely(!ret)) {
 		BUG_ON(inode_u.bi_inum != inode->v.i_ino);
@@ -468,17 +464,12 @@ static int bch2_unlink(struct inode *vdir, struct dentry *dentry)
 	bch2_lock_inodes(INODE_UPDATE_LOCK, dir, inode);
 	bch2_trans_init(&trans, c, 4, 1024);
 
-	do {
-		bch2_trans_begin(&trans);
-
-		ret   = bch2_unlink_trans(&trans,
+	ret = __bch2_trans_do(&trans, NULL, &dir->ei_journal_seq,
+			      BTREE_INSERT_NOUNLOCK|
+			      BTREE_INSERT_NOFAIL,
+			bch2_unlink_trans(&trans,
 					  dir->v.i_ino, &dir_u,
-					  &inode_u, &dentry->d_name) ?:
-			bch2_trans_commit(&trans, NULL,
-					  &dir->ei_journal_seq,
-					  BTREE_INSERT_NOUNLOCK|
-					  BTREE_INSERT_NOFAIL);
-	} while (ret == -EINTR);
+					  &inode_u, &dentry->d_name));
 
 	if (likely(!ret)) {
 		BUG_ON(inode_u.bi_inum != inode->v.i_ino);
@@ -592,21 +583,16 @@ static int bch2_rename2(struct inode *src_vdir, struct dentry *src_dentry,
 			goto err;
 	}
 
-retry:
-	bch2_trans_begin(&trans);
-	ret   = bch2_rename_trans(&trans,
-				  src_dir->v.i_ino, &src_dir_u,
-				  dst_dir->v.i_ino, &dst_dir_u,
-				  &src_inode_u,
-				  &dst_inode_u,
-				  &src_dentry->d_name,
-				  &dst_dentry->d_name,
-				  mode) ?:
-		bch2_trans_commit(&trans, NULL,
-				  &journal_seq,
-				  BTREE_INSERT_NOUNLOCK);
-	if (ret == -EINTR)
-		goto retry;
+	ret = __bch2_trans_do(&trans, NULL, &journal_seq,
+			      BTREE_INSERT_NOUNLOCK,
+			bch2_rename_trans(&trans,
+					  src_dir->v.i_ino, &src_dir_u,
+					  dst_dir->v.i_ino, &dst_dir_u,
+					  &src_inode_u,
+					  &dst_inode_u,
+					  &src_dentry->d_name,
+					  &dst_dentry->d_name,
+					  mode));
 	if (unlikely(ret))
 		goto err;
 
@@ -728,7 +714,7 @@ retry:
 	bch2_setattr_copy(inode, &inode_u, attr);
 
 	if (attr->ia_valid & ATTR_MODE) {
-		ret = bch2_acl_chmod(&trans, inode, inode_u.bi_mode, &acl);
+		ret = bch2_acl_chmod(&trans, &inode_u, inode_u.bi_mode, &acl);
 		if (ret)
 			goto btree_err;
 	}
@@ -909,6 +895,8 @@ retry:
 	while ((k = bch2_btree_iter_peek(iter)).k &&
 	       !(ret = bkey_err(k)) &&
 	       bkey_cmp(iter->pos, end) < 0) {
+		enum btree_id data_btree = BTREE_ID_extents;
+
 		if (!bkey_extent_is_data(k.k) &&
 		    k.k->type != KEY_TYPE_reservation) {
 			bch2_btree_iter_next(iter);
@@ -921,7 +909,7 @@ retry:
 
 		bch2_bkey_buf_reassemble(&cur, c, k);
 
-		ret = bch2_read_indirect_extent(&trans,
+		ret = bch2_read_indirect_extent(&trans, &data_btree,
 					&offset_into_extent, &cur);
 		if (ret)
 			break;
@@ -1154,7 +1142,6 @@ static void bch2_vfs_inode_init(struct bch_fs *c,
 	inode->ei_flags		= 0;
 	inode->ei_journal_seq	= 0;
 	inode->ei_quota_reserved = 0;
-	inode->ei_str_hash	= bch2_hash_info_init(c, bi);
 	inode->ei_qid		= bch_qid(bi);
 
 	inode->v.i_mapping->a_ops = &bch_address_space_operations;
