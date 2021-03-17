@@ -837,13 +837,15 @@ static void bch2_journal_ptrs_to_text(struct printbuf *out, struct bch_fs *c,
 
 	for (i = 0; i < j->nr_ptrs; i++) {
 		struct bch_dev *ca = c->devs[j->ptrs[i].dev];
+		u64 offset;
+
+		div64_u64_rem(j->ptrs[i].offset, ca->mi.bucket_size, &offset);
 
 		if (i)
 			pr_buf(out, " ");
 		pr_buf(out, "%u:%llu (offset %llu)",
 		       j->ptrs[i].dev,
-		       (u64) j->ptrs[i].offset,
-		       (u64) j->ptrs[i].offset % ca->mi.bucket_size);
+		       (u64) j->ptrs[i].offset, offset);
 	}
 }
 
@@ -1384,6 +1386,7 @@ void bch2_journal_write(struct closure *cl)
 	struct jset_entry *start, *end;
 	struct jset *jset;
 	struct bio *bio;
+	char *journal_debug_buf = NULL;
 	bool validate_before_checksum = false;
 	unsigned i, sectors, bytes, u64s, nr_rw_members = 0;
 	int ret;
@@ -1485,6 +1488,12 @@ retry_alloc:
 		goto retry_alloc;
 	}
 
+	if (ret) {
+		journal_debug_buf = kmalloc(4096, GFP_ATOMIC);
+		if (journal_debug_buf)
+			__bch2_journal_debug_to_text(&_PBUF(journal_debug_buf, 4096), j);
+	}
+
 	/*
 	 * write is allocated, no longer need to account for it in
 	 * bch2_journal_space_available():
@@ -1499,7 +1508,9 @@ retry_alloc:
 	spin_unlock(&j->lock);
 
 	if (ret) {
-		bch_err(c, "Unable to allocate journal write");
+		bch_err(c, "Unable to allocate journal write:\n%s",
+			journal_debug_buf);
+		kfree(journal_debug_buf);
 		bch2_fatal_error(c);
 		continue_at(cl, journal_write_done, system_highpri_wq);
 		return;

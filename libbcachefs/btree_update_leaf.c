@@ -284,7 +284,8 @@ btree_key_can_insert_cached(struct btree_trans *trans,
 	BUG_ON(iter->level);
 
 	if (!test_bit(BKEY_CACHED_DIRTY, &ck->flags) &&
-	    bch2_btree_key_cache_must_wait(trans->c))
+	    bch2_btree_key_cache_must_wait(trans->c) &&
+	    !(trans->flags & BTREE_INSERT_JOURNAL_RECLAIM))
 		return BTREE_INSERT_NEED_JOURNAL_RECLAIM;
 
 	if (u64s <= ck->u64s)
@@ -938,8 +939,13 @@ int __bch2_trans_commit(struct btree_trans *trans)
 	}
 
 	trans_for_each_update2(trans, i) {
-		BUG_ON(i->iter->uptodate > BTREE_ITER_NEED_PEEK);
 		BUG_ON(i->iter->locks_want < 1);
+
+		ret = bch2_btree_iter_traverse(i->iter);
+		if (unlikely(ret)) {
+			trace_trans_restart_traverse(trans->ip);
+			goto out;
+		}
 
 		u64s = jset_u64s(i->k->k.u64s);
 		if (btree_iter_type(i->iter) == BTREE_ITER_CACHED &&
