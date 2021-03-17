@@ -389,25 +389,6 @@ static void list_nodes_keys(struct bch_fs *c, enum btree_id btree_id,
 	bch2_trans_exit(&trans);
 }
 
-static struct bpos parse_pos(char *buf)
-{
-	char *s = buf, *field;
-	u64 inode_v = 0, offset_v = 0;
-
-	if (!(field = strsep(&s, ":")) ||
-	    kstrtoull(field, 10, &inode_v))
-		die("invalid bpos %s", buf);
-
-	if ((field = strsep(&s, ":")) &&
-	    kstrtoull(field, 10, &offset_v))
-		die("invalid bpos %s", buf);
-
-	if (s)
-		die("invalid bpos %s", buf);
-
-	return (struct bpos) { .inode = inode_v, .offset = offset_v };
-}
-
 static void list_keys_usage(void)
 {
 	puts("bcachefs list - list filesystem metadata to stdout\n"
@@ -457,10 +438,10 @@ int cmd_list(int argc, char *argv[])
 			btree_id_end = btree_id_start + 1;
 			break;
 		case 's':
-			start	= parse_pos(optarg);
+			start	= bpos_parse(optarg);
 			break;
 		case 'e':
-			end	= parse_pos(optarg);
+			end	= bpos_parse(optarg);
 			break;
 		case 'i':
 			if (kstrtoull(optarg, 10, &inum))
