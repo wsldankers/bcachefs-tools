@@ -560,6 +560,26 @@ static int validate_bset(struct bch_fs *c, struct bch_dev *ca,
 		     BTREE_ERR_FATAL, c, ca, b, i,
 		     "unsupported bset version");
 
+	if (btree_err_on(version < c->sb.version_min,
+			 BTREE_ERR_FIXABLE, c, NULL, b, i,
+			 "bset version %u older than superblock version_min %u",
+			 version, c->sb.version_min)) {
+		mutex_lock(&c->sb_lock);
+		c->disk_sb.sb->version_min = cpu_to_le16(version);
+		bch2_write_super(c);
+		mutex_unlock(&c->sb_lock);
+	}
+
+	if (btree_err_on(version > c->sb.version,
+			 BTREE_ERR_FIXABLE, c, NULL, b, i,
+			 "bset version %u newer than superblock version %u",
+			 version, c->sb.version)) {
+		mutex_lock(&c->sb_lock);
+		c->disk_sb.sb->version = cpu_to_le16(version);
+		bch2_write_super(c);
+		mutex_unlock(&c->sb_lock);
+	}
+
 	if (btree_err_on(b->written + sectors > c->opts.btree_node_size,
 			 BTREE_ERR_FIXABLE, c, ca, b, i,
 			 "bset past end of btree node")) {
@@ -753,6 +773,8 @@ int bch2_btree_node_read_done(struct bch_fs *c, struct bch_dev *ca,
 	unsigned u64s;
 	int ret, retry_read = 0, write = READ;
 
+	b->version_ondisk = U16_MAX;
+
 	iter = mempool_alloc(&c->fill_iter, GFP_NOIO);
 	sort_iter_init(iter, b);
 	iter->size = (btree_blocks(c) + 1) * 2;
@@ -831,6 +853,9 @@ int bch2_btree_node_read_done(struct bch_fs *c, struct bch_dev *ca,
 
 			sectors = vstruct_sectors(bne, c->block_bits);
 		}
+
+		b->version_ondisk = min(b->version_ondisk,
+					le16_to_cpu(i->version));
 
 		ret = validate_bset(c, ca, b, i, sectors,
 				    READ, have_retry);
@@ -1200,6 +1225,7 @@ retry:
 	if (ret)
 		goto err;
 out:
+	bch2_trans_iter_put(&trans, iter);
 	bch2_trans_exit(&trans);
 	bch2_bkey_buf_exit(&k, c);
 	bio_put(&wbio->wbio.bio);

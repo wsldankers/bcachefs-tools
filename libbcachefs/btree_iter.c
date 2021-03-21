@@ -9,6 +9,7 @@
 #include "btree_locking.h"
 #include "btree_update.h"
 #include "debug.h"
+#include "error.h"
 #include "extents.h"
 #include "journal.h"
 
@@ -1424,7 +1425,7 @@ struct btree *bch2_btree_iter_next_node(struct btree_iter *iter)
 		if (btree_node_read_locked(iter, iter->level))
 			btree_node_unlock(iter, iter->level);
 
-		iter->pos	= bkey_successor(iter->pos);
+		iter->pos = iter->real_pos = bkey_successor(iter->pos);
 		iter->level	= iter->min_depth;
 
 		btree_iter_set_dirty(iter, BTREE_ITER_NEED_TRAVERSE);
@@ -1496,7 +1497,7 @@ void bch2_btree_iter_set_pos(struct btree_iter *iter, struct bpos new_pos)
 	btree_iter_set_search_pos(iter, btree_iter_search_key(iter));
 }
 
-static inline bool bch2_btree_iter_advance_pos(struct btree_iter *iter)
+inline bool bch2_btree_iter_advance_pos(struct btree_iter *iter)
 {
 	struct bpos pos = iter->k.p;
 	bool ret = bkey_cmp(pos, POS_MAX) != 0;
@@ -1507,7 +1508,7 @@ static inline bool bch2_btree_iter_advance_pos(struct btree_iter *iter)
 	return ret;
 }
 
-static inline bool bch2_btree_iter_rewind_pos(struct btree_iter *iter)
+inline bool bch2_btree_iter_rewind_pos(struct btree_iter *iter)
 {
 	struct bpos pos = bkey_start_pos(&iter->k);
 	bool ret = bkey_cmp(pos, POS_MIN) != 0;
@@ -1955,6 +1956,7 @@ int bch2_trans_iter_put(struct btree_trans *trans,
 		return 0;
 
 	BUG_ON(trans->iters + iter->idx != iter);
+	BUG_ON(!btree_iter_live(trans, iter));
 
 	ret = btree_iter_err(iter);
 
@@ -1972,7 +1974,7 @@ int bch2_trans_iter_free(struct btree_trans *trans,
 	if (IS_ERR_OR_NULL(iter))
 		return 0;
 
-	trans->iters_touched &= ~(1ULL << iter->idx);
+	set_btree_iter_dontneed(trans, iter);
 
 	return bch2_trans_iter_put(trans, iter);
 }
@@ -2116,6 +2118,7 @@ struct btree_iter *bch2_trans_get_node_iter(struct btree_trans *trans,
 	for (i = 0; i < ARRAY_SIZE(iter->l); i++)
 		iter->l[i].b		= NULL;
 	iter->l[iter->level].b		= BTREE_ITER_NO_NODE_INIT;
+	iter->ip_allocated = _RET_IP_;
 
 	return iter;
 }
@@ -2133,7 +2136,7 @@ struct btree_iter *__bch2_trans_copy_iter(struct btree_trans *trans,
 	 * We don't need to preserve this iter since it's cheap to copy it
 	 * again - this will cause trans_iter_put() to free it right away:
 	 */
-	trans->iters_touched &= ~(1ULL << iter->idx);
+	set_btree_iter_dontneed(trans, iter);
 
 	return iter;
 }
@@ -2214,6 +2217,8 @@ void bch2_trans_reset(struct btree_trans *trans, unsigned flags)
 		       (void *) &trans->fs_usage_deltas->memset_start);
 	}
 
+	bch2_trans_cond_resched(trans);
+
 	if (!(flags & TRANS_RESET_NOTRAVERSE))
 		bch2_btree_iter_traverse_all(trans);
 }
@@ -2273,6 +2278,19 @@ int bch2_trans_exit(struct btree_trans *trans)
 	bch2_trans_unlock(trans);
 
 #ifdef CONFIG_BCACHEFS_DEBUG
+	if (trans->iters_live) {
+		struct btree_iter *iter;
+
+		bch_err(c, "btree iterators leaked!");
+		trans_for_each_iter(trans, iter)
+			if (btree_iter_live(trans, iter))
+				printk(KERN_ERR "  btree %s allocated at %pS\n",
+				       bch2_btree_ids[iter->btree_id],
+				       (void *) iter->ip_allocated);
+		/* Be noisy about this: */
+		bch2_fatal_error(c);
+	}
+
 	mutex_lock(&trans->c->btree_trans_lock);
 	list_del(&trans->list);
 	mutex_unlock(&trans->c->btree_trans_lock);

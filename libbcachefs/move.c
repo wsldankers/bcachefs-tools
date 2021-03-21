@@ -196,6 +196,7 @@ nomatch:
 		goto next;
 	}
 out:
+	bch2_trans_iter_put(&trans, iter);
 	bch2_trans_exit(&trans);
 	bch2_bkey_buf_exit(&_insert, c);
 	bch2_bkey_buf_exit(&_new, c);
@@ -642,6 +643,8 @@ next_nondata:
 		bch2_trans_cond_resched(&trans);
 	}
 out:
+
+	bch2_trans_iter_put(&trans, iter);
 	ret = bch2_trans_exit(&trans) ?: ret;
 	bch2_bkey_buf_exit(&sk, c);
 
@@ -728,7 +731,7 @@ static int bch2_move_btree(struct bch_fs *c,
 		for_each_btree_node(&trans, iter, id,
 				    id == start_btree_id ? start_pos : POS_MIN,
 				    BTREE_ITER_PREFETCH, b) {
-			if (kthread && (ret = kthread_should_stop()))
+			if (kthread && kthread_should_stop())
 				goto out;
 
 			if ((cmp_int(id, end_btree_id) ?:
@@ -837,13 +840,15 @@ static enum data_cmd rewrite_old_nodes_pred(struct bch_fs *c, void *arg,
 					    struct bch_io_opts *io_opts,
 					    struct data_opts *data_opts)
 {
-	if (!btree_node_need_rewrite(b))
-		return DATA_SKIP;
+	if (b->version_ondisk != c->sb.version ||
+	    btree_node_need_rewrite(b)) {
+		data_opts->target		= 0;
+		data_opts->nr_replicas		= 1;
+		data_opts->btree_insert_flags	= 0;
+		return DATA_REWRITE;
+	}
 
-	data_opts->target		= 0;
-	data_opts->nr_replicas		= 1;
-	data_opts->btree_insert_flags	= 0;
-	return DATA_REWRITE;
+	return DATA_SKIP;
 }
 
 int bch2_data_job(struct bch_fs *c,
@@ -895,11 +900,17 @@ int bch2_data_job(struct bch_fs *c,
 		ret = bch2_replicas_gc2(c) ?: ret;
 		break;
 	case BCH_DATA_OP_REWRITE_OLD_NODES:
-
 		ret = bch2_move_btree(c,
 				      op.start_btree,	op.start_pos,
 				      op.end_btree,	op.end_pos,
 				      rewrite_old_nodes_pred, &op, stats) ?: ret;
+
+		if (!ret) {
+			mutex_lock(&c->sb_lock);
+			c->disk_sb.sb->version_min = c->disk_sb.sb->version;
+			bch2_write_super(c);
+			mutex_unlock(&c->sb_lock);
+		}
 		break;
 	default:
 		ret = -EINVAL;

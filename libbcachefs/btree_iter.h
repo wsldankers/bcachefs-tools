@@ -175,6 +175,8 @@ struct bkey_s_c bch2_btree_iter_prev_slot(struct btree_iter *);
 
 struct bkey_s_c bch2_btree_iter_peek_cached(struct btree_iter *);
 
+bool bch2_btree_iter_advance_pos(struct btree_iter *);
+bool bch2_btree_iter_rewind_pos(struct btree_iter *);
 void bch2_btree_iter_set_pos(struct btree_iter *, struct bpos);
 
 /* Sort order for locking btree iterators: */
@@ -296,6 +298,11 @@ static inline bool btree_iter_keep(struct btree_trans *trans, struct btree_iter 
 {
 	return btree_iter_live(trans, iter) ||
 		(iter->flags & BTREE_ITER_KEEP_UNTIL_COMMIT);
+}
+
+static inline void set_btree_iter_dontneed(struct btree_trans *trans, struct btree_iter *iter)
+{
+	trans->iters_touched &= ~(1ULL << iter->idx);
 }
 
 #define TRANS_RESET_NOTRAVERSE		(1 << 0)
