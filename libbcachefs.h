@@ -30,6 +30,7 @@ void bch2_opts_usage(unsigned);
 struct format_opts {
 	char		*label;
 	uuid_le		uuid;
+	unsigned	version;
 
 	unsigned	encoded_extent_max;
 
@@ -40,6 +41,7 @@ struct format_opts {
 static inline struct format_opts format_opts_default()
 {
 	return (struct format_opts) {
+		.version		= bcachefs_metadata_version_current,
 		.encoded_extent_max	= 128,
 	};
 }

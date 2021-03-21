@@ -41,6 +41,8 @@ x('g',	group,			required_argument)	\
 x(0,	discard,		no_argument)		\
 x(0,	data_allowed,		required_argument)	\
 x(0,	durability,		required_argument)	\
+x(0,	version,		required_argument)	\
+x(0,	no_initialize,		no_argument)		\
 x('f',	force,			no_argument)		\
 x('q',	quiet,			no_argument)		\
 x('h',	help,			no_argument)
@@ -112,7 +114,7 @@ int cmd_format(int argc, char *argv[])
 	darray(char *) device_paths;
 	struct format_opts opts	= format_opts_default();
 	struct dev_opts dev_opts = dev_opts_default(), *dev;
-	bool force = false, no_passphrase = false, quiet = false;
+	bool force = false, no_passphrase = false, quiet = false, initialize = true;
 	unsigned v;
 	int opt;
 
@@ -183,6 +185,13 @@ int cmd_format(int argc, char *argv[])
 			    dev_opts.durability > BCH_REPLICAS_MAX)
 				die("invalid durability");
 			break;
+		case O_version:
+			if (kstrtouint(optarg, 10, &opts.version))
+				die("invalid version");
+			break;
+		case O_no_initialize:
+			initialize = false;
+			break;
 		case O_no_opt:
 			darray_append(device_paths, optarg);
 			dev_opts.path = optarg;
@@ -206,8 +215,10 @@ int cmd_format(int argc, char *argv[])
 	if (darray_empty(devices))
 		die("Please supply a device");
 
-	if (opts.encrypted && !no_passphrase)
+	if (opts.encrypted && !no_passphrase) {
 		opts.passphrase = read_passphrase_twice("Enter passphrase: ");
+		initialize = false;
+	}
 
 	darray_foreach(dev, devices)
 		dev->fd = open_for_format(dev->path, force);
@@ -229,7 +240,7 @@ int cmd_format(int argc, char *argv[])
 
 	darray_free(devices);
 
-	if (!opts.passphrase) {
+	if (initialize) {
 		/*
 		 * Start the filesystem once, to allocate the journal and create
 		 * the root directory:
