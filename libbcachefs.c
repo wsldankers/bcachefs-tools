@@ -739,7 +739,8 @@ void bch2_sb_print(struct bch_sb *sb, bool print_layout,
 	       "Internal UUID:			%s\n"
 	       "Device index:			%u\n"
 	       "Label:				%s\n"
-	       "Version:			%llu\n"
+	       "Version:			%u\n"
+	       "Oldest version on disk:		%u\n"
 	       "Created:			%s\n"
 	       "Squence number:			%llu\n"
 	       "Block_size:			%s\n"
@@ -772,7 +773,8 @@ void bch2_sb_print(struct bch_sb *sb, bool print_layout,
 	       internal_uuid_str,
 	       sb->dev_idx,
 	       label,
-	       le64_to_cpu(sb->version),
+	       le16_to_cpu(sb->version),
+	       le16_to_cpu(sb->version_min),
 	       time_str,
 	       le64_to_cpu(sb->seq),
 	       pr_units(le16_to_cpu(sb->block_size), units),
