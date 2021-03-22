@@ -965,11 +965,6 @@ int bch2_fs_mark_dirty(struct bch_fs *c)
 	 */
 
 	mutex_lock(&c->sb_lock);
-	if (c->opts.version_upgrade) {
-		c->disk_sb.sb->version = le16_to_cpu(bcachefs_metadata_version_current);
-		c->disk_sb.sb->features[0] |= BCH_SB_FEATURES_ALL;
-	}
-
 	SET_BCH_SB_CLEAN(c->disk_sb.sb, false);
 	c->disk_sb.sb->features[0] |= BCH_SB_FEATURES_ALWAYS;
 	ret = bch2_write_super(c);

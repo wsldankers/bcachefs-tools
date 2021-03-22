@@ -639,7 +639,7 @@ next:
 		atomic64_add(k.k->size * bch2_bkey_nr_ptrs_allocated(k),
 			     &stats->sectors_seen);
 next_nondata:
-		bch2_btree_iter_next(iter);
+		bch2_btree_iter_advance(iter);
 		bch2_trans_cond_resched(&trans);
 	}
 out:
@@ -835,13 +835,38 @@ static enum data_cmd migrate_btree_pred(struct bch_fs *c, void *arg,
 	return migrate_pred(c, arg, bkey_i_to_s_c(&b->key), io_opts, data_opts);
 }
 
+static bool bformat_needs_redo(struct bkey_format *f)
+{
+	unsigned i;
+
+	for (i = 0; i < f->nr_fields; i++) {
+		unsigned unpacked_bits = bch2_bkey_format_current.bits_per_field[i];
+		u64 unpacked_mask = ~((~0ULL << 1) << (unpacked_bits - 1));
+		u64 field_offset = le64_to_cpu(f->field_offset[i]);
+
+		if (f->bits_per_field[i] > unpacked_bits)
+			return true;
+
+		if ((f->bits_per_field[i] == unpacked_bits) && field_offset)
+			return true;
+
+		if (((field_offset + ((1ULL << f->bits_per_field[i]) - 1)) &
+		     unpacked_mask) <
+		    field_offset)
+			return true;
+	}
+
+	return false;
+}
+
 static enum data_cmd rewrite_old_nodes_pred(struct bch_fs *c, void *arg,
 					    struct btree *b,
 					    struct bch_io_opts *io_opts,
 					    struct data_opts *data_opts)
 {
 	if (b->version_ondisk != c->sb.version ||
-	    btree_node_need_rewrite(b)) {
+	    btree_node_need_rewrite(b) ||
+	    bformat_needs_redo(&b->format)) {
 		data_opts->target		= 0;
 		data_opts->nr_replicas		= 1;
 		data_opts->btree_insert_flags	= 0;
@@ -849,6 +874,26 @@ static enum data_cmd rewrite_old_nodes_pred(struct bch_fs *c, void *arg,
 	}
 
 	return DATA_SKIP;
+}
+
+int bch2_scan_old_btree_nodes(struct bch_fs *c, struct bch_move_stats *stats)
+{
+	int ret;
+
+	ret = bch2_move_btree(c,
+			      0,		POS_MIN,
+			      BTREE_ID_NR,	POS_MAX,
+			      rewrite_old_nodes_pred, c, stats) ?: ret;
+	if (!ret) {
+		mutex_lock(&c->sb_lock);
+		c->disk_sb.sb->compat[0] |= 1ULL << BCH_COMPAT_FEAT_EXTENTS_ABOVE_BTREE_UPDATES_DONE;
+		c->disk_sb.sb->compat[0] |= 1ULL << BCH_COMPAT_FEAT_BFORMAT_OVERFLOW_DONE;
+		c->disk_sb.sb->version_min = c->disk_sb.sb->version;
+		bch2_write_super(c);
+		mutex_unlock(&c->sb_lock);
+	}
+
+	return ret;
 }
 
 int bch2_data_job(struct bch_fs *c,
@@ -900,17 +945,7 @@ int bch2_data_job(struct bch_fs *c,
 		ret = bch2_replicas_gc2(c) ?: ret;
 		break;
 	case BCH_DATA_OP_REWRITE_OLD_NODES:
-		ret = bch2_move_btree(c,
-				      op.start_btree,	op.start_pos,
-				      op.end_btree,	op.end_pos,
-				      rewrite_old_nodes_pred, &op, stats) ?: ret;
-
-		if (!ret) {
-			mutex_lock(&c->sb_lock);
-			c->disk_sb.sb->version_min = c->disk_sb.sb->version;
-			bch2_write_super(c);
-			mutex_unlock(&c->sb_lock);
-		}
+		ret = bch2_scan_old_btree_nodes(c, stats);
 		break;
 	default:
 		ret = -EINVAL;

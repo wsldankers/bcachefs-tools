@@ -16,6 +16,7 @@
 #include "journal_io.h"
 #include "journal_reclaim.h"
 #include "journal_seq_blacklist.h"
+#include "move.h"
 #include "quota.h"
 #include "recovery.h"
 #include "replicas.h"
@@ -1207,7 +1208,28 @@ use_clean:
 		bch_verbose(c, "quotas done");
 	}
 
+	if (!(c->sb.compat & (1ULL << BCH_COMPAT_FEAT_EXTENTS_ABOVE_BTREE_UPDATES_DONE)) ||
+	    !(c->sb.compat & (1ULL << BCH_COMPAT_FEAT_BFORMAT_OVERFLOW_DONE))) {
+		struct bch_move_stats stats = { 0 };
+
+		bch_verbose(c, "scanning for old btree nodes");
+		ret = bch2_fs_read_write(c);
+		if (ret)
+			goto err;
+
+		ret = bch2_scan_old_btree_nodes(c, &stats);
+		if (ret)
+			goto err;
+		bch_verbose(c, "scanning for old btree nodes done");
+	}
+
 	mutex_lock(&c->sb_lock);
+	if (c->opts.version_upgrade) {
+		c->disk_sb.sb->version = le16_to_cpu(bcachefs_metadata_version_current);
+		c->disk_sb.sb->features[0] |= BCH_SB_FEATURES_ALL;
+		write_sb = true;
+	}
+
 	if (!test_bit(BCH_FS_ERROR, &c->flags)) {
 		c->disk_sb.sb->compat[0] |= 1ULL << BCH_COMPAT_FEAT_ALLOC_INFO;
 		write_sb = true;
@@ -1260,6 +1282,15 @@ int bch2_fs_initialize(struct bch_fs *c)
 	bch_notice(c, "initializing new filesystem");
 
 	mutex_lock(&c->sb_lock);
+	c->disk_sb.sb->compat[0] |= 1ULL << BCH_COMPAT_FEAT_EXTENTS_ABOVE_BTREE_UPDATES_DONE;
+	c->disk_sb.sb->compat[0] |= 1ULL << BCH_COMPAT_FEAT_BFORMAT_OVERFLOW_DONE;
+
+	if (c->opts.version_upgrade) {
+		c->disk_sb.sb->version = le16_to_cpu(bcachefs_metadata_version_current);
+		c->disk_sb.sb->features[0] |= BCH_SB_FEATURES_ALL;
+		bch2_write_super(c);
+	}
+
 	for_each_online_member(ca, c, i)
 		bch2_mark_dev_superblock(c, ca, 0);
 	mutex_unlock(&c->sb_lock);
