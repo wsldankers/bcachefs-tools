@@ -209,6 +209,9 @@ struct bch_sb *bch2_format(struct bch_opt_strs	fs_opt_strs,
 	sb.sb->user_uuid	= opts.uuid;
 	sb.sb->nr_devices	= nr_devs;
 
+	if (opts.version == bcachefs_metadata_version_current)
+		sb.sb->features[0] |= BCH_SB_FEATURES_ALL;
+
 	uuid_generate(sb.sb->uuid.b);
 
 	if (opts.label)
