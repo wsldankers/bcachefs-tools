@@ -1423,7 +1423,7 @@ struct btree *bch2_btree_iter_next_node(struct btree_iter *iter)
 		if (btree_node_read_locked(iter, iter->level))
 			btree_node_unlock(iter, iter->level);
 
-		iter->pos	= bkey_successor(iter->pos);
+		iter->pos = iter->real_pos = bkey_successor(iter->pos);
 		iter->level	= iter->min_depth;
 
 		btree_iter_set_dirty(iter, BTREE_ITER_NEED_TRAVERSE);
@@ -2080,7 +2080,7 @@ static struct btree_iter *__btree_trans_get_iter(struct btree_trans *trans,
 
 		if (best &&
 		    bkey_cmp(bpos_diff(best->pos, pos),
-			     bpos_diff(iter->pos, pos)) < 0)
+			     bpos_diff(iter->real_pos, pos)) < 0)
 			continue;
 
 		best = iter;
