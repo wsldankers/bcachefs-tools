@@ -35,52 +35,35 @@ static u64 min_size(unsigned bucket_size)
 	return BCH_MIN_NR_NBUCKETS * bucket_size;
 }
 
-static void init_layout(struct bch_sb_layout *l, unsigned block_size,
+static void init_layout(struct bch_sb_layout *l,
+			unsigned block_size,
+			unsigned sb_size,
 			u64 start, u64 end)
 {
-	unsigned sb_size;
-	u64 backup; /* offset of 2nd sb */
+	unsigned i;
 
 	memset(l, 0, sizeof(*l));
-
-	if (start != BCH_SB_SECTOR)
-		start = round_up(start, block_size);
-	end = round_down(end, block_size);
-
-	if (start >= end)
-		die("insufficient space for superblocks");
-
-	/*
-	 * Create two superblocks in the allowed range: reserve a maximum of 64k
-	 */
-	sb_size = min_t(u64, 128, end - start / 2);
-
-	backup = start + sb_size;
-	backup = round_up(backup, block_size);
-
-	backup = min(backup, end);
-
-	sb_size = min(end - backup, backup- start);
-	sb_size = rounddown_pow_of_two(sb_size);
-
-	if (sb_size < 8)
-		die("insufficient space for superblocks");
 
 	l->magic		= BCACHE_MAGIC;
 	l->layout_type		= 0;
 	l->nr_superblocks	= 2;
 	l->sb_max_size_bits	= ilog2(sb_size);
-	l->sb_offset[0]		= cpu_to_le64(start);
-	l->sb_offset[1]		= cpu_to_le64(backup);
+
+	/* Create two superblocks in the allowed range: */
+	for (i = 0; i < l->nr_superblocks; i++) {
+		if (start != BCH_SB_SECTOR)
+			start = round_up(start, block_size);
+
+		l->sb_offset[i] = cpu_to_le64(start);
+		start += sb_size;
+	}
+
+	if (start >= end)
+		die("insufficient space for superblocks");
 }
 
 void bch2_pick_bucket_size(struct bch_opts opts, struct dev_opts *dev)
 {
-	if (!dev->sb_offset) {
-		dev->sb_offset	= BCH_SB_SECTOR;
-		dev->sb_end	= BCH_SB_SECTOR + 256;
-	}
-
 	if (!dev->size)
 		dev->size = get_size(dev->path, dev->fd) >> 9;
 
@@ -300,7 +283,13 @@ struct bch_sb *bch2_format(struct bch_opt_strs	fs_opt_strs,
 	for (i = devs; i < devs + nr_devs; i++) {
 		sb.sb->dev_idx = i - devs;
 
+		if (!i->sb_offset) {
+			i->sb_offset	= BCH_SB_SECTOR;
+			i->sb_end	= i->size;
+		}
+
 		init_layout(&sb.sb->layout, fs_opts.block_size,
+			    opts.superblock_size,
 			    i->sb_offset, i->sb_end);
 
 		if (i->sb_offset == BCH_SB_SECTOR) {

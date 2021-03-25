@@ -12,6 +12,8 @@
 
 /* option parsing */
 
+#define SUPERBLOCK_SIZE_DEFAULT		2048	/* 1 MB */
+
 struct bch_opt_strs {
 union {
 	char			*by_id[bch2_opts_nr];
@@ -31,9 +33,8 @@ struct format_opts {
 	char		*label;
 	uuid_le		uuid;
 	unsigned	version;
-
+	unsigned	superblock_size;
 	unsigned	encoded_extent_max;
-
 	bool		encrypted;
 	char		*passphrase;
 };
@@ -42,6 +43,7 @@ static inline struct format_opts format_opts_default()
 {
 	return (struct format_opts) {
 		.version		= bcachefs_metadata_version_current,
+		.superblock_size	= SUPERBLOCK_SIZE_DEFAULT,
 		.encoded_extent_max	= 128,
 	};
 }

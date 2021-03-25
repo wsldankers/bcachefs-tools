@@ -36,6 +36,7 @@ x(0,	no_passphrase,		no_argument)		\
 x('L',	label,			required_argument)	\
 x('U',	uuid,			required_argument)	\
 x(0,	fs_size,		required_argument)	\
+x(0,	superblock_size,	required_argument)	\
 x(0,	bucket_size,		required_argument)	\
 x('g',	group,			required_argument)	\
 x(0,	discard,		no_argument)		\
@@ -62,6 +63,7 @@ static void usage(void)
 	     "      --no_passphrase         Don't encrypt master encryption key\n"
 	     "  -L, --label=label\n"
 	     "  -U, --uuid=uuid\n"
+	     "      --superblock_size=size\n"
 	     "\n"
 	     "Device specific options:");
 
@@ -163,6 +165,12 @@ int cmd_format(int argc, char *argv[])
 				die("invalid filesystem size");
 
 			dev_opts.size >>= 9;
+			break;
+		case O_superblock_size:
+			if (bch2_strtouint_h(optarg, &opts.superblock_size))
+				die("invalid filesystem size");
+
+			opts.superblock_size >>= 9;
 			break;
 		case O_bucket_size:
 			dev_opts.bucket_size =
