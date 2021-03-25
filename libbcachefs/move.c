@@ -883,7 +883,7 @@ int bch2_scan_old_btree_nodes(struct bch_fs *c, struct bch_move_stats *stats)
 	ret = bch2_move_btree(c,
 			      0,		POS_MIN,
 			      BTREE_ID_NR,	POS_MAX,
-			      rewrite_old_nodes_pred, c, stats) ?: ret;
+			      rewrite_old_nodes_pred, c, stats);
 	if (!ret) {
 		mutex_lock(&c->sb_lock);
 		c->disk_sb.sb->compat[0] |= 1ULL << BCH_COMPAT_FEAT_EXTENTS_ABOVE_BTREE_UPDATES_DONE;
