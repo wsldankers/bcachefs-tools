@@ -138,19 +138,18 @@ struct bpos {
 #define KEY_SNAPSHOT_MAX		((__u32)~0U)
 #define KEY_SIZE_MAX			((__u32)~0U)
 
-static inline struct bpos POS(__u64 inode, __u64 offset)
+static inline struct bpos SPOS(__u64 inode, __u64 offset, __u32 snapshot)
 {
-	struct bpos ret;
-
-	ret.inode	= inode;
-	ret.offset	= offset;
-	ret.snapshot	= 0;
-
-	return ret;
+	return (struct bpos) {
+		.inode		= inode,
+		.offset		= offset,
+		.snapshot	= snapshot,
+	};
 }
 
-#define POS_MIN				POS(0, 0)
-#define POS_MAX				POS(KEY_INODE_MAX, KEY_OFFSET_MAX)
+#define POS_MIN				SPOS(0, 0, 0)
+#define POS_MAX				SPOS(KEY_INODE_MAX, KEY_OFFSET_MAX, KEY_SNAPSHOT_MAX)
+#define POS(_inode, _offset)		SPOS(_inode, _offset, 0)
 
 /* Empty placeholder struct, for container_of() */
 struct bch_val {
@@ -342,7 +341,9 @@ static inline void bkey_init(struct bkey *k)
 	x(inline_data,		17)			\
 	x(btree_ptr_v2,		18)			\
 	x(indirect_inline_data,	19)			\
-	x(alloc_v2,		20)
+	x(alloc_v2,		20)			\
+	x(subvolume,		21)			\
+	x(snapshot,		22)
 
 enum bch_bkey_type {
 #define x(name, nr) KEY_TYPE_##name	= nr,
@@ -686,6 +687,10 @@ struct bch_inode_generation {
 	__le32			pad;
 } __attribute__((packed, aligned(8)));
 
+/*
+ * bi_subvol and bi_parent_subvol are only set for subvolume roots:
+ */
+
 #define BCH_INODE_FIELDS()			\
 	x(bi_atime,			96)	\
 	x(bi_ctime,			96)	\
@@ -707,7 +712,11 @@ struct bch_inode_generation {
 	x(bi_foreground_target,		16)	\
 	x(bi_background_target,		16)	\
 	x(bi_erasure_code,		16)	\
-	x(bi_fields_set,		16)
+	x(bi_fields_set,		16)	\
+	x(bi_dir,			64)	\
+	x(bi_dir_offset,		64)	\
+	x(bi_subvol,			32)	\
+	x(bi_parent_subvol,		32)
 
 /* subset of BCH_INODE_FIELDS */
 #define BCH_INODE_OPTS()			\
@@ -743,6 +752,7 @@ enum {
 	__BCH_INODE_I_SIZE_DIRTY= 5,
 	__BCH_INODE_I_SECTORS_DIRTY= 6,
 	__BCH_INODE_UNLINKED	= 7,
+	__BCH_INODE_BACKPTR_UNTRUSTED = 8,
 
 	/* bits 20+ reserved for packed fields below: */
 };
@@ -755,6 +765,7 @@ enum {
 #define BCH_INODE_I_SIZE_DIRTY	(1 << __BCH_INODE_I_SIZE_DIRTY)
 #define BCH_INODE_I_SECTORS_DIRTY (1 << __BCH_INODE_I_SECTORS_DIRTY)
 #define BCH_INODE_UNLINKED	(1 << __BCH_INODE_UNLINKED)
+#define BCH_INODE_BACKPTR_UNTRUSTED (1 << __BCH_INODE_BACKPTR_UNTRUSTED)
 
 LE32_BITMASK(INODE_STR_HASH,	struct bch_inode, bi_flags, 20, 24);
 LE32_BITMASK(INODE_NR_FIELDS,	struct bch_inode, bi_flags, 24, 31);
@@ -787,6 +798,8 @@ struct bch_dirent {
 
 	__u8			d_name[];
 } __attribute__((packed, aligned(8)));
+
+#define DT_SUBVOL	16
 
 #define BCH_NAME_MAX	(U8_MAX * sizeof(u64) -				\
 			 sizeof(struct bkey) -				\
@@ -922,6 +935,29 @@ struct bch_indirect_inline_data {
 struct bch_inline_data {
 	struct bch_val		v;
 	u8			data[0];
+};
+
+/* Subvolumes: */
+
+#define SUBVOL_POS_MIN		POS(0, 1)
+#define SUBVOL_POS_MAX		POS(0, S32_MAX)
+#define BCACHEFS_ROOT_SUBVOL	1
+
+struct bch_subvolume {
+	struct bch_val		v;
+	__le32			flags;
+	__le32			snapshot;
+	__le64			inode;
+};
+
+LE64_BITMASK(BCH_SUBVOLUME_RO,	struct bch_subvolume, flags,  0,  1)
+
+/* Snapshots */
+
+struct bch_snapshot {
+	struct bch_val		v;
+	__le32			parent;
+	__le32			pad;
 };
 
 /* Optional/variable size superblock sections: */
@@ -1204,7 +1240,8 @@ enum bcachefs_metadata_version {
 	bcachefs_metadata_version_new_versioning	= 10,
 	bcachefs_metadata_version_bkey_renumber		= 10,
 	bcachefs_metadata_version_inode_btree_change	= 11,
-	bcachefs_metadata_version_max			= 12,
+	bcachefs_metadata_version_snapshot		= 12,
+	bcachefs_metadata_version_max			= 13,
 };
 
 #define bcachefs_metadata_version_current	(bcachefs_metadata_version_max - 1)
@@ -1679,7 +1716,9 @@ LE32_BITMASK(JSET_NO_FLUSH,	struct jset, flags, 5, 6);
 	x(alloc,	4)			\
 	x(quotas,	5)			\
 	x(stripes,	6)			\
-	x(reflink,	7)
+	x(reflink,	7)			\
+	x(subvolumes,	8)			\
+	x(snapshots,	9)
 
 enum btree_id {
 #define x(kwd, val) BTREE_ID_##kwd = val,
@@ -1736,7 +1775,7 @@ struct btree_node {
 	/* Closed interval: */
 	struct bpos		min_key;
 	struct bpos		max_key;
-	struct bch_extent_ptr	ptr;
+	struct bch_extent_ptr	_ptr; /* not used anymore */
 	struct bkey_format	format;
 
 	union {

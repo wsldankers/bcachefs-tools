@@ -20,6 +20,7 @@
 #include "quota.h"
 #include "recovery.h"
 #include "replicas.h"
+#include "subvolume.h"
 #include "super-io.h"
 
 #include <linux/sort.h>
@@ -48,14 +49,14 @@ static int __journal_key_cmp(enum btree_id	l_btree_id,
 {
 	return (cmp_int(l_btree_id,	r->btree_id) ?:
 		cmp_int(l_level,	r->level) ?:
-		bkey_cmp(l_pos,	r->k->k.p));
+		bpos_cmp(l_pos,	r->k->k.p));
 }
 
 static int journal_key_cmp(struct journal_key *l, struct journal_key *r)
 {
 	return (cmp_int(l->btree_id,	r->btree_id) ?:
 		cmp_int(l->level,	r->level) ?:
-		bkey_cmp(l->k->k.p,	r->k->k.p));
+		bpos_cmp(l->k->k.p,	r->k->k.p));
 }
 
 static size_t journal_key_search(struct journal_keys *journal_keys,
@@ -90,7 +91,7 @@ static void journal_iter_fix(struct bch_fs *c, struct journal_iter *iter, unsign
 	if (iter->idx > idx ||
 	    (iter->idx == idx &&
 	     biter->last &&
-	     bkey_cmp(n->k.p, biter->unpacked.p) <= 0))
+	     bpos_cmp(n->k.p, biter->unpacked.p) <= 0))
 		iter->idx++;
 }
 
@@ -238,7 +239,7 @@ struct bkey_s_c bch2_btree_and_journal_iter_peek(struct btree_and_journal_iter *
 			bkey_i_to_s_c(bch2_journal_iter_peek(&iter->journal));
 
 		if (btree_k.k && journal_k.k) {
-			int cmp = bkey_cmp(btree_k.k->p, journal_k.k->p);
+			int cmp = bpos_cmp(btree_k.k->p, journal_k.k->p);
 
 			if (!cmp)
 				bch2_journal_iter_advance_btree(iter);
@@ -256,7 +257,7 @@ struct bkey_s_c bch2_btree_and_journal_iter_peek(struct btree_and_journal_iter *
 		ret = iter->last == journal ? journal_k : btree_k;
 
 		if (iter->b &&
-		    bkey_cmp(ret.k->p, iter->b->data->max_key) > 0) {
+		    bpos_cmp(ret.k->p, iter->b->data->max_key) > 0) {
 			iter->journal.idx = iter->journal.keys->nr;
 			iter->last = none;
 			return bkey_s_c_null;
@@ -419,7 +420,7 @@ static int journal_sort_key_cmp(const void *_l, const void *_r)
 
 	return  cmp_int(l->btree_id,	r->btree_id) ?:
 		cmp_int(l->level,	r->level) ?:
-		bkey_cmp(l->k->k.p, r->k->k.p) ?:
+		bpos_cmp(l->k->k.p, r->k->k.p) ?:
 		cmp_int(l->journal_seq, r->journal_seq) ?:
 		cmp_int(l->journal_offset, r->journal_offset);
 }
@@ -490,7 +491,7 @@ static struct journal_keys journal_keys_sort(struct list_head *journal_entries)
 		while (src + 1 < keys.d + keys.nr &&
 		       src[0].btree_id	== src[1].btree_id &&
 		       src[0].level	== src[1].level &&
-		       !bkey_cmp(src[0].k->k.p, src[1].k->k.p))
+		       !bpos_cmp(src[0].k->k.p, src[1].k->k.p))
 			src++;
 
 		*dst++ = *src++;
@@ -581,7 +582,7 @@ static int journal_sort_seq_cmp(const void *_l, const void *_r)
 	return  cmp_int(r->level,	l->level) ?:
 		cmp_int(l->journal_seq, r->journal_seq) ?:
 		cmp_int(l->btree_id,	r->btree_id) ?:
-		bkey_cmp(l->k->k.p,	r->k->k.p);
+		bpos_cmp(l->k->k.p,	r->k->k.p);
 }
 
 static int bch2_journal_replay(struct bch_fs *c,
@@ -998,10 +999,22 @@ int bch2_fs_recovery(struct bch_fs *c)
 		goto err;
 	}
 
+	if (!(c->sb.compat & (1ULL << BCH_COMPAT_FEAT_BFORMAT_OVERFLOW_DONE))) {
+		bch_err(c, "filesystem may have incompatible bkey formats; run fsck from older bcachefs-tools to fix");
+		ret = -EINVAL;
+		goto err;
+
+	}
+
 	if (!(c->sb.features & (1ULL << BCH_FEATURE_alloc_v2))) {
 		bch_info(c, "alloc_v2 feature bit not set, fsck required");
 		c->opts.fsck = true;
 		c->opts.fix_errors = FSCK_OPT_YES;
+	}
+
+	if (c->sb.version < bcachefs_metadata_version_snapshot) {
+		bch_info(c, "filesystem version is prior to snapshot field - upgrading");
+		c->opts.version_upgrade = true;
 	}
 
 	if (!c->replicas.entries ||
@@ -1172,6 +1185,13 @@ use_clean:
 		bch_verbose(c, "alloc write done");
 	}
 
+	bch_verbose(c, "reading snapshots table");
+	err = "error reading snapshots table";
+	ret = bch2_fs_snapshots_start(c);
+	if (ret)
+		goto err;
+	bch_verbose(c, "reading snapshots done");
+
 	if (!c->sb.clean) {
 		if (!(c->sb.features & (1 << BCH_FEATURE_atomic_nlink))) {
 			bch_info(c, "checking inode link counts");
@@ -1271,7 +1291,9 @@ fsck_err:
 int bch2_fs_initialize(struct bch_fs *c)
 {
 	struct bch_inode_unpacked root_inode, lostfound_inode;
-	struct bkey_inode_buf packed_inode;
+	struct bkey_inode_buf	packed_inode;
+	struct bkey_i_subvolume root_volume;
+	struct bkey_i_snapshot	root_snapshot;
 	struct qstr lostfound = QSTR("lost+found");
 	const char *err = "cannot allocate memory";
 	struct bch_dev *ca;
@@ -1334,10 +1356,35 @@ int bch2_fs_initialize(struct bch_fs *c)
 	if (ret)
 		goto err;
 
+	bkey_snapshot_init(&root_snapshot.k_i);
+	root_snapshot.k.p.offset = U32_MAX;
+	root_snapshot.v.parent	= 0;
+	root_snapshot.v.pad	= 0;
+
+	err = "error creating root snapshot node";
+	ret = bch2_btree_insert(c, BTREE_ID_snapshots,
+				&root_snapshot.k_i,
+				NULL, NULL, 0);
+
+	bkey_subvolume_init(&root_volume.k_i);
+	root_volume.k.p.offset = BCACHEFS_ROOT_SUBVOL;
+	root_volume.v.flags	= 0;
+	root_volume.v.snapshot	= cpu_to_le32(U32_MAX);
+	root_volume.v.inode	= cpu_to_le64(BCACHEFS_ROOT_INO);
+
+	err = "error creating root subvolume";
+	ret = bch2_btree_insert(c, BTREE_ID_subvolumes,
+				&root_volume.k_i,
+				NULL, NULL, 0);
+	if (ret)
+		goto err;
+
 	bch2_inode_init(c, &root_inode, 0, 0,
 			S_IFDIR|S_IRWXU|S_IRUGO|S_IXUGO, 0, NULL);
-	root_inode.bi_inum = BCACHEFS_ROOT_INO;
+	root_inode.bi_inum	= BCACHEFS_ROOT_INO;
+	root_inode.bi_subvol	= BCACHEFS_ROOT_SUBVOL;
 	bch2_inode_pack(c, &packed_inode, &root_inode);
+	packed_inode.inode.k.p.snapshot = U32_MAX;
 
 	err = "error creating root directory";
 	ret = bch2_btree_insert(c, BTREE_ID_inodes,

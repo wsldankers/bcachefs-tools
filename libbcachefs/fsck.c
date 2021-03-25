@@ -9,6 +9,7 @@
 #include "fsck.h"
 #include "inode.h"
 #include "keylist.h"
+#include "subvolume.h"
 #include "super.h"
 #include "xattr.h"
 
@@ -672,6 +673,36 @@ retry:
 			ret = remove_dirent(&trans, d);
 			if (ret)
 				goto err;
+			continue;
+		}
+
+		if (fsck_err_on(!(target.bi_flags & BCH_INODE_BACKPTR_UNTRUSTED) &&
+				(target.bi_dir != k.k->p.inode ||
+				 target.bi_dir_offset != k.k->p.offset), c,
+				"inode %llu has wrong backpointer:\n"
+				"got       %llu:%llu\n"
+				"should be %llu:%llu",
+				d_inum,
+				target.bi_dir,
+				target.bi_dir_offset,
+				k.k->p.inode,
+				k.k->p.offset)) {
+			struct bkey_inode_buf p;
+
+			target.bi_dir		= k.k->p.inode;
+			target.bi_dir_offset	= k.k->p.offset;
+			bch2_trans_unlock(&trans);
+
+			bch2_inode_pack(c, &p, &target);
+
+			ret = bch2_btree_insert(c, BTREE_ID_inodes,
+						&p.inode.k_i, NULL, NULL,
+						BTREE_INSERT_NOFAIL|
+						BTREE_INSERT_LAZY_RW);
+			if (ret) {
+				bch_err(c, "error in fsck: error %i updating inode", ret);
+				goto err;
+			}
 			continue;
 		}
 
@@ -1446,7 +1477,8 @@ int bch2_fsck_full(struct bch_fs *c)
 {
 	struct bch_inode_unpacked root_inode, lostfound_inode;
 
-	return  check_extents(c) ?:
+	return  bch2_fs_snapshots_check(c) ?:
+		check_extents(c) ?:
 		check_dirents(c) ?:
 		check_xattrs(c) ?:
 		check_root(c, &root_inode) ?:

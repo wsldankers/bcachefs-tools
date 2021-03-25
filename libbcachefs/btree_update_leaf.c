@@ -26,7 +26,7 @@ static inline int btree_insert_entry_cmp(const struct btree_insert_entry *l,
 {
 	return   cmp_int(l->btree_id,	r->btree_id) ?:
 		 -cmp_int(l->level,	r->level) ?:
-		 bkey_cmp(l->k->k.p,	r->k->k.p);
+		 bpos_cmp(l->k->k.p,	r->k->k.p);
 }
 
 static inline bool same_leaf_as_prev(struct btree_trans *trans,
@@ -70,8 +70,8 @@ bool bch2_btree_bset_insert_key(struct btree_iter *iter,
 	EBUG_ON(btree_node_just_written(b));
 	EBUG_ON(bset_written(b, btree_bset_last(b)));
 	EBUG_ON(bkey_deleted(&insert->k) && bkey_val_u64s(&insert->k));
-	EBUG_ON(bkey_cmp(insert->k.p, b->data->min_key) < 0);
-	EBUG_ON(bkey_cmp(insert->k.p, b->data->max_key) > 0);
+	EBUG_ON(bpos_cmp(insert->k.p, b->data->min_key) < 0);
+	EBUG_ON(bpos_cmp(insert->k.p, b->data->max_key) > 0);
 	EBUG_ON(insert->k.u64s >
 		bch_btree_keys_u64s_remaining(iter->trans->c, b));
 	EBUG_ON(iter->flags & BTREE_ITER_IS_EXTENTS);
@@ -223,9 +223,17 @@ static inline void btree_insert_entry_checks(struct btree_trans *trans,
 {
 	struct bch_fs *c = trans->c;
 
-	BUG_ON(bch2_debug_check_bkeys &&
-	       bch2_bkey_invalid(c, bkey_i_to_s_c(i->k), i->bkey_type));
-	BUG_ON(bkey_cmp(i->k->k.p, i->iter->real_pos));
+	if (bch2_debug_check_bkeys) {
+		const char *invalid = bch2_bkey_invalid(c,
+				bkey_i_to_s_c(i->k), i->bkey_type);
+		if (invalid) {
+			char buf[200];
+
+			bch2_bkey_val_to_text(&PBUF(buf), c, bkey_i_to_s_c(i->k));
+			panic("invalid bkey %s on insert: %s\n", buf, invalid);
+		}
+	}
+	BUG_ON(!i->is_extent && bpos_cmp(i->k->k.p, i->iter->real_pos));
 	BUG_ON(i->level		!= i->iter->level);
 	BUG_ON(i->btree_id	!= i->iter->btree_id);
 }
@@ -369,6 +377,7 @@ bch2_trans_commit_write_locked(struct btree_trans *trans,
 	struct bch_fs *c = trans->c;
 	struct bch_fs_usage *fs_usage = NULL;
 	struct btree_insert_entry *i;
+	struct btree_trans_commit_hook *h;
 	unsigned u64s = 0;
 	bool marking = false;
 	int ret;
@@ -385,6 +394,14 @@ bch2_trans_commit_write_locked(struct btree_trans *trans,
 	 */
 
 	prefetch(&trans->c->journal.flags);
+
+	h = trans->hooks;
+	while (h) {
+		ret = h->fn(trans, h);
+		if (ret)
+			return ret;
+		h = h->next;
+	}
 
 	trans_for_each_update2(trans, i) {
 		/* Multiple inserts might go to same leaf: */
@@ -1051,6 +1068,13 @@ int bch2_trans_update(struct btree_trans *trans, struct btree_iter *iter,
 	}
 
 	return 0;
+}
+
+void bch2_trans_commit_hook(struct btree_trans *trans,
+			    struct btree_trans_commit_hook *h)
+{
+	h->next = trans->hooks;
+	trans->hooks = h;
 }
 
 int __bch2_btree_insert(struct btree_trans *trans,

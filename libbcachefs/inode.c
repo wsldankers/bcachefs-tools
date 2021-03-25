@@ -8,6 +8,7 @@
 #include "extents.h"
 #include "inode.h"
 #include "str_hash.h"
+#include "subvolume.h"
 #include "varint.h"
 
 #include <linux/random.h>
@@ -332,14 +333,15 @@ int bch2_inode_write(struct btree_trans *trans,
 		return PTR_ERR(inode_p);
 
 	bch2_inode_pack(trans->c, inode_p, inode);
+	inode_p->inode.k.p.snapshot = iter->snapshot;
 	bch2_trans_update(trans, iter, &inode_p->inode.k_i, 0);
 	return 0;
 }
 
 const char *bch2_inode_invalid(const struct bch_fs *c, struct bkey_s_c k)
 {
-		struct bkey_s_c_inode inode = bkey_s_c_to_inode(k);
-		struct bch_inode_unpacked unpacked;
+	struct bkey_s_c_inode inode = bkey_s_c_to_inode(k);
+	struct bch_inode_unpacked unpacked;
 
 	if (k.k->p.inode)
 		return "nonzero k.p.inode";
@@ -365,6 +367,9 @@ const char *bch2_inode_invalid(const struct bch_fs *c, struct bkey_s_c k)
 	if ((unpacked.bi_flags & BCH_INODE_UNLINKED) &&
 	    unpacked.bi_nlink != 0)
 		return "flagged as unlinked but bi_nlink != 0";
+
+	if (unpacked.bi_subvol && !S_ISDIR(unpacked.bi_mode))
+		return "subvolume root but not a directory";
 
 	return NULL;
 }
@@ -469,11 +474,10 @@ static inline u32 bkey_generation(struct bkey_s_c k)
 	}
 }
 
-int bch2_inode_create(struct btree_trans *trans,
-		      struct bch_inode_unpacked *inode_u)
+struct btree_iter *bch2_inode_create(struct btree_trans *trans,
+				     struct bch_inode_unpacked *inode_u)
 {
 	struct bch_fs *c = trans->c;
-	struct bkey_inode_buf *inode_p;
 	struct btree_iter *iter = NULL;
 	struct bkey_s_c k;
 	u64 min, max, start, *hint;
@@ -493,10 +497,6 @@ int bch2_inode_create(struct btree_trans *trans,
 
 	if (start >= max || start < min)
 		start = min;
-
-	inode_p = bch2_trans_kmalloc(trans, sizeof(*inode_p));
-	if (IS_ERR(inode_p))
-		return PTR_ERR(inode_p);
 again:
 	for_each_btree_key(trans, iter, BTREE_ID_inodes, POS(0, start),
 			   BTREE_ITER_SLOTS|BTREE_ITER_INTENT, k, ret) {
@@ -520,7 +520,7 @@ again:
 	bch2_trans_iter_put(trans, iter);
 
 	if (ret)
-		return ret;
+		return ERR_PTR(ret);
 
 	if (start != min) {
 		/* Retry from start */
@@ -528,15 +528,12 @@ again:
 		goto again;
 	}
 
-	return -ENOSPC;
+	return ERR_PTR(-ENOSPC);
 found_slot:
 	*hint			= k.k->p.offset;
 	inode_u->bi_inum	= k.k->p.offset;
 	inode_u->bi_generation	= bkey_generation(k);
-
-	ret = bch2_inode_write(trans, iter, inode_u);
-	bch2_trans_iter_put(trans, iter);
-	return ret;
+	return iter;
 }
 
 int bch2_inode_rm(struct bch_fs *c, u64 inode_nr, bool cached)
@@ -594,6 +591,13 @@ retry:
 	}
 
 	bch2_inode_unpack(bkey_s_c_to_inode(k), &inode_u);
+
+	/* Subvolume root? */
+	if (inode_u.bi_subvol) {
+		ret = bch2_subvolume_delete(&trans, inode_u.bi_subvol);
+		if (ret)
+			goto err;
+	}
 
 	bkey_inode_generation_init(&delete.k_i);
 	delete.k.p = iter->pos;

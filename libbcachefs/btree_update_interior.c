@@ -50,7 +50,7 @@ static void btree_node_interior_verify(struct bch_fs *c, struct btree *b)
 			break;
 		bp = bkey_s_c_to_btree_ptr_v2(k);
 
-		if (bkey_cmp(next_node, bp.v->min_key)) {
+		if (bpos_cmp(next_node, bp.v->min_key)) {
 			bch2_dump_btree_node(c, b);
 			panic("expected next min_key %s got %s\n",
 			      (bch2_bpos_to_text(&PBUF(buf1), next_node), buf1),
@@ -60,7 +60,7 @@ static void btree_node_interior_verify(struct bch_fs *c, struct btree *b)
 		bch2_btree_node_iter_advance(&iter, b);
 
 		if (bch2_btree_node_iter_end(&iter)) {
-			if (bkey_cmp(k.k->p, b->key.k.p)) {
+			if (bpos_cmp(k.k->p, b->key.k.p)) {
 				bch2_dump_btree_node(c, b);
 				panic("expected end %s got %s\n",
 				      (bch2_bpos_to_text(&PBUF(buf1), b->key.k.p), buf1),
@@ -69,7 +69,7 @@ static void btree_node_interior_verify(struct bch_fs *c, struct btree *b)
 			break;
 		}
 
-		next_node = bkey_successor(k.k->p);
+		next_node = bpos_successor(k.k->p);
 	}
 #endif
 }
@@ -289,7 +289,6 @@ static struct btree *bch2_btree_node_alloc(struct btree_update *as, unsigned lev
 	b->data->flags = 0;
 	SET_BTREE_NODE_ID(b->data, as->btree_id);
 	SET_BTREE_NODE_LEVEL(b->data, level);
-	b->data->ptr = bch2_bkey_ptrs_c(bkey_i_to_s_c(&b->key)).start->ptr;
 
 	if (b->key.k.type == KEY_TYPE_btree_ptr_v2) {
 		struct bkey_i_btree_ptr_v2 *bp = bkey_i_to_btree_ptr_v2(&b->key);
@@ -1099,6 +1098,7 @@ static struct btree *__btree_split_node(struct btree_update *as,
 	struct btree *n2;
 	struct bset *set1, *set2;
 	struct bkey_packed *k, *prev = NULL;
+	struct bpos n1_pos;
 
 	n2 = bch2_btree_node_alloc(as, n1->c.level);
 	bch2_btree_update_add_new_node(as, n2);
@@ -1137,8 +1137,12 @@ static struct btree *__btree_split_node(struct btree_update *as,
 
 	BUG_ON(!prev);
 
-	btree_set_max(n1, bkey_unpack_pos(n1, prev));
-	btree_set_min(n2, bkey_successor(n1->key.k.p));
+	n1_pos = bkey_unpack_pos(n1, prev);
+	if (as->c->sb.version < bcachefs_metadata_version_snapshot)
+		n1_pos.snapshot = U32_MAX;
+
+	btree_set_max(n1, n1_pos);
+	btree_set_min(n2, bpos_successor(n1_pos));
 
 	set2->u64s = cpu_to_le16((u64 *) vstruct_end(set1) - (u64 *) k);
 	set1->u64s = cpu_to_le16(le16_to_cpu(set1->u64s) - le16_to_cpu(set2->u64s));
