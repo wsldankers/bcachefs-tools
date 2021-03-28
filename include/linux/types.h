@@ -11,6 +11,8 @@
 #define __SANE_USERSPACE_TYPES__	/* For PPC64, to get LL64 types */
 #include <asm/types.h>
 
+#include <linux/cache.h>
+
 #define BITS_PER_LONG	__BITS_PER_LONG
 
 struct page;

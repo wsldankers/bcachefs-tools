@@ -64,7 +64,7 @@ static int bch2_gc_check_topology(struct bch_fs *c,
 	struct bpos node_end	= b->data->max_key;
 	struct bpos expected_start = bkey_deleted(&prev->k->k)
 		? node_start
-		: bkey_successor(prev->k->k.p);
+		: bpos_successor(prev->k->k.p);
 	char buf1[200], buf2[200];
 	bool update_min = false;
 	bool update_max = false;
@@ -81,7 +81,7 @@ static int bch2_gc_check_topology(struct bch_fs *c,
 			bch2_bkey_val_to_text(&PBUF(buf1), c, bkey_i_to_s_c(prev->k));
 		}
 
-		if (fsck_err_on(bkey_cmp(expected_start, bp->v.min_key), c,
+		if (fsck_err_on(bpos_cmp(expected_start, bp->v.min_key), c,
 				"btree node with incorrect min_key at btree %s level %u:\n"
 				"  prev %s\n"
 				"  cur %s",
@@ -92,7 +92,7 @@ static int bch2_gc_check_topology(struct bch_fs *c,
 	}
 
 	if (fsck_err_on(is_last &&
-			bkey_cmp(cur.k->k.p, node_end), c,
+			bpos_cmp(cur.k->k.p, node_end), c,
 			"btree node with incorrect max_key at btree %s level %u:\n"
 			"  %s\n"
 			"  expected %s",
@@ -470,8 +470,8 @@ static int bch2_gc_btree_init_recurse(struct bch_fs *c, struct btree *b,
 	bkey_init(&prev.k->k);
 
 	while ((k = bch2_btree_and_journal_iter_peek(&iter)).k) {
-		BUG_ON(bkey_cmp(k.k->p, b->data->min_key) < 0);
-		BUG_ON(bkey_cmp(k.k->p, b->data->max_key) > 0);
+		BUG_ON(bpos_cmp(k.k->p, b->data->min_key) < 0);
+		BUG_ON(bpos_cmp(k.k->p, b->data->max_key) > 0);
 
 		ret = bch2_gc_mark_key(c, b->c.btree_id, b->c.level, false,
 				       k, &max_stale, true);
@@ -560,13 +560,13 @@ static int bch2_gc_btree_init(struct bch_fs *c,
 		return 0;
 
 	six_lock_read(&b->c.lock, NULL, NULL);
-	if (fsck_err_on(bkey_cmp(b->data->min_key, POS_MIN), c,
+	if (fsck_err_on(bpos_cmp(b->data->min_key, POS_MIN), c,
 			"btree root with incorrect min_key: %s",
 			(bch2_bpos_to_text(&PBUF(buf), b->data->min_key), buf))) {
 		BUG();
 	}
 
-	if (fsck_err_on(bkey_cmp(b->data->max_key, POS_MAX), c,
+	if (fsck_err_on(bpos_cmp(b->data->max_key, POS_MAX), c,
 			"btree root with incorrect max_key: %s",
 			(bch2_bpos_to_text(&PBUF(buf), b->data->max_key), buf))) {
 		BUG();
@@ -1148,7 +1148,9 @@ static int bch2_gc_btree_gens(struct bch_fs *c, enum btree_id btree_id)
 	bch2_trans_init(&trans, c, 0, 0);
 
 	iter = bch2_trans_get_iter(&trans, btree_id, POS_MIN,
-				   BTREE_ITER_PREFETCH);
+				   BTREE_ITER_PREFETCH|
+				   BTREE_ITER_NOT_EXTENTS|
+				   BTREE_ITER_ALL_SNAPSHOTS);
 
 	while ((k = bch2_btree_iter_peek(iter)).k &&
 	       !(ret = bkey_err(k))) {
@@ -1171,6 +1173,7 @@ static int bch2_gc_btree_gens(struct bch_fs *c, enum btree_id btree_id)
 
 		bch2_btree_iter_advance(iter);
 	}
+	bch2_trans_iter_put(&trans, iter);
 
 	bch2_trans_exit(&trans);
 	bch2_bkey_buf_exit(&sk, c);
@@ -1271,6 +1274,9 @@ static void bch2_coalesce_nodes(struct bch_fs *c, struct btree_iter *iter,
 	/* Find a format that all keys in @old_nodes can pack into */
 	bch2_bkey_format_init(&format_state);
 
+	/*
+	 * XXX: this won't correctly take it account the new min/max keys:
+	 */
 	for (i = 0; i < nr_old_nodes; i++)
 		__bch2_btree_calc_format(&format_state, old_nodes[i]);
 
@@ -1333,7 +1339,7 @@ static void bch2_coalesce_nodes(struct bch_fs *c, struct btree_iter *iter,
 		     k < vstruct_last(s2) &&
 		     vstruct_blocks_plus(n1->data, c->block_bits,
 					 u64s + k->u64s) <= blocks;
-		     k = bkey_next_skip_noops(k, vstruct_last(s2))) {
+		     k = bkey_next(k)) {
 			last = k;
 			u64s += k->u64s;
 		}
@@ -1362,7 +1368,7 @@ static void bch2_coalesce_nodes(struct bch_fs *c, struct btree_iter *iter,
 			n1->key.k.p = n1->data->max_key =
 				bkey_unpack_pos(n1, last);
 
-			n2->data->min_key = bkey_successor(n1->data->max_key);
+			n2->data->min_key = bpos_successor(n1->data->max_key);
 
 			memcpy_u64s(vstruct_last(s1),
 				    s2->start, u64s);
@@ -1405,7 +1411,7 @@ static void bch2_coalesce_nodes(struct bch_fs *c, struct btree_iter *iter,
 		unsigned j;
 
 		for (j = 0; j < nr_new_nodes; j++)
-			if (!bkey_cmp(old_nodes[i]->key.k.p,
+			if (!bpos_cmp(old_nodes[i]->key.k.p,
 				      new_nodes[j]->key.k.p))
 				goto next;
 

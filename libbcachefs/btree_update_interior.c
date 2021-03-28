@@ -50,7 +50,7 @@ static void btree_node_interior_verify(struct bch_fs *c, struct btree *b)
 			break;
 		bp = bkey_s_c_to_btree_ptr_v2(k);
 
-		if (bkey_cmp(next_node, bp.v->min_key)) {
+		if (bpos_cmp(next_node, bp.v->min_key)) {
 			bch2_dump_btree_node(c, b);
 			panic("expected next min_key %s got %s\n",
 			      (bch2_bpos_to_text(&PBUF(buf1), next_node), buf1),
@@ -60,7 +60,7 @@ static void btree_node_interior_verify(struct bch_fs *c, struct btree *b)
 		bch2_btree_node_iter_advance(&iter, b);
 
 		if (bch2_btree_node_iter_end(&iter)) {
-			if (bkey_cmp(k.k->p, b->key.k.p)) {
+			if (bpos_cmp(k.k->p, b->key.k.p)) {
 				bch2_dump_btree_node(c, b);
 				panic("expected end %s got %s\n",
 				      (bch2_bpos_to_text(&PBUF(buf1), b->key.k.p), buf1),
@@ -69,7 +69,7 @@ static void btree_node_interior_verify(struct bch_fs *c, struct btree *b)
 			break;
 		}
 
-		next_node = bkey_successor(k.k->p);
+		next_node = bpos_successor(k.k->p);
 	}
 #endif
 }
@@ -81,8 +81,6 @@ void __bch2_btree_calc_format(struct bkey_format_state *s, struct btree *b)
 	struct bkey_packed *k;
 	struct bset_tree *t;
 	struct bkey uk;
-
-	bch2_bkey_format_add_pos(s, b->data->min_key);
 
 	for_each_bset(b, t)
 		bset_tree_for_each_key(b, t, k)
@@ -97,6 +95,8 @@ static struct bkey_format bch2_btree_calc_format(struct btree *b)
 	struct bkey_format_state s;
 
 	bch2_bkey_format_init(&s);
+	bch2_bkey_format_add_pos(&s, b->data->min_key);
+	bch2_bkey_format_add_pos(&s, b->data->max_key);
 	__bch2_btree_calc_format(&s, b);
 
 	return bch2_bkey_format_done(&s);
@@ -289,7 +289,6 @@ static struct btree *bch2_btree_node_alloc(struct btree_update *as, unsigned lev
 	b->data->flags = 0;
 	SET_BTREE_NODE_ID(b->data, as->btree_id);
 	SET_BTREE_NODE_LEVEL(b->data, level);
-	b->data->ptr = bch2_bkey_ptrs_c(bkey_i_to_s_c(&b->key)).start->ptr;
 
 	if (b->key.k.type == KEY_TYPE_btree_ptr_v2) {
 		struct bkey_i_btree_ptr_v2 *bp = bkey_i_to_btree_ptr_v2(&b->key);
@@ -1095,10 +1094,12 @@ static struct btree *__btree_split_node(struct btree_update *as,
 					struct btree *n1,
 					struct btree_iter *iter)
 {
+	struct bkey_format_state s;
 	size_t nr_packed = 0, nr_unpacked = 0;
 	struct btree *n2;
 	struct bset *set1, *set2;
-	struct bkey_packed *k, *prev = NULL;
+	struct bkey_packed *k, *set2_start, *set2_end, *out, *prev = NULL;
+	struct bpos n1_pos;
 
 	n2 = bch2_btree_node_alloc(as, n1->c.level);
 	bch2_btree_update_add_new_node(as, n2);
@@ -1107,8 +1108,6 @@ static struct btree *__btree_split_node(struct btree_update *as,
 	n2->data->format	= n1->format;
 	SET_BTREE_NODE_SEQ(n2->data, BTREE_NODE_SEQ(n1->data));
 	n2->key.k.p = n1->key.k.p;
-
-	btree_node_set_format(n2, n2->data->format);
 
 	set1 = btree_bset_first(n1);
 	set2 = btree_bset_first(n2);
@@ -1119,7 +1118,7 @@ static struct btree *__btree_split_node(struct btree_update *as,
 	 */
 	k = set1->start;
 	while (1) {
-		struct bkey_packed *n = bkey_next_skip_noops(k, vstruct_last(set1));
+		struct bkey_packed *n = bkey_next(k);
 
 		if (n == vstruct_last(set1))
 			break;
@@ -1136,32 +1135,52 @@ static struct btree *__btree_split_node(struct btree_update *as,
 	}
 
 	BUG_ON(!prev);
+	set2_start	= k;
+	set2_end	= vstruct_last(set1);
 
-	btree_set_max(n1, bkey_unpack_pos(n1, prev));
-	btree_set_min(n2, bkey_successor(n1->key.k.p));
-
-	set2->u64s = cpu_to_le16((u64 *) vstruct_end(set1) - (u64 *) k);
-	set1->u64s = cpu_to_le16(le16_to_cpu(set1->u64s) - le16_to_cpu(set2->u64s));
-
+	set1->u64s = cpu_to_le16((u64 *) set2_start - set1->_data);
 	set_btree_bset_end(n1, n1->set);
-	set_btree_bset_end(n2, n2->set);
-
-	n2->nr.live_u64s	= le16_to_cpu(set2->u64s);
-	n2->nr.bset_u64s[0]	= le16_to_cpu(set2->u64s);
-	n2->nr.packed_keys	= n1->nr.packed_keys - nr_packed;
-	n2->nr.unpacked_keys	= n1->nr.unpacked_keys - nr_unpacked;
 
 	n1->nr.live_u64s	= le16_to_cpu(set1->u64s);
 	n1->nr.bset_u64s[0]	= le16_to_cpu(set1->u64s);
 	n1->nr.packed_keys	= nr_packed;
 	n1->nr.unpacked_keys	= nr_unpacked;
 
+	n1_pos = bkey_unpack_pos(n1, prev);
+	if (as->c->sb.version < bcachefs_metadata_version_snapshot)
+		n1_pos.snapshot = U32_MAX;
+
+	btree_set_max(n1, n1_pos);
+	btree_set_min(n2, bpos_successor(n1->key.k.p));
+
+	bch2_bkey_format_init(&s);
+	bch2_bkey_format_add_pos(&s, n2->data->min_key);
+	bch2_bkey_format_add_pos(&s, n2->data->max_key);
+
+	for (k = set2_start; k != set2_end; k = bkey_next(k)) {
+		struct bkey uk = bkey_unpack_key(n1, k);
+		bch2_bkey_format_add_key(&s, &uk);
+	}
+
+	n2->data->format = bch2_bkey_format_done(&s);
+	btree_node_set_format(n2, n2->data->format);
+
+	out = set2->start;
+	memset(&n2->nr, 0, sizeof(n2->nr));
+
+	for (k = set2_start; k != set2_end; k = bkey_next(k)) {
+		BUG_ON(!bch2_bkey_transform(&n2->format, out, bkey_packed(k)
+				       ? &n1->format : &bch2_bkey_format_current, k));
+		out->format = KEY_FORMAT_LOCAL_BTREE;
+		btree_keys_account_key_add(&n2->nr, 0, out);
+		out = bkey_next(out);
+	}
+
+	set2->u64s = cpu_to_le16((u64 *) out - set2->_data);
+	set_btree_bset_end(n2, n2->set);
+
 	BUG_ON(!set1->u64s);
 	BUG_ON(!set2->u64s);
-
-	memcpy_u64s(set2->start,
-		    vstruct_end(set1),
-		    le16_to_cpu(set2->u64s));
 
 	btree_node_reset_sib_u64s(n1);
 	btree_node_reset_sib_u64s(n2);
@@ -1216,7 +1235,7 @@ static void btree_split_insert_keys(struct btree_update *as, struct btree *b,
 	i = btree_bset_first(b);
 	src = dst = i->start;
 	while (src != vstruct_last(i)) {
-		n = bkey_next_skip_noops(src, vstruct_last(i));
+		n = bkey_next(src);
 		if (!bkey_deleted(src)) {
 			memmove_u64s_down(dst, src, src->u64s);
 			dst = bkey_next(dst);
@@ -1563,8 +1582,10 @@ retry:
 	}
 
 	bch2_bkey_format_init(&new_s);
-	__bch2_btree_calc_format(&new_s, b);
-	__bch2_btree_calc_format(&new_s, m);
+	bch2_bkey_format_add_pos(&new_s, prev->data->min_key);
+	__bch2_btree_calc_format(&new_s, prev);
+	__bch2_btree_calc_format(&new_s, next);
+	bch2_bkey_format_add_pos(&new_s, next->data->max_key);
 	new_f = bch2_bkey_format_done(&new_s);
 
 	sib_u64s = btree_node_u64s_with_format(b, &new_f) +

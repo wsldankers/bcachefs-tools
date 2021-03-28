@@ -216,6 +216,7 @@ enum btree_iter_type {
 #define BTREE_ITER_CACHED_NOFILL	(1 << 9)
 #define BTREE_ITER_CACHED_NOCREATE	(1 << 10)
 #define BTREE_ITER_NOT_EXTENTS		(1 << 11)
+#define BTREE_ITER_ALL_SNAPSHOTS	(1 << 12)
 
 enum btree_iter_uptodate {
 	BTREE_ITER_UPTODATE		= 0,
@@ -245,6 +246,8 @@ struct btree_iter {
 	/* what we're searching for/what the iterator actually points to: */
 	struct bpos		real_pos;
 	struct bpos		pos_after_commit;
+	/* When we're filtering by snapshot, the snapshot ID we're looking for: */
+	unsigned		snapshot;
 
 	u16			flags;
 	u8			idx;
@@ -292,13 +295,12 @@ struct btree_key_cache {
 	struct rhashtable	table;
 	bool			table_init_done;
 	struct list_head	freed;
-	struct list_head	clean;
-	struct list_head	dirty;
 	struct shrinker		shrink;
+	unsigned		shrink_iter;
 
 	size_t			nr_freed;
-	size_t			nr_keys;
-	size_t			nr_dirty;
+	atomic_long_t		nr_keys;
+	atomic_long_t		nr_dirty;
 };
 
 struct bkey_cached_key {
@@ -330,7 +332,7 @@ struct bkey_cached {
 struct btree_insert_entry {
 	unsigned		trigger_flags;
 	u8			bkey_type;
-	u8			btree_id;
+	enum btree_id		btree_id:8;
 	u8			level;
 	unsigned		trans_triggers_run:1;
 	unsigned		is_extent:1;
@@ -343,6 +345,14 @@ struct btree_insert_entry {
 #else
 #define BTREE_ITER_MAX		32
 #endif
+
+struct btree_trans_commit_hook;
+typedef int (btree_trans_commit_hook_fn)(struct btree_trans *, struct btree_trans_commit_hook *);
+
+struct btree_trans_commit_hook {
+	btree_trans_commit_hook_fn	*fn;
+	struct btree_trans_commit_hook	*next;
+};
 
 struct btree_trans {
 	struct bch_fs		*c;
@@ -378,6 +388,7 @@ struct btree_trans {
 	struct btree_insert_entry *updates2;
 
 	/* update path: */
+	struct btree_trans_commit_hook *hooks;
 	struct jset_entry	*extra_journal_entries;
 	unsigned		extra_journal_entry_u64s;
 	struct journal_entry_pin *journal_pin;
@@ -599,6 +610,17 @@ static inline bool btree_iter_is_extents(struct btree_iter *iter)
 #define BTREE_NODE_TYPE_HAS_TRIGGERS			\
 	(BTREE_NODE_TYPE_HAS_TRANS_TRIGGERS|		\
 	 BTREE_NODE_TYPE_HAS_MEM_TRIGGERS)
+
+#define BTREE_ID_HAS_SNAPSHOTS				\
+	((1U << BTREE_ID_extents)|			\
+	 (1U << BTREE_ID_inodes)|			\
+	 (1U << BTREE_ID_dirents)|			\
+	 (1U << BTREE_ID_xattrs))
+
+static inline bool btree_type_has_snapshots(enum btree_id id)
+{
+	return (1 << id) & BTREE_ID_HAS_SNAPSHOTS;
+}
 
 enum btree_trigger_flags {
 	__BTREE_TRIGGER_NORUN,		/* Don't run triggers at all */

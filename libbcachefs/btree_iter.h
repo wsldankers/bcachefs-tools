@@ -172,6 +172,9 @@ bool bch2_btree_iter_rewind(struct btree_iter *);
 
 static inline void bch2_btree_iter_set_pos(struct btree_iter *iter, struct bpos new_pos)
 {
+	if (!(iter->flags & BTREE_ITER_ALL_SNAPSHOTS))
+		new_pos.snapshot = iter->snapshot;
+
 	bkey_init(&iter->k);
 	iter->k.p = iter->pos = new_pos;
 }
@@ -303,6 +306,7 @@ static inline void set_btree_iter_dontneed(struct btree_trans *trans, struct btr
 }
 
 #define TRANS_RESET_NOTRAVERSE		(1 << 0)
+#define TRANS_RESET_NOUNLOCK		(1 << 1)
 
 void bch2_trans_reset(struct btree_trans *, unsigned);
 
