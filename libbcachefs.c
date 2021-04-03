@@ -900,7 +900,7 @@ struct bchfs_handle bcache_fs_open(const char *path)
  * Given a path to a block device, open the filesystem it belongs to; also
  * return the device's idx:
  */
-struct bchfs_handle bchu_fs_open_by_dev(const char *path, unsigned *idx)
+struct bchfs_handle bchu_fs_open_by_dev(const char *path, int *idx)
 {
 	char buf[1024], *uuid_str;
 
@@ -942,6 +942,17 @@ struct bchfs_handle bchu_fs_open_by_dev(const char *path, unsigned *idx)
 	}
 
 	return bcache_fs_open(uuid_str);
+}
+
+int bchu_dev_path_to_idx(struct bchfs_handle fs, const char *dev_path)
+{
+	int idx;
+	struct bchfs_handle fs2 = bchu_fs_open_by_dev(dev_path, &idx);
+
+	if (memcmp(&fs.uuid, &fs2.uuid, sizeof(fs.uuid)))
+		idx = -1;
+	bcache_fs_close(fs2);
+	return idx;
 }
 
 int bchu_data(struct bchfs_handle fs, struct bch_ioctl_data cmd)

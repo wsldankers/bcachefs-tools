@@ -94,7 +94,8 @@ struct bchfs_handle {
 
 void bcache_fs_close(struct bchfs_handle);
 struct bchfs_handle bcache_fs_open(const char *);
-struct bchfs_handle bchu_fs_open_by_dev(const char *, unsigned *);
+struct bchfs_handle bchu_fs_open_by_dev(const char *, int *);
+int bchu_dev_path_to_idx(struct bchfs_handle, const char *);
 
 static inline void bchu_disk_add(struct bchfs_handle fs, char *dev)
 {
