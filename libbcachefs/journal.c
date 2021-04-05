@@ -11,6 +11,7 @@
 #include "btree_gc.h"
 #include "btree_update.h"
 #include "buckets.h"
+#include "error.h"
 #include "journal.h"
 #include "journal_io.h"
 #include "journal_reclaim.h"
@@ -59,21 +60,23 @@ journal_seq_to_buf(struct journal *j, u64 seq)
 	return buf;
 }
 
-static void journal_pin_new_entry(struct journal *j, int count)
+static void journal_pin_list_init(struct journal_entry_pin_list *p, int count)
 {
-	struct journal_entry_pin_list *p;
+	INIT_LIST_HEAD(&p->list);
+	INIT_LIST_HEAD(&p->key_cache_list);
+	INIT_LIST_HEAD(&p->flushed);
+	atomic_set(&p->count, count);
+	p->devs.nr = 0;
+}
 
+static void journal_pin_new_entry(struct journal *j)
+{
 	/*
 	 * The fifo_push() needs to happen at the same time as j->seq is
 	 * incremented for journal_last_seq() to be calculated correctly
 	 */
 	atomic64_inc(&j->seq);
-	p = fifo_push_ref(&j->pin);
-
-	INIT_LIST_HEAD(&p->list);
-	INIT_LIST_HEAD(&p->flushed);
-	atomic_set(&p->count, count);
-	p->devs.nr = 0;
+	journal_pin_list_init(fifo_push_ref(&j->pin), 1);
 }
 
 static void bch2_journal_buf_init(struct journal *j)
@@ -192,7 +195,7 @@ static bool __journal_entry_close(struct journal *j)
 	__bch2_journal_pin_put(j, le64_to_cpu(buf->data->seq));
 
 	/* Initialize new buffer: */
-	journal_pin_new_entry(j, 1);
+	journal_pin_new_entry(j);
 
 	bch2_journal_buf_init(j);
 
@@ -450,6 +453,27 @@ unlock:
 	if (!ret)
 		goto retry;
 
+	if ((ret == cur_entry_journal_full ||
+	     ret == cur_entry_journal_pin_full) &&
+	    !can_discard &&
+	    j->reservations.idx == j->reservations.unwritten_idx &&
+	    (flags & JOURNAL_RES_GET_RESERVED)) {
+		char *journal_debug_buf = kmalloc(4096, GFP_ATOMIC);
+
+		bch_err(c, "Journal stuck!");
+		if (journal_debug_buf) {
+			bch2_journal_debug_to_text(&_PBUF(journal_debug_buf, 4096), j);
+			bch_err(c, "%s", journal_debug_buf);
+
+			bch2_journal_pins_to_text(&_PBUF(journal_debug_buf, 4096), j);
+			bch_err(c, "Journal pins:\n%s", journal_debug_buf);
+			kfree(journal_debug_buf);
+		}
+
+		bch2_fatal_error(c);
+		dump_stack();
+	}
+
 	/*
 	 * Journal is full - can't rely on reclaim from work item due to
 	 * freezing:
@@ -499,7 +523,7 @@ static bool journal_preres_available(struct journal *j,
 				     unsigned new_u64s,
 				     unsigned flags)
 {
-	bool ret = bch2_journal_preres_get_fast(j, res, new_u64s, flags);
+	bool ret = bch2_journal_preres_get_fast(j, res, new_u64s, flags, true);
 
 	if (!ret && mutex_trylock(&j->reclaim_lock)) {
 		bch2_journal_reclaim(j);
@@ -1009,12 +1033,8 @@ int bch2_fs_journal_start(struct journal *j, u64 cur_seq,
 	j->pin.back		= cur_seq;
 	atomic64_set(&j->seq, cur_seq - 1);
 
-	fifo_for_each_entry_ptr(p, &j->pin, seq) {
-		INIT_LIST_HEAD(&p->list);
-		INIT_LIST_HEAD(&p->flushed);
-		atomic_set(&p->count, 1);
-		p->devs.nr = 0;
-	}
+	fifo_for_each_entry_ptr(p, &j->pin, seq)
+		journal_pin_list_init(p, 1);
 
 	list_for_each_entry(i, journal_entries, list) {
 		unsigned ptr;
@@ -1037,7 +1057,7 @@ int bch2_fs_journal_start(struct journal *j, u64 cur_seq,
 	set_bit(JOURNAL_STARTED, &j->flags);
 	j->last_flush_write = jiffies;
 
-	journal_pin_new_entry(j, 1);
+	journal_pin_new_entry(j);
 
 	j->reservations.idx = j->reservations.unwritten_idx = journal_cur_seq(j);
 
@@ -1114,6 +1134,7 @@ int bch2_fs_journal_init(struct journal *j)
 	spin_lock_init(&j->err_lock);
 	init_waitqueue_head(&j->wait);
 	INIT_DELAYED_WORK(&j->write_work, journal_write_work);
+	init_waitqueue_head(&j->reclaim_wait);
 	init_waitqueue_head(&j->pin_flush_wait);
 	mutex_init(&j->reclaim_lock);
 	mutex_init(&j->discard_lock);
@@ -1166,6 +1187,7 @@ void __bch2_journal_debug_to_text(struct printbuf *out, struct journal *j)
 	       "last_seq_ondisk:\t%llu\n"
 	       "flushed_seq_ondisk:\t%llu\n"
 	       "prereserved:\t\t%u/%u\n"
+	       "each entry reserved:\t%u\n"
 	       "nr flush writes:\t%llu\n"
 	       "nr noflush writes:\t%llu\n"
 	       "nr direct reclaim:\t%llu\n"
@@ -1180,6 +1202,7 @@ void __bch2_journal_debug_to_text(struct printbuf *out, struct journal *j)
 	       j->flushed_seq_ondisk,
 	       j->prereserved.reserved,
 	       j->prereserved.remaining,
+	       j->entry_u64s_reserved,
 	       j->nr_flush_writes,
 	       j->nr_noflush_writes,
 	       j->nr_direct_reclaim,

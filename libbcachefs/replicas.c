@@ -271,10 +271,12 @@ static int replicas_table_update(struct bch_fs *c,
 				 struct bch_replicas_cpu *new_r)
 {
 	struct bch_fs_usage __percpu *new_usage[JOURNAL_BUF_NR];
-	struct bch_fs_usage *new_scratch = NULL;
+	struct bch_fs_usage_online *new_scratch = NULL;
 	struct bch_fs_usage __percpu *new_gc = NULL;
 	struct bch_fs_usage *new_base = NULL;
 	unsigned i, bytes = sizeof(struct bch_fs_usage) +
+		sizeof(u64) * new_r->nr;
+	unsigned scratch_bytes = sizeof(struct bch_fs_usage_online) +
 		sizeof(u64) * new_r->nr;
 	int ret = 0;
 
@@ -286,7 +288,7 @@ static int replicas_table_update(struct bch_fs *c,
 			goto err;
 
 	if (!(new_base = kzalloc(bytes, GFP_KERNEL)) ||
-	    !(new_scratch  = kmalloc(bytes, GFP_KERNEL)) ||
+	    !(new_scratch  = kmalloc(scratch_bytes, GFP_KERNEL)) ||
 	    (c->usage_gc &&
 	     !(new_gc = __alloc_percpu_gfp(bytes, sizeof(u64), GFP_KERNEL))))
 		goto err;
@@ -462,6 +464,36 @@ static int __bch2_mark_bkey_replicas(struct bch_fs *c, struct bkey_s_c k,
 	return 0;
 }
 
+/* replicas delta list: */
+
+bool bch2_replicas_delta_list_marked(struct bch_fs *c,
+				     struct replicas_delta_list *r)
+{
+	struct replicas_delta *d = r->d;
+	struct replicas_delta *top = (void *) r->d + r->used;
+
+	percpu_rwsem_assert_held(&c->mark_lock);
+
+	for (d = r->d; d != top; d = replicas_delta_next(d))
+		if (bch2_replicas_entry_idx(c, &d->r) < 0)
+			return false;
+	return true;
+}
+
+int bch2_replicas_delta_list_mark(struct bch_fs *c,
+				  struct replicas_delta_list *r)
+{
+	struct replicas_delta *d = r->d;
+	struct replicas_delta *top = (void *) r->d + r->used;
+	int ret = 0;
+
+	for (d = r->d; !ret && d != top; d = replicas_delta_next(d))
+		ret = bch2_mark_replicas(c, &d->r);
+	return ret;
+}
+
+/* bkey replicas: */
+
 bool bch2_bkey_replicas_marked(struct bch_fs *c,
 			       struct bkey_s_c k)
 {
@@ -472,6 +504,11 @@ int bch2_mark_bkey_replicas(struct bch_fs *c, struct bkey_s_c k)
 {
 	return __bch2_mark_bkey_replicas(c, k, false);
 }
+
+/*
+ * Old replicas_gc mechanism: only used for journal replicas entries now, should
+ * die at some point:
+ */
 
 int bch2_replicas_gc_end(struct bch_fs *c, int ret)
 {
@@ -565,6 +602,8 @@ int bch2_replicas_gc_start(struct bch_fs *c, unsigned typemask)
 
 	return 0;
 }
+
+/* New much simpler mechanism for clearing out unneeded replicas entries: */
 
 int bch2_replicas_gc2(struct bch_fs *c)
 {
@@ -966,11 +1005,18 @@ bool bch2_have_enough_devs(struct bch_fs *c, struct bch_devs_mask devs,
 
 	percpu_down_read(&c->mark_lock);
 	for_each_cpu_replicas_entry(&c->replicas, e) {
-		unsigned i, nr_online = 0, dflags = 0;
+		unsigned i, nr_online = 0, nr_failed = 0, dflags = 0;
 		bool metadata = e->data_type < BCH_DATA_user;
 
-		for (i = 0; i < e->nr_devs; i++)
+		for (i = 0; i < e->nr_devs; i++) {
+			struct bch_dev *ca = bch_dev_bkey_exists(c, e->devs[i]);
+
 			nr_online += test_bit(e->devs[i], devs.d);
+			nr_failed += ca->mi.state == BCH_MEMBER_STATE_failed;
+		}
+
+		if (nr_failed == e->nr_devs)
+			continue;
 
 		if (nr_online < e->nr_required)
 			dflags |= metadata

@@ -377,7 +377,6 @@ static void bch2_sb_update(struct bch_fs *c)
 		ca->mi = bch2_mi_to_cpu(mi->members + i);
 }
 
-/* doesn't copy member info */
 static void __copy_super(struct bch_sb_handle *dst_handle, struct bch_sb *src)
 {
 	struct bch_sb_field *src_f, *dst_f;
@@ -996,7 +995,7 @@ void bch2_journal_super_entries_add_common(struct bch_fs *c,
 	struct bch_dev *ca;
 	unsigned i, dev;
 
-	percpu_down_write(&c->mark_lock);
+	percpu_down_read(&c->mark_lock);
 
 	if (!journal_seq) {
 		for (i = 0; i < ARRAY_SIZE(c->usage); i++)
@@ -1067,7 +1066,7 @@ void bch2_journal_super_entries_add_common(struct bch_fs *c,
 		}
 	}
 
-	percpu_up_write(&c->mark_lock);
+	percpu_up_read(&c->mark_lock);
 
 	for (i = 0; i < 2; i++) {
 		struct jset_entry_clock *clock =
@@ -1093,8 +1092,8 @@ void bch2_fs_mark_clean(struct bch_fs *c)
 
 	SET_BCH_SB_CLEAN(c->disk_sb.sb, true);
 
-	c->disk_sb.sb->compat[0] |= 1ULL << BCH_COMPAT_FEAT_ALLOC_INFO;
-	c->disk_sb.sb->compat[0] |= 1ULL << BCH_COMPAT_FEAT_ALLOC_METADATA;
+	c->disk_sb.sb->compat[0] |= 1ULL << BCH_COMPAT_alloc_info;
+	c->disk_sb.sb->compat[0] |= 1ULL << BCH_COMPAT_alloc_metadata;
 	c->disk_sb.sb->features[0] &= ~(1ULL << BCH_FEATURE_extents_above_btree_updates);
 	c->disk_sb.sb->features[0] &= ~(1ULL << BCH_FEATURE_btree_updates_journalled);
 

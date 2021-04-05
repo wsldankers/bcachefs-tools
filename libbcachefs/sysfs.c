@@ -153,6 +153,8 @@ read_attribute(io_latency_stats_read);
 read_attribute(io_latency_stats_write);
 read_attribute(congested);
 
+read_attribute(btree_avg_write_size);
+
 read_attribute(bucket_quantiles_last_read);
 read_attribute(bucket_quantiles_last_write);
 read_attribute(bucket_quantiles_fragmentation);
@@ -230,9 +232,17 @@ static size_t bch2_btree_cache_size(struct bch_fs *c)
 	return ret;
 }
 
+static size_t bch2_btree_avg_write_size(struct bch_fs *c)
+{
+	u64 nr = atomic64_read(&c->btree_writes_nr);
+	u64 sectors = atomic64_read(&c->btree_writes_sectors);
+
+	return nr ? div64_u64(sectors, nr) : 0;
+}
+
 static int fs_alloc_debug_to_text(struct printbuf *out, struct bch_fs *c)
 {
-	struct bch_fs_usage *fs_usage = bch2_fs_usage_read(c);
+	struct bch_fs_usage_online *fs_usage = bch2_fs_usage_read(c);
 
 	if (!fs_usage)
 		return -ENOMEM;
@@ -318,6 +328,7 @@ SHOW(bch2_fs)
 	sysfs_print(block_size,			block_bytes(c));
 	sysfs_print(btree_node_size,		btree_bytes(c));
 	sysfs_hprint(btree_cache_size,		bch2_btree_cache_size(c));
+	sysfs_hprint(btree_avg_write_size,	bch2_btree_avg_write_size(c));
 
 	sysfs_print(read_realloc_races,
 		    atomic_long_read(&c->read_realloc_races));
@@ -513,6 +524,7 @@ struct attribute *bch2_fs_files[] = {
 	&sysfs_block_size,
 	&sysfs_btree_node_size,
 	&sysfs_btree_cache_size,
+	&sysfs_btree_avg_write_size,
 
 	&sysfs_journal_write_delay_ms,
 	&sysfs_journal_reclaim_delay_ms,
@@ -800,7 +812,6 @@ static void dev_alloc_debug_to_text(struct printbuf *out, struct bch_dev *ca)
 	pr_buf(out,
 	       "ec\t%16llu\n"
 	       "available%15llu\n"
-	       "alloc\t%16llu\n"
 	       "\n"
 	       "free_inc\t\t%zu/%zu\n"
 	       "free[RESERVE_MOVINGGC]\t%zu/%zu\n"
@@ -813,7 +824,6 @@ static void dev_alloc_debug_to_text(struct printbuf *out, struct bch_dev *ca)
 	       "btree reserve cache\t%u\n",
 	       stats.buckets_ec,
 	       __dev_buckets_available(ca, stats),
-	       stats.buckets_alloc,
 	       fifo_used(&ca->free_inc),		ca->free_inc.size,
 	       fifo_used(&ca->free[RESERVE_MOVINGGC]),	ca->free[RESERVE_MOVINGGC].size,
 	       fifo_used(&ca->free[RESERVE_NONE]),	ca->free[RESERVE_NONE].size,

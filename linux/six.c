@@ -252,12 +252,13 @@ retry:
 					old.v, new.v)) != old.v);
 
 		ret = !(old.v & l[type].lock_fail);
+
+		EBUG_ON(ret && !(lock->state.v & l[type].held_mask));
 	}
 
 	if (ret)
 		six_set_owner(lock, type, old);
 
-	EBUG_ON(ret && !(lock->state.v & l[type].held_mask));
 	EBUG_ON(type == SIX_LOCK_write && (try || ret) && (lock->state.write_locking));
 
 	return ret;

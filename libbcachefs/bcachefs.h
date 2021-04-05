@@ -690,10 +690,11 @@ struct bch_fs {
 	struct bch_fs_usage		*usage_base;
 	struct bch_fs_usage __percpu	*usage[JOURNAL_BUF_NR];
 	struct bch_fs_usage __percpu	*usage_gc;
+	u64 __percpu		*online_reserved;
 
 	/* single element mempool: */
 	struct mutex		usage_scratch_lock;
-	struct bch_fs_usage	*usage_scratch;
+	struct bch_fs_usage_online *usage_scratch;
 
 	struct io_clock		io_clock[2];
 
@@ -804,6 +805,9 @@ struct bch_fs {
 	struct bio_set		dio_write_bioset;
 	struct bio_set		dio_read_bioset;
 
+
+	atomic64_t		btree_writes_nr;
+	atomic64_t		btree_writes_sectors;
 	struct bio_list		btree_write_error_list;
 	struct work_struct	btree_write_error_work;
 	spinlock_t		btree_write_error_lock;

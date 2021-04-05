@@ -779,7 +779,7 @@ static int bch2_gc_done(struct bch_fs *c,
 {
 	struct bch_dev *ca;
 	bool verify = (!initial ||
-		       (c->sb.compat & (1ULL << BCH_COMPAT_FEAT_ALLOC_INFO)));
+		       (c->sb.compat & (1ULL << BCH_COMPAT_alloc_info)));
 	unsigned i, dev;
 	int ret = 0;
 
@@ -1297,11 +1297,10 @@ static void bch2_coalesce_nodes(struct bch_fs *c, struct btree_iter *iter,
 		return;
 	}
 
-	as = bch2_btree_update_start(iter->trans, iter->btree_id,
+	as = bch2_btree_update_start(iter, old_nodes[0]->c.level,
 			btree_update_reserve_required(c, parent) + nr_old_nodes,
 			BTREE_INSERT_NOFAIL|
-			BTREE_INSERT_USE_RESERVE,
-			NULL);
+			BTREE_INSERT_USE_RESERVE);
 	if (IS_ERR(as)) {
 		trace_btree_gc_coalesce_fail(c,
 				BTREE_GC_COALESCE_FAIL_RESERVE_GET);

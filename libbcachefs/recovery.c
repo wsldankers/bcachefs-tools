@@ -935,7 +935,7 @@ static int read_btree_roots(struct bch_fs *c)
 
 		if (i == BTREE_ID_alloc &&
 		    c->opts.reconstruct_alloc) {
-			c->sb.compat &= ~(1ULL << BCH_COMPAT_FEAT_ALLOC_INFO);
+			c->sb.compat &= ~(1ULL << BCH_COMPAT_alloc_info);
 			continue;
 		}
 
@@ -945,7 +945,7 @@ static int read_btree_roots(struct bch_fs *c)
 				   "invalid btree root %s",
 				   bch2_btree_ids[i]);
 			if (i == BTREE_ID_alloc)
-				c->sb.compat &= ~(1ULL << BCH_COMPAT_FEAT_ALLOC_INFO);
+				c->sb.compat &= ~(1ULL << BCH_COMPAT_alloc_info);
 		}
 
 		ret = bch2_btree_root_read(c, i, &r->key, r->level);
@@ -955,7 +955,7 @@ static int read_btree_roots(struct bch_fs *c)
 				   "error reading btree root %s",
 				   bch2_btree_ids[i]);
 			if (i == BTREE_ID_alloc)
-				c->sb.compat &= ~(1ULL << BCH_COMPAT_FEAT_ALLOC_INFO);
+				c->sb.compat &= ~(1ULL << BCH_COMPAT_alloc_info);
 		}
 	}
 
@@ -998,7 +998,7 @@ int bch2_fs_recovery(struct bch_fs *c)
 		goto err;
 	}
 
-	if (!(c->sb.compat & (1ULL << BCH_COMPAT_FEAT_BFORMAT_OVERFLOW_DONE))) {
+	if (!(c->sb.compat & (1ULL << BCH_COMPAT_bformat_overflow_done))) {
 		bch_err(c, "filesystem may have incompatible bkey formats; run fsck from the compat branch to fix");
 		ret = -EINVAL;
 		goto err;
@@ -1041,7 +1041,7 @@ int bch2_fs_recovery(struct bch_fs *c)
 					last_journal_entry &&
 					!journal_entry_empty(last_journal_entry), c,
 				"filesystem marked clean but journal not empty")) {
-			c->sb.compat &= ~(1ULL << BCH_COMPAT_FEAT_ALLOC_INFO);
+			c->sb.compat &= ~(1ULL << BCH_COMPAT_alloc_info);
 			SET_BCH_SB_CLEAN(c->disk_sb.sb, false);
 			c->sb.clean = false;
 		}
@@ -1075,7 +1075,7 @@ use_clean:
 	}
 
 	if (c->opts.reconstruct_alloc) {
-		c->sb.compat &= ~(1ULL << BCH_COMPAT_FEAT_ALLOC_INFO);
+		c->sb.compat &= ~(1ULL << BCH_COMPAT_alloc_info);
 		drop_alloc_keys(&c->journal_keys);
 	}
 
@@ -1128,8 +1128,8 @@ use_clean:
 	set_bit(BCH_FS_ALLOC_READ_DONE, &c->flags);
 
 	if (c->opts.fsck ||
-	    !(c->sb.compat & (1ULL << BCH_COMPAT_FEAT_ALLOC_INFO)) ||
-	    !(c->sb.compat & (1ULL << BCH_COMPAT_FEAT_ALLOC_METADATA)) ||
+	    !(c->sb.compat & (1ULL << BCH_COMPAT_alloc_info)) ||
+	    !(c->sb.compat & (1ULL << BCH_COMPAT_alloc_metadata)) ||
 	    test_bit(BCH_FS_REBUILD_REPLICAS, &c->flags)) {
 		bch_info(c, "starting mark and sweep");
 		err = "error in mark and sweep";
@@ -1215,11 +1215,11 @@ use_clean:
 		bch_verbose(c, "quotas done");
 	}
 
-	if (!(c->sb.compat & (1ULL << BCH_COMPAT_FEAT_EXTENTS_ABOVE_BTREE_UPDATES_DONE)) ||
-	    !(c->sb.compat & (1ULL << BCH_COMPAT_FEAT_BFORMAT_OVERFLOW_DONE))) {
+	if (!(c->sb.compat & (1ULL << BCH_COMPAT_extents_above_btree_updates_done)) ||
+	    !(c->sb.compat & (1ULL << BCH_COMPAT_bformat_overflow_done))) {
 		struct bch_move_stats stats = { 0 };
 
-		bch_verbose(c, "scanning for old btree nodes");
+		bch_info(c, "scanning for old btree nodes");
 		ret = bch2_fs_read_write(c);
 		if (ret)
 			goto err;
@@ -1227,7 +1227,7 @@ use_clean:
 		ret = bch2_scan_old_btree_nodes(c, &stats);
 		if (ret)
 			goto err;
-		bch_verbose(c, "scanning for old btree nodes done");
+		bch_info(c, "scanning for old btree nodes done");
 	}
 
 	mutex_lock(&c->sb_lock);
@@ -1238,7 +1238,7 @@ use_clean:
 	}
 
 	if (!test_bit(BCH_FS_ERROR, &c->flags)) {
-		c->disk_sb.sb->compat[0] |= 1ULL << BCH_COMPAT_FEAT_ALLOC_INFO;
+		c->disk_sb.sb->compat[0] |= 1ULL << BCH_COMPAT_alloc_info;
 		write_sb = true;
 	}
 
@@ -1289,8 +1289,8 @@ int bch2_fs_initialize(struct bch_fs *c)
 	bch_notice(c, "initializing new filesystem");
 
 	mutex_lock(&c->sb_lock);
-	c->disk_sb.sb->compat[0] |= 1ULL << BCH_COMPAT_FEAT_EXTENTS_ABOVE_BTREE_UPDATES_DONE;
-	c->disk_sb.sb->compat[0] |= 1ULL << BCH_COMPAT_FEAT_BFORMAT_OVERFLOW_DONE;
+	c->disk_sb.sb->compat[0] |= 1ULL << BCH_COMPAT_extents_above_btree_updates_done;
+	c->disk_sb.sb->compat[0] |= 1ULL << BCH_COMPAT_bformat_overflow_done;
 
 	if (c->opts.version_upgrade) {
 		c->disk_sb.sb->version = le16_to_cpu(bcachefs_metadata_version_current);

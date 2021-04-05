@@ -26,9 +26,6 @@ struct btree *bch2_btree_node_get(struct bch_fs *, struct btree_iter *,
 struct btree *bch2_btree_node_get_noiter(struct bch_fs *, const struct bkey_i *,
 					 enum btree_id, unsigned, bool);
 
-struct btree *bch2_btree_node_get_sibling(struct bch_fs *, struct btree_iter *,
-				struct btree *, enum btree_node_sibling);
-
 void bch2_btree_node_prefetch(struct bch_fs *, struct btree_iter *,
 			      const struct bkey_i *, enum btree_id, unsigned);
 
@@ -92,7 +89,7 @@ static inline unsigned btree_blocks(struct bch_fs *c)
 #define BTREE_FOREGROUND_MERGE_THRESHOLD(c)	(btree_max_u64s(c) * 1 / 3)
 #define BTREE_FOREGROUND_MERGE_HYSTERESIS(c)			\
 	(BTREE_FOREGROUND_MERGE_THRESHOLD(c) +			\
-	 (BTREE_FOREGROUND_MERGE_THRESHOLD(c) << 2))
+	 (BTREE_FOREGROUND_MERGE_THRESHOLD(c) >> 2))
 
 #define btree_node_root(_c, _b)	((_c)->btree_roots[(_b)->c.btree_id].b)
 
