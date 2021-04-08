@@ -40,7 +40,7 @@ static inline void *krealloc(void *old, size_t size, gfp_t flags)
 
 	run_shrinkers();
 
-	new = malloc(size);
+	new = kmalloc(size, flags);
 	if (!new)
 		return NULL;
 
