@@ -331,6 +331,7 @@ static void device_set_state_usage(void)
 	     "\n"
 	     "Options:\n"
 	     "  -f, --force		    Force, if data redundancy will be degraded\n"
+	     "      --force-if-data-lost    Force, if data will be lost\n"
 	     "  -o, --offline               Set state of an offline device\n"
 	     "  -h, --help                  display this help and exit\n"
 	     "Report bugs to <linux-bcache@vger.kernel.org>");
@@ -341,6 +342,7 @@ int cmd_device_set_state(int argc, char *argv[])
 {
 	static const struct option longopts[] = {
 		{ "force",			0, NULL, 'f' },
+		{ "force-if-data-lost",		0, NULL, 'F' },
 		{ "offline",			0, NULL, 'o' },
 		{ "help",			0, NULL, 'h' },
 		{ NULL }
@@ -354,6 +356,10 @@ int cmd_device_set_state(int argc, char *argv[])
 		switch (opt) {
 		case 'f':
 			flags |= BCH_FORCE_IF_DEGRADED;
+			break;
+		case 'F':
+			flags |= BCH_FORCE_IF_DEGRADED;
+			flags |= BCH_FORCE_IF_LOST;
 			break;
 		case 'o':
 			offline = true;
