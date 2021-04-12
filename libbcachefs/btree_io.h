@@ -42,6 +42,7 @@ struct btree_read_bio {
 
 struct btree_write_bio {
 	struct work_struct	work;
+	__BKEY_PADDED(key, BKEY_BTREE_PTR_VAL_U64s_MAX);
 	void			*data;
 	unsigned		bytes;
 	struct bch_write_bio	wbio;
@@ -144,8 +145,7 @@ void bch2_btree_complete_write(struct bch_fs *, struct btree *,
 			      struct btree_write *);
 void bch2_btree_write_error_work(struct work_struct *);
 
-void __bch2_btree_node_write(struct bch_fs *, struct btree *,
-			    enum six_lock_type);
+void __bch2_btree_node_write(struct bch_fs *, struct btree *);
 bool bch2_btree_post_write_cleanup(struct bch_fs *, struct btree *);
 
 void bch2_btree_node_write(struct bch_fs *, struct btree *,

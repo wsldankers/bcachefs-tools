@@ -465,8 +465,10 @@ bool bch2_trans_relock(struct btree_trans *trans)
 
 	trans_for_each_iter(trans, iter)
 		if (btree_iter_keep(trans, iter) &&
-		    !bch2_btree_iter_relock(iter, true))
+		    !bch2_btree_iter_relock(iter, true)) {
+			trace_trans_restart_relock(trans->ip);
 			return false;
+		}
 	return true;
 }
 
@@ -1631,7 +1633,9 @@ static inline struct bkey_s_c __btree_iter_peek(struct btree_iter *iter, bool wi
 	 * iter->pos should be mononotically increasing, and always be equal to
 	 * the key we just returned - except extents can straddle iter->pos:
 	 */
-	if (bkey_cmp(bkey_start_pos(k.k), iter->pos) > 0)
+	if (!(iter->flags & BTREE_ITER_IS_EXTENTS))
+		iter->pos = k.k->p;
+	else if (bkey_cmp(bkey_start_pos(k.k), iter->pos) > 0)
 		iter->pos = bkey_start_pos(k.k);
 
 	bch2_btree_iter_verify_entry_exit(iter);

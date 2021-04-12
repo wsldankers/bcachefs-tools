@@ -1104,7 +1104,8 @@ static int bch2_allocator_thread(void *arg)
 
 		pr_debug("free_inc now empty");
 
-		do {
+		while (1) {
+			cond_resched();
 			/*
 			 * Find some buckets that we can invalidate, either
 			 * they're completely unused, or only contain clean data
@@ -1127,22 +1128,21 @@ static int bch2_allocator_thread(void *arg)
 				wake_up_process(c->gc_thread);
 			}
 
+			if (nr)
+				break;
+
 			/*
 			 * If we found any buckets, we have to invalidate them
 			 * before we scan for more - but if we didn't find very
 			 * many we may want to wait on more buckets being
 			 * available so we don't spin:
 			 */
-			if (!nr ||
-			    (nr < ALLOC_SCAN_BATCH(ca) &&
-			     !fifo_empty(&ca->free[RESERVE_NONE]))) {
-				ret = wait_buckets_available(c, ca);
-				if (ret) {
-					up_read(&c->gc_lock);
-					goto stop;
-				}
+			ret = wait_buckets_available(c, ca);
+			if (ret) {
+				up_read(&c->gc_lock);
+				goto stop;
 			}
-		} while (!nr);
+		}
 
 		up_read(&c->gc_lock);
 

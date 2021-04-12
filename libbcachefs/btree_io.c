@@ -241,7 +241,6 @@ bool bch2_compact_whiteouts(struct bch_fs *c, struct btree *b,
 }
 
 static void btree_node_sort(struct bch_fs *c, struct btree *b,
-			    struct btree_iter *iter,
 			    unsigned start_idx,
 			    unsigned end_idx,
 			    bool filter_whiteouts)
@@ -377,8 +376,7 @@ void bch2_btree_sort_into(struct bch_fs *c,
  * We're about to add another bset to the btree node, so if there's currently
  * too many bsets - sort some of them together:
  */
-static bool btree_node_compact(struct bch_fs *c, struct btree *b,
-			       struct btree_iter *iter)
+static bool btree_node_compact(struct bch_fs *c, struct btree *b)
 {
 	unsigned unwritten_idx;
 	bool ret = false;
@@ -390,13 +388,13 @@ static bool btree_node_compact(struct bch_fs *c, struct btree *b,
 			break;
 
 	if (b->nsets - unwritten_idx > 1) {
-		btree_node_sort(c, b, iter, unwritten_idx,
+		btree_node_sort(c, b, unwritten_idx,
 				b->nsets, false);
 		ret = true;
 	}
 
 	if (unwritten_idx > 1) {
-		btree_node_sort(c, b, iter, 0, unwritten_idx, false);
+		btree_node_sort(c, b, 0, unwritten_idx, false);
 		ret = true;
 	}
 
@@ -426,12 +424,30 @@ void bch2_btree_init_next(struct bch_fs *c, struct btree *b,
 			  struct btree_iter *iter)
 {
 	struct btree_node_entry *bne;
-	bool did_sort;
+	bool reinit_iter = false;
 
 	EBUG_ON(!(b->c.lock.state.seq & 1));
 	EBUG_ON(iter && iter->l[b->c.level].b != b);
+	BUG_ON(bset_written(b, bset(b, &b->set[1])));
 
-	did_sort = btree_node_compact(c, b, iter);
+	if (b->nsets == MAX_BSETS) {
+		unsigned log_u64s[] = {
+			ilog2(bset_u64s(&b->set[0])),
+			ilog2(bset_u64s(&b->set[1])),
+			ilog2(bset_u64s(&b->set[2])),
+		};
+
+		if (log_u64s[1] >= (log_u64s[0] + log_u64s[2]) / 2) {
+			bch2_btree_node_write(c, b, SIX_LOCK_write);
+			reinit_iter = true;
+		}
+	}
+
+	if (b->nsets == MAX_BSETS &&
+	    btree_node_compact(c, b))
+		reinit_iter = true;
+
+	BUG_ON(b->nsets >= MAX_BSETS);
 
 	bne = want_new_bset(c, b);
 	if (bne)
@@ -439,7 +455,7 @@ void bch2_btree_init_next(struct bch_fs *c, struct btree *b,
 
 	bch2_btree_build_aux_trees(b);
 
-	if (iter && did_sort)
+	if (iter && reinit_iter)
 		bch2_btree_iter_reinit_node(iter, b);
 }
 
@@ -1321,15 +1337,20 @@ static int validate_bset_for_write(struct bch_fs *c, struct btree *b,
 	return ret;
 }
 
-void __bch2_btree_node_write(struct bch_fs *c, struct btree *b,
-			    enum six_lock_type lock_type_held)
+static void btree_write_submit(struct work_struct *work)
+{
+	struct btree_write_bio *wbio = container_of(work, struct btree_write_bio, work);
+
+	bch2_submit_wbio_replicas(&wbio->wbio, wbio->wbio.c, BCH_DATA_btree, &wbio->key);
+}
+
+void __bch2_btree_node_write(struct bch_fs *c, struct btree *b)
 {
 	struct btree_write_bio *wbio;
 	struct bset_tree *t;
 	struct bset *i;
 	struct btree_node *bn = NULL;
 	struct btree_node_entry *bne = NULL;
-	struct bkey_buf k;
 	struct bch_extent_ptr *ptr;
 	struct sort_iter sort_iter;
 	struct nonce nonce;
@@ -1339,8 +1360,6 @@ void __bch2_btree_node_write(struct bch_fs *c, struct btree *b,
 	unsigned long old, new;
 	bool validate_before_checksum = false;
 	void *data;
-
-	bch2_bkey_buf_init(&k);
 
 	if (test_bit(BCH_FS_HOLD_BTREE_WRITES, &c->flags))
 		return;
@@ -1518,6 +1537,7 @@ void __bch2_btree_node_write(struct bch_fs *c, struct btree *b,
 	wbio_init(&wbio->wbio.bio);
 	wbio->data			= data;
 	wbio->bytes			= bytes;
+	wbio->wbio.c			= c;
 	wbio->wbio.used_mempool		= used_mempool;
 	wbio->wbio.bio.bi_opf		= REQ_OP_WRITE|REQ_META;
 	wbio->wbio.bio.bi_end_io	= btree_node_write_endio;
@@ -1540,9 +1560,9 @@ void __bch2_btree_node_write(struct bch_fs *c, struct btree *b,
 	 * just make all btree node writes FUA to keep things sane.
 	 */
 
-	bch2_bkey_buf_copy(&k, c, &b->key);
+	bkey_copy(&wbio->key, &b->key);
 
-	bkey_for_each_ptr(bch2_bkey_ptrs(bkey_i_to_s(k.k)), ptr)
+	bkey_for_each_ptr(bch2_bkey_ptrs(bkey_i_to_s(&wbio->key)), ptr)
 		ptr->offset += b->written;
 
 	b->written += sectors_to_write;
@@ -1550,9 +1570,8 @@ void __bch2_btree_node_write(struct bch_fs *c, struct btree *b,
 	atomic64_inc(&c->btree_writes_nr);
 	atomic64_add(sectors_to_write, &c->btree_writes_sectors);
 
-	/* XXX: submitting IO with btree locks held: */
-	bch2_submit_wbio_replicas(&wbio->wbio, c, BCH_DATA_btree, k.k);
-	bch2_bkey_buf_exit(&k, c);
+	INIT_WORK(&wbio->work, btree_write_submit);
+	schedule_work(&wbio->work);
 	return;
 err:
 	set_btree_node_noevict(b);
@@ -1592,7 +1611,7 @@ bool bch2_btree_post_write_cleanup(struct bch_fs *c, struct btree *b)
 	 * single bset:
 	 */
 	if (b->nsets > 1) {
-		btree_node_sort(c, b, NULL, 0, b->nsets, true);
+		btree_node_sort(c, b, 0, b->nsets, true);
 		invalidated_iter = true;
 	} else {
 		invalidated_iter = bch2_drop_whiteouts(b, COMPACT_ALL);
@@ -1622,13 +1641,12 @@ bool bch2_btree_post_write_cleanup(struct bch_fs *c, struct btree *b)
  * Use this one if the node is intent locked:
  */
 void bch2_btree_node_write(struct bch_fs *c, struct btree *b,
-			  enum six_lock_type lock_type_held)
+			   enum six_lock_type lock_type_held)
 {
-	BUG_ON(lock_type_held == SIX_LOCK_write);
-
 	if (lock_type_held == SIX_LOCK_intent ||
-	    six_lock_tryupgrade(&b->c.lock)) {
-		__bch2_btree_node_write(c, b, SIX_LOCK_intent);
+	    (lock_type_held == SIX_LOCK_read &&
+	     six_lock_tryupgrade(&b->c.lock))) {
+		__bch2_btree_node_write(c, b);
 
 		/* don't cycle lock unnecessarily: */
 		if (btree_node_just_written(b) &&
@@ -1640,7 +1658,10 @@ void bch2_btree_node_write(struct bch_fs *c, struct btree *b,
 		if (lock_type_held == SIX_LOCK_read)
 			six_lock_downgrade(&b->c.lock);
 	} else {
-		__bch2_btree_node_write(c, b, SIX_LOCK_read);
+		__bch2_btree_node_write(c, b);
+		if (lock_type_held == SIX_LOCK_write &&
+		    btree_node_just_written(b))
+			bch2_btree_post_write_cleanup(c, b);
 	}
 }
 

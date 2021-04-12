@@ -1005,6 +1005,13 @@ int bch2_fs_recovery(struct bch_fs *c)
 
 	}
 
+	if (!c->sb.clean &&
+	    !(c->sb.features & (1 << BCH_FEATURE_atomic_nlink))) {
+		bch_info(c, "BCH_FEATURE_atomic_nlink not set and filesystem dirty, fsck required");
+		c->opts.fsck = true;
+		c->opts.fix_errors = FSCK_OPT_YES;
+	}
+
 	if (!(c->sb.features & (1ULL << BCH_FEATURE_alloc_v2))) {
 		bch_info(c, "alloc_v2 feature bit not set, fsck required");
 		c->opts.fsck = true;
@@ -1015,6 +1022,13 @@ int bch2_fs_recovery(struct bch_fs *c)
 	    c->opts.rebuild_replicas) {
 		bch_info(c, "building replicas info");
 		set_bit(BCH_FS_REBUILD_REPLICAS, &c->flags);
+	}
+
+	if (c->sb.version < bcachefs_metadata_version_inode_backpointers) {
+		bch_info(c, "version prior to inode backpointers, upgrade and fsck required");
+		c->opts.version_upgrade	= true;
+		c->opts.fsck		= true;
+		c->opts.fix_errors	= FSCK_OPT_YES;
 	}
 
 	ret = bch2_blacklist_table_initialize(c);
@@ -1179,25 +1193,6 @@ use_clean:
 		bch_verbose(c, "alloc write done");
 	}
 
-	if (!c->sb.clean) {
-		if (!(c->sb.features & (1 << BCH_FEATURE_atomic_nlink))) {
-			bch_info(c, "checking inode link counts");
-			err = "error in recovery";
-			ret = bch2_fsck_inode_nlink(c);
-			if (ret)
-				goto err;
-			bch_verbose(c, "check inodes done");
-
-		} else {
-			bch_verbose(c, "checking for deleted inodes");
-			err = "error in recovery";
-			ret = bch2_fsck_walk_inodes_only(c);
-			if (ret)
-				goto err;
-			bch_verbose(c, "check inodes done");
-		}
-	}
-
 	if (c->opts.fsck) {
 		bch_info(c, "starting fsck");
 		err = "error in fsck";
@@ -1205,6 +1200,13 @@ use_clean:
 		if (ret)
 			goto err;
 		bch_verbose(c, "fsck done");
+	} else if (!c->sb.clean) {
+		bch_verbose(c, "checking for deleted inodes");
+		err = "error in recovery";
+		ret = bch2_fsck_walk_inodes_only(c);
+		if (ret)
+			goto err;
+		bch_verbose(c, "check inodes done");
 	}
 
 	if (enabled_qtypes(c)) {
