@@ -351,7 +351,7 @@ void bch2_dev_stripe_increment(struct bch_dev *ca,
 			       struct dev_stripe_state *stripe)
 {
 	u64 *v = stripe->next_alloc + ca->dev_idx;
-	u64 free_space = dev_buckets_free(ca);
+	u64 free_space = dev_buckets_available(ca);
 	u64 free_space_inv = free_space
 		? div64_u64(1ULL << 48, free_space)
 		: 1ULL << 48;

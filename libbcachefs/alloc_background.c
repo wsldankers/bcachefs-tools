@@ -46,7 +46,7 @@ static void pd_controllers_update(struct work_struct *work)
 		struct bch_dev_usage stats = bch2_dev_usage_read(ca);
 
 		free += bucket_to_sector(ca,
-				__dev_buckets_free(ca, stats)) << 9;
+				__dev_buckets_available(ca, stats)) << 9;
 		/*
 		 * Bytes of internal fragmentation, which can be
 		 * reclaimed by copy GC
@@ -477,7 +477,6 @@ static int wait_buckets_available(struct bch_fs *c, struct bch_dev *ca)
 {
 	unsigned long gc_count = c->gc_count;
 	s64 available;
-	unsigned i;
 	int ret = 0;
 
 	ca->allocator_state = ALLOCATOR_BLOCKED;
@@ -493,19 +492,12 @@ static int wait_buckets_available(struct bch_fs *c, struct bch_dev *ca)
 		if (gc_count != c->gc_count)
 			ca->inc_gen_really_needs_gc = 0;
 
-		available  = dev_buckets_available(ca);
+		available  = dev_buckets_reclaimable(ca);
 		available -= ca->inc_gen_really_needs_gc;
-
-		spin_lock(&c->freelist_lock);
-		for (i = 0; i < RESERVE_NR; i++)
-			available -= fifo_used(&ca->free[i]);
-		spin_unlock(&c->freelist_lock);
 
 		available = max(available, 0LL);
 
-		if (available > fifo_free(&ca->free_inc) ||
-		    (available &&
-		     !fifo_full(&ca->free[RESERVE_MOVINGGC])))
+		if (available)
 			break;
 
 		up_read(&c->gc_lock);
