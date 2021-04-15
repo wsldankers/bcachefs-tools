@@ -1005,13 +1005,6 @@ int bch2_fs_recovery(struct bch_fs *c)
 
 	}
 
-	if (!c->sb.clean &&
-	    !(c->sb.features & (1 << BCH_FEATURE_atomic_nlink))) {
-		bch_info(c, "BCH_FEATURE_atomic_nlink not set and filesystem dirty, fsck required");
-		c->opts.fsck = true;
-		c->opts.fix_errors = FSCK_OPT_YES;
-	}
-
 	if (!(c->sb.features & (1ULL << BCH_FEATURE_alloc_v2))) {
 		bch_info(c, "alloc_v2 feature bit not set, fsck required");
 		c->opts.fsck = true;
@@ -1145,9 +1138,11 @@ use_clean:
 	    !(c->sb.compat & (1ULL << BCH_COMPAT_alloc_info)) ||
 	    !(c->sb.compat & (1ULL << BCH_COMPAT_alloc_metadata)) ||
 	    test_bit(BCH_FS_REBUILD_REPLICAS, &c->flags)) {
+		bool metadata_only = c->opts.norecovery;
+
 		bch_info(c, "starting mark and sweep");
 		err = "error in mark and sweep";
-		ret = bch2_gc(c, true);
+		ret = bch2_gc(c, true, metadata_only);
 		if (ret)
 			goto err;
 		bch_verbose(c, "mark and sweep done");
@@ -1245,8 +1240,8 @@ use_clean:
 	}
 
 	if (c->opts.fsck &&
-	    !test_bit(BCH_FS_ERROR, &c->flags)) {
-		c->disk_sb.sb->features[0] |= 1ULL << BCH_FEATURE_atomic_nlink;
+	    !test_bit(BCH_FS_ERROR, &c->flags) &&
+	    BCH_SB_HAS_ERRORS(c->disk_sb.sb)) {
 		SET_BCH_SB_HAS_ERRORS(c->disk_sb.sb, 0);
 		write_sb = true;
 	}
@@ -1338,10 +1333,12 @@ int bch2_fs_initialize(struct bch_fs *c)
 	 * Write out the superblock and journal buckets, now that we can do
 	 * btree updates
 	 */
-	err = "error writing alloc info";
-	ret = bch2_alloc_write(c, 0);
-	if (ret)
-		goto err;
+	err = "error marking superblock and journal";
+	for_each_member_device(ca, c, i) {
+		ret = bch2_trans_mark_dev_sb(c, ca);
+		if (ret)
+			goto err;
+	}
 
 	bch2_inode_init(c, &root_inode, 0, 0,
 			S_IFDIR|S_IRWXU|S_IRUGO|S_IXUGO, 0, NULL);

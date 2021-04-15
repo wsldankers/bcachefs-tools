@@ -4,9 +4,7 @@
 
 #include "btree_types.h"
 
-void bch2_coalesce(struct bch_fs *);
-
-int bch2_gc(struct bch_fs *, bool);
+int bch2_gc(struct bch_fs *, bool, bool);
 int bch2_gc_gens(struct bch_fs *);
 void bch2_gc_thread_stop(struct bch_fs *);
 int bch2_gc_thread_start(struct bch_fs *);
@@ -90,14 +88,6 @@ static inline struct gc_pos gc_pos_btree_node(struct btree *b)
 static inline struct gc_pos gc_pos_btree_root(enum btree_id id)
 {
 	return gc_pos_btree(id, POS_MAX, BTREE_MAX_DEPTH);
-}
-
-static inline struct gc_pos gc_pos_alloc(struct bch_fs *c, struct open_bucket *ob)
-{
-	return (struct gc_pos) {
-		.phase	= GC_PHASE_ALLOC,
-		.pos	= POS(ob ? ob - c->open_buckets : 0, 0),
-	};
 }
 
 static inline bool gc_visited(struct bch_fs *c, struct gc_pos pos)

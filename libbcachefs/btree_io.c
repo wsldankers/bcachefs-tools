@@ -1057,14 +1057,17 @@ void bch2_btree_node_read(struct bch_fs *c, struct btree *b,
 	struct btree_read_bio *rb;
 	struct bch_dev *ca;
 	struct bio *bio;
+	char buf[200];
 	int ret;
 
+	btree_pos_to_text(&PBUF(buf), c, b);
 	trace_btree_read(c, b);
 
 	ret = bch2_bkey_pick_read_device(c, bkey_i_to_s_c(&b->key),
 					 NULL, &pick);
 	if (bch2_fs_fatal_err_on(ret <= 0, c,
-			"btree node read error: no device to read from")) {
+			"btree node read error: no device to read from\n"
+			" at %s", buf)) {
 		set_btree_node_read_error(b);
 		return;
 	}
@@ -1337,13 +1340,6 @@ static int validate_bset_for_write(struct bch_fs *c, struct btree *b,
 	return ret;
 }
 
-static void btree_write_submit(struct work_struct *work)
-{
-	struct btree_write_bio *wbio = container_of(work, struct btree_write_bio, work);
-
-	bch2_submit_wbio_replicas(&wbio->wbio, wbio->wbio.c, BCH_DATA_btree, &wbio->key);
-}
-
 void __bch2_btree_node_write(struct bch_fs *c, struct btree *b)
 {
 	struct btree_write_bio *wbio;
@@ -1351,6 +1347,7 @@ void __bch2_btree_node_write(struct bch_fs *c, struct btree *b)
 	struct bset *i;
 	struct btree_node *bn = NULL;
 	struct btree_node_entry *bne = NULL;
+	struct bkey_buf k;
 	struct bch_extent_ptr *ptr;
 	struct sort_iter sort_iter;
 	struct nonce nonce;
@@ -1360,6 +1357,8 @@ void __bch2_btree_node_write(struct bch_fs *c, struct btree *b)
 	unsigned long old, new;
 	bool validate_before_checksum = false;
 	void *data;
+
+	bch2_bkey_buf_init(&k);
 
 	if (test_bit(BCH_FS_HOLD_BTREE_WRITES, &c->flags))
 		return;
@@ -1537,7 +1536,6 @@ void __bch2_btree_node_write(struct bch_fs *c, struct btree *b)
 	wbio_init(&wbio->wbio.bio);
 	wbio->data			= data;
 	wbio->bytes			= bytes;
-	wbio->wbio.c			= c;
 	wbio->wbio.used_mempool		= used_mempool;
 	wbio->wbio.bio.bi_opf		= REQ_OP_WRITE|REQ_META;
 	wbio->wbio.bio.bi_end_io	= btree_node_write_endio;
@@ -1560,9 +1558,9 @@ void __bch2_btree_node_write(struct bch_fs *c, struct btree *b)
 	 * just make all btree node writes FUA to keep things sane.
 	 */
 
-	bkey_copy(&wbio->key, &b->key);
+	bch2_bkey_buf_copy(&k, c, &b->key);
 
-	bkey_for_each_ptr(bch2_bkey_ptrs(bkey_i_to_s(&wbio->key)), ptr)
+	bkey_for_each_ptr(bch2_bkey_ptrs(bkey_i_to_s(k.k)), ptr)
 		ptr->offset += b->written;
 
 	b->written += sectors_to_write;
@@ -1570,8 +1568,9 @@ void __bch2_btree_node_write(struct bch_fs *c, struct btree *b)
 	atomic64_inc(&c->btree_writes_nr);
 	atomic64_add(sectors_to_write, &c->btree_writes_sectors);
 
-	INIT_WORK(&wbio->work, btree_write_submit);
-	schedule_work(&wbio->work);
+	/* XXX: submitting IO with btree locks held: */
+	bch2_submit_wbio_replicas(&wbio->wbio, c, BCH_DATA_btree, k.k);
+	bch2_bkey_buf_exit(&k, c);
 	return;
 err:
 	set_btree_node_noevict(b);

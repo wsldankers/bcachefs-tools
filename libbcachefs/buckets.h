@@ -191,6 +191,7 @@ static inline u64 __dev_buckets_reclaimable(struct bch_dev *ca,
 	for (i = 0; i < RESERVE_NR; i++)
 		available -= fifo_used(&ca->free[i]);
 	available -= fifo_used(&ca->free_inc);
+	available -= ca->nr_open_buckets;
 	spin_unlock(&c->freelist_lock);
 
 	return max(available, 0LL);
@@ -234,8 +235,7 @@ bch2_fs_usage_read_short(struct bch_fs *);
 void bch2_bucket_seq_cleanup(struct bch_fs *);
 void bch2_fs_usage_initialize(struct bch_fs *);
 
-void bch2_mark_alloc_bucket(struct bch_fs *, struct bch_dev *,
-			    size_t, bool, struct gc_pos, unsigned);
+void bch2_mark_alloc_bucket(struct bch_fs *, struct bch_dev *, size_t, bool);
 void bch2_mark_metadata_bucket(struct bch_fs *, struct bch_dev *,
 			       size_t, enum bch_data_type, unsigned,
 			       struct gc_pos, unsigned);
@@ -252,11 +252,9 @@ int bch2_trans_mark_update(struct btree_trans *, struct btree_iter *iter,
 			   struct bkey_i *insert, unsigned);
 void bch2_trans_fs_usage_apply(struct btree_trans *, struct replicas_delta_list *);
 
-int bch2_trans_mark_metadata_bucket(struct btree_trans *,
-			struct disk_reservation *, struct bch_dev *,
-			size_t, enum bch_data_type, unsigned);
-int bch2_trans_mark_dev_sb(struct bch_fs *, struct disk_reservation *,
-			   struct bch_dev *);
+int bch2_trans_mark_metadata_bucket(struct btree_trans *, struct bch_dev *,
+				    size_t, enum bch_data_type, unsigned);
+int bch2_trans_mark_dev_sb(struct bch_fs *, struct bch_dev *);
 
 /* disk reservations: */
 

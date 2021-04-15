@@ -286,7 +286,6 @@ void bch2_fs_read_only(struct bch_fs *c)
 	percpu_ref_kill(&c->writes);
 
 	cancel_work_sync(&c->ec_stripe_delete_work);
-	cancel_delayed_work(&c->pd_controllers_update);
 
 	/*
 	 * If we're not doing an emergency shutdown, we want to wait on
@@ -370,8 +369,6 @@ static int bch2_fs_read_write_late(struct bch_fs *c)
 		bch_err(c, "error starting rebalance thread");
 		return ret;
 	}
-
-	schedule_delayed_work(&c->pd_controllers_update, 5 * HZ);
 
 	schedule_work(&c->ec_stripe_delete_work);
 
@@ -566,7 +563,6 @@ void __bch2_fs_stop(struct bch_fs *c)
 		cancel_work_sync(&ca->io_error_work);
 
 	cancel_work_sync(&c->btree_write_error_work);
-	cancel_delayed_work_sync(&c->pd_controllers_update);
 	cancel_work_sync(&c->read_only_work);
 
 	for (i = 0; i < c->sb.nr_devices; i++)
@@ -908,9 +904,16 @@ int bch2_fs_start(struct bch_fs *c)
 	/*
 	 * Allocator threads don't start filling copygc reserve until after we
 	 * set BCH_FS_STARTED - wake them now:
+	 *
+	 * XXX ugly hack:
+	 * Need to set ca->allocator_state here instead of relying on the
+	 * allocator threads to do it to avoid racing with the copygc threads
+	 * checking it and thinking they have no alloc reserve:
 	 */
-	for_each_online_member(ca, c, i)
+	for_each_online_member(ca, c, i) {
+		ca->allocator_state = ALLOCATOR_running;
 		bch2_wake_allocator(ca);
+	}
 
 	if (c->opts.read_only || c->opts.nochanges) {
 		bch2_fs_read_only(c);
@@ -1679,7 +1682,7 @@ have_slot:
 	bch2_dev_usage_journal_reserve(c);
 
 	err = "error marking superblock";
-	ret = bch2_trans_mark_dev_sb(c, NULL, ca);
+	ret = bch2_trans_mark_dev_sb(c, ca);
 	if (ret)
 		goto err_late;
 
@@ -1739,7 +1742,7 @@ int bch2_dev_online(struct bch_fs *c, const char *path)
 
 	ca = bch_dev_locked(c, dev_idx);
 
-	if (bch2_trans_mark_dev_sb(c, NULL, ca)) {
+	if (bch2_trans_mark_dev_sb(c, ca)) {
 		err = "bch2_trans_mark_dev_sb() error";
 		goto err;
 	}

@@ -3,64 +3,6 @@
  * Code for manipulating bucket marks for garbage collection.
  *
  * Copyright 2014 Datera, Inc.
- *
- * Bucket states:
- * - free bucket: mark == 0
- *   The bucket contains no data and will not be read
- *
- * - allocator bucket: owned_by_allocator == 1
- *   The bucket is on a free list, or it is an open bucket
- *
- * - cached bucket: owned_by_allocator == 0 &&
- *                  dirty_sectors == 0 &&
- *                  cached_sectors > 0
- *   The bucket contains data but may be safely discarded as there are
- *   enough replicas of the data on other cache devices, or it has been
- *   written back to the backing device
- *
- * - dirty bucket: owned_by_allocator == 0 &&
- *                 dirty_sectors > 0
- *   The bucket contains data that we must not discard (either only copy,
- *   or one of the 'main copies' for data requiring multiple replicas)
- *
- * - metadata bucket: owned_by_allocator == 0 && is_metadata == 1
- *   This is a btree node, journal or gen/prio bucket
- *
- * Lifecycle:
- *
- * bucket invalidated => bucket on freelist => open bucket =>
- *     [dirty bucket =>] cached bucket => bucket invalidated => ...
- *
- * Note that cache promotion can skip the dirty bucket step, as data
- * is copied from a deeper tier to a shallower tier, onto a cached
- * bucket.
- * Note also that a cached bucket can spontaneously become dirty --
- * see below.
- *
- * Only a traversal of the key space can determine whether a bucket is
- * truly dirty or cached.
- *
- * Transitions:
- *
- * - free => allocator: bucket was invalidated
- * - cached => allocator: bucket was invalidated
- *
- * - allocator => dirty: open bucket was filled up
- * - allocator => cached: open bucket was filled up
- * - allocator => metadata: metadata was allocated
- *
- * - dirty => cached: dirty sectors were copied to a deeper tier
- * - dirty => free: dirty sectors were overwritten or moved (copy gc)
- * - cached => free: cached sectors were overwritten
- *
- * - metadata => free: metadata was freed
- *
- * Oddities:
- * - cached => dirty: a device was removed so formerly replicated data
- *                    is no longer sufficiently replicated
- * - free => cached: cannot happen
- * - free => dirty: cannot happen
- * - free => metadata: cannot happen
  */
 
 #include "bcachefs.h"
@@ -229,7 +171,7 @@ struct bch_fs_usage_online *bch2_fs_usage_read(struct bch_fs *c)
 	percpu_down_read(&c->mark_lock);
 
 	ret = kmalloc(sizeof(struct bch_fs_usage_online) +
-		      sizeof(u64) + c->replicas.nr, GFP_NOFS);
+		      sizeof(u64) * c->replicas.nr, GFP_NOFS);
 	if (unlikely(!ret)) {
 		percpu_up_read(&c->mark_lock);
 		return NULL;
@@ -538,33 +480,17 @@ static inline void update_cached_sectors_list(struct btree_trans *trans,
 	ret;								\
 })
 
-static int __bch2_mark_alloc_bucket(struct bch_fs *c, struct bch_dev *ca,
-				    size_t b, bool owned_by_allocator,
-				    bool gc)
+void bch2_mark_alloc_bucket(struct bch_fs *c, struct bch_dev *ca,
+			    size_t b, bool owned_by_allocator)
 {
-	struct bucket *g = __bucket(ca, b, gc);
+	struct bucket *g = bucket(ca, b);
 	struct bucket_mark old, new;
 
 	old = bucket_cmpxchg(g, new, ({
 		new.owned_by_allocator	= owned_by_allocator;
 	}));
 
-	BUG_ON(!gc &&
-	       !owned_by_allocator && !old.owned_by_allocator);
-
-	return 0;
-}
-
-void bch2_mark_alloc_bucket(struct bch_fs *c, struct bch_dev *ca,
-			    size_t b, bool owned_by_allocator,
-			    struct gc_pos pos, unsigned flags)
-{
-	preempt_disable();
-
-	do_mark_fn(__bch2_mark_alloc_bucket, c, pos, flags,
-		   ca, b, owned_by_allocator);
-
-	preempt_enable();
+	BUG_ON(owned_by_allocator == old.owned_by_allocator);
 }
 
 static int bch2_mark_alloc(struct bch_fs *c,
@@ -1890,10 +1816,11 @@ int bch2_trans_mark_update(struct btree_trans *trans,
 		return 0;
 
 	if (!btree_node_type_is_extents(iter->btree_id)) {
-		/* iterators should be uptodate, shouldn't get errors here: */
 		if (btree_iter_type(iter) != BTREE_ITER_CACHED) {
 			old = bch2_btree_iter_peek_slot(iter);
-			BUG_ON(bkey_err(old));
+			ret = bkey_err(old);
+			if (ret)
+				return ret;
 		} else {
 			struct bkey_cached *ck = (void *) iter->l[0].b;
 
@@ -2004,22 +1931,6 @@ static int __bch2_trans_mark_metadata_bucket(struct btree_trans *trans,
 		goto out;
 	}
 
-	if ((unsigned) (u.dirty_sectors + sectors) > ca->mi.bucket_size) {
-		bch2_fsck_err(c, FSCK_CAN_IGNORE|FSCK_NEED_FSCK,
-			"bucket %llu:%llu gen %u data type %s sector count overflow: %u + %u > %u\n"
-			"while marking %s",
-			iter->pos.inode, iter->pos.offset, u.gen,
-			bch2_data_types[u.data_type ?: type],
-			u.dirty_sectors, sectors, ca->mi.bucket_size,
-			bch2_data_types[type]);
-		ret = -EIO;
-		goto out;
-	}
-
-	if (u.data_type		== type &&
-	    u.dirty_sectors	== sectors)
-		goto out;
-
 	u.data_type	= type;
 	u.dirty_sectors	= sectors;
 
@@ -2031,53 +1942,44 @@ out:
 }
 
 int bch2_trans_mark_metadata_bucket(struct btree_trans *trans,
-				    struct disk_reservation *res,
 				    struct bch_dev *ca, size_t b,
 				    enum bch_data_type type,
 				    unsigned sectors)
 {
-	return __bch2_trans_do(trans, res, NULL, 0,
-			__bch2_trans_mark_metadata_bucket(trans, ca, b, BCH_DATA_journal,
-							ca->mi.bucket_size));
-
+	return __bch2_trans_do(trans, NULL, NULL, 0,
+			__bch2_trans_mark_metadata_bucket(trans, ca, b, type, sectors));
 }
 
 static int bch2_trans_mark_metadata_sectors(struct btree_trans *trans,
-					    struct disk_reservation *res,
 					    struct bch_dev *ca,
 					    u64 start, u64 end,
 					    enum bch_data_type type,
 					    u64 *bucket, unsigned *bucket_sectors)
 {
-	int ret;
-
 	do {
 		u64 b = sector_to_bucket(ca, start);
 		unsigned sectors =
 			min_t(u64, bucket_to_sector(ca, b + 1), end) - start;
 
-		if (b != *bucket) {
-			if (*bucket_sectors) {
-				ret = bch2_trans_mark_metadata_bucket(trans, res, ca,
-						*bucket, type, *bucket_sectors);
-				if (ret)
-					return ret;
-			}
+		if (b != *bucket && *bucket_sectors) {
+			int ret = bch2_trans_mark_metadata_bucket(trans, ca, *bucket,
+								  type, *bucket_sectors);
+			if (ret)
+				return ret;
 
-			*bucket		= b;
-			*bucket_sectors	= 0;
+			*bucket_sectors = 0;
 		}
 
+		*bucket		= b;
 		*bucket_sectors	+= sectors;
 		start += sectors;
-	} while (!ret && start < end);
+	} while (start < end);
 
 	return 0;
 }
 
 static int __bch2_trans_mark_dev_sb(struct btree_trans *trans,
-			     struct disk_reservation *res,
-			     struct bch_dev *ca)
+				    struct bch_dev *ca)
 {
 	struct bch_sb_layout *layout = &ca->disk_sb.sb->layout;
 	u64 bucket = 0;
@@ -2088,14 +1990,14 @@ static int __bch2_trans_mark_dev_sb(struct btree_trans *trans,
 		u64 offset = le64_to_cpu(layout->sb_offset[i]);
 
 		if (offset == BCH_SB_SECTOR) {
-			ret = bch2_trans_mark_metadata_sectors(trans, res, ca,
+			ret = bch2_trans_mark_metadata_sectors(trans, ca,
 						0, BCH_SB_SECTOR,
 						BCH_DATA_sb, &bucket, &bucket_sectors);
 			if (ret)
 				return ret;
 		}
 
-		ret = bch2_trans_mark_metadata_sectors(trans, res, ca, offset,
+		ret = bch2_trans_mark_metadata_sectors(trans, ca, offset,
 				      offset + (1 << layout->sb_max_size_bits),
 				      BCH_DATA_sb, &bucket, &bucket_sectors);
 		if (ret)
@@ -2103,14 +2005,14 @@ static int __bch2_trans_mark_dev_sb(struct btree_trans *trans,
 	}
 
 	if (bucket_sectors) {
-		ret = bch2_trans_mark_metadata_bucket(trans, res, ca,
+		ret = bch2_trans_mark_metadata_bucket(trans, ca,
 				bucket, BCH_DATA_sb, bucket_sectors);
 		if (ret)
 			return ret;
 	}
 
 	for (i = 0; i < ca->journal.nr; i++) {
-		ret = bch2_trans_mark_metadata_bucket(trans, res, ca,
+		ret = bch2_trans_mark_metadata_bucket(trans, ca,
 				ca->journal.buckets[i],
 				BCH_DATA_journal, ca->mi.bucket_size);
 		if (ret)
@@ -2120,12 +2022,10 @@ static int __bch2_trans_mark_dev_sb(struct btree_trans *trans,
 	return 0;
 }
 
-int bch2_trans_mark_dev_sb(struct bch_fs *c,
-			   struct disk_reservation *res,
-			   struct bch_dev *ca)
+int bch2_trans_mark_dev_sb(struct bch_fs *c, struct bch_dev *ca)
 {
-	return bch2_trans_do(c, res, NULL, 0,
-			__bch2_trans_mark_dev_sb(&trans, res, ca));
+	return bch2_trans_do(c, NULL, NULL, 0,
+			__bch2_trans_mark_dev_sb(&trans, ca));
 }
 
 /* Disk reservations: */

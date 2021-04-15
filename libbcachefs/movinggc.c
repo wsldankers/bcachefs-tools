@@ -108,7 +108,7 @@ static bool have_copygc_reserve(struct bch_dev *ca)
 
 	spin_lock(&ca->fs->freelist_lock);
 	ret = fifo_full(&ca->free[RESERVE_MOVINGGC]) ||
-		ca->allocator_state != ALLOCATOR_RUNNING;
+		ca->allocator_state != ALLOCATOR_running;
 	spin_unlock(&ca->fs->freelist_lock);
 
 	return ret;
@@ -222,7 +222,7 @@ static int bch2_copygc(struct bch_fs *c)
 	ret = bch2_move_data(c,
 			     0,			POS_MIN,
 			     BTREE_ID_NR,	POS_MAX,
-			     &c->copygc_pd.rate,
+			     NULL,
 			     writepoint_ptr(&c->copygc_write_point),
 			     copygc_pred, NULL,
 			     &move_stats);
@@ -282,8 +282,7 @@ unsigned long bch2_copygc_wait_amount(struct bch_fs *c)
 {
 	struct bch_dev *ca;
 	unsigned dev_idx;
-	u64 fragmented_allowed = c->copygc_threshold;
-	u64 fragmented = 0;
+	u64 fragmented_allowed = 0, fragmented = 0;
 
 	for_each_rw_member(ca, c, dev_idx) {
 		struct bch_dev_usage usage = bch2_dev_usage_read(ca);
@@ -312,10 +311,13 @@ static int bch2_copygc_thread(void *arg)
 		wait = bch2_copygc_wait_amount(c);
 
 		if (wait > clock->max_slop) {
+			c->copygc_wait = last + wait;
 			bch2_kthread_io_clock_wait(clock, last + wait,
 					MAX_SCHEDULE_TIMEOUT);
 			continue;
 		}
+
+		c->copygc_wait = 0;
 
 		if (bch2_copygc(c))
 			break;
@@ -326,9 +328,6 @@ static int bch2_copygc_thread(void *arg)
 
 void bch2_copygc_stop(struct bch_fs *c)
 {
-	c->copygc_pd.rate.rate = UINT_MAX;
-	bch2_ratelimit_reset(&c->copygc_pd.rate);
-
 	if (c->copygc_thread) {
 		kthread_stop(c->copygc_thread);
 		put_task_struct(c->copygc_thread);
@@ -365,6 +364,4 @@ int bch2_copygc_start(struct bch_fs *c)
 
 void bch2_fs_copygc_init(struct bch_fs *c)
 {
-	bch2_pd_controller_init(&c->copygc_pd);
-	c->copygc_pd.d_term = 0;
 }
