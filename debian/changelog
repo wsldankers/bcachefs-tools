@@ -1,44 +1,15 @@
-bcachefs-tools (1.0.8-2~bpo8+1) jessie-backports; urgency=medium
+bcachefs-tools (0.1+git) unstable; urgency=medium
 
-  * Rebuild for jessie-backports.
+  * Set debian/source/format to 3.0 (native)
 
- -- Mathieu Parent <sathieu@debian.org>  Mon, 21 Sep 2015 21:18:39 +0200
+  * Update debian/changelog to clarify the heritage of the packaging
 
-bcachefs-tools (1.0.8-2) unstable; urgency=medium
+  * Add missing build dependencies
 
-  * Only run update-initramfs if installed. Fix dracut. (Closes: #788442)
+ -- Wessel Dankers <wsl@fruit.je>  Thu, 15 Apr 2021 19:16:10 +0200
 
- -- David Mohr <david@mcbf.net>  Thu, 11 Jun 2015 10:23:48 -0600
+bcachefs-tools (0.0+git) unstable; urgency=medium
 
-bcachefs-tools (1.0.8-1) unstable; urgency=medium
+  * Initial Debian packaging, taken from the Debian bcache-tools package.
 
-  [ James Page ]
-  * d/control: Add Vcs fields.
-
-  [ David Mohr ]
-  * Don't depend on initramfs-tools, instead recommend it (Closes: #775674)
-  * New upstream release 1.0.8
-  * Update changelog
-  * Add patch to clean bcache-register
-  * Update changelog
-  * Adding dep3 headers to the 0001 patch
-  * Update watch to use http://evilpiepirate.org/git/bcache-tools.git
-  * Add patch for gcc-5 compatability.
-    Thanks to James Cowgill (Closes: #777798)
-
- -- David Mohr <david@mcbf.net>  Tue, 26 May 2015 20:57:58 -0600
-
-bcachefs-tools (1.0.7-1) unstable; urgency=medium
-
-  [ David Mohr ]
-  * Based on work by Gabriel de Perthuis <g2p.code+debian@gmail.com>
-  * Initial release. (Closes: #708132)
-
-  [ Robie Basak ]
-  * Remove unnecessary file bcache-tools.postrm.
-  * debian/copyright fixes.
-  * Add shebang to bcache-tools.preinst.
-  * Drop Vcs-* for now.
-  * Add self to Uploaders.
-
- -- Robie Basak <robie@justgohome.co.uk>  Mon, 27 Oct 2014 13:32:08 +0000
+ -- Kent Overstreet <kent.overstreet@gmail.com>  Mon, 25 Apr 2016 17:13:15 -0800
