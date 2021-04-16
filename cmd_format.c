@@ -236,6 +236,7 @@ int cmd_format(int argc, char *argv[])
 			    fs_opts,
 			    opts,
 			    devices.item, darray_size(devices));
+	bch2_opt_strs_free(&fs_opt_strs);
 
 	if (!quiet)
 		bch2_sb_print(sb, false, 1 << BCH_SB_FIELD_members, HUMAN_READABLE);

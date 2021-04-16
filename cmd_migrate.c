@@ -773,10 +773,12 @@ int cmd_migrate(int argc, char *argv[])
 	if (format_opts.encrypted && !no_passphrase)
 		format_opts.passphrase = read_passphrase_twice("Enter passphrase: ");
 
-	return migrate_fs(fs_path,
-			  fs_opt_strs,
-			  fs_opts,
-			  format_opts, force);
+	int ret = migrate_fs(fs_path,
+			     fs_opt_strs,
+			     fs_opts,
+			     format_opts, force);
+	bch2_opt_strs_free(&fs_opt_strs);
+	return ret;
 }
 
 static void migrate_superblock_usage(void)

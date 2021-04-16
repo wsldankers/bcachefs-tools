@@ -1006,6 +1006,16 @@ int bchu_data(struct bchfs_handle fs, struct bch_ioctl_data cmd)
 
 /* option parsing */
 
+void bch2_opt_strs_free(struct bch_opt_strs *opts)
+{
+	unsigned i;
+
+	for (i = 0; i < bch2_opts_nr; i++) {
+		free(opts->by_id[i]);
+		opts->by_id[i] = NULL;
+	}
+}
+
 struct bch_opt_strs bch2_cmdline_opts_get(int *argc, char *argv[],
 					  unsigned opt_types)
 {
@@ -1038,9 +1048,8 @@ struct bch_opt_strs bch2_cmdline_opts_get(int *argc, char *argv[],
 		optid = bch2_opt_lookup(optstr);
 		if (optid < 0 ||
 		    !(bch2_opt_table[optid].mode & opt_types)) {
-			free(optstr);
 			i++;
-			continue;
+			goto next;
 		}
 
 		if (!valstr &&
@@ -1052,13 +1061,15 @@ struct bch_opt_strs bch2_cmdline_opts_get(int *argc, char *argv[],
 		if (!valstr)
 			valstr = "1";
 
-		opts.by_id[optid] = valstr;
+		opts.by_id[optid] = strdup(valstr);
 
 		*argc -= nr_args;
 		memmove(&argv[i],
 			&argv[i + nr_args],
 			sizeof(char *) * (*argc - i));
 		argv[*argc] = NULL;
+next:
+		free(optstr);
 	}
 
 	return opts;
