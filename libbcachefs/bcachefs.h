@@ -259,7 +259,11 @@ do {									\
 	BCH_DEBUG_PARAM(btree_gc_rewrite_disabled,			\
 		"Disables rewriting of btree nodes during mark and sweep")\
 	BCH_DEBUG_PARAM(btree_shrinker_disabled,			\
-		"Disables the shrinker callback for the btree node cache")
+		"Disables the shrinker callback for the btree node cache")\
+	BCH_DEBUG_PARAM(verify_btree_ondisk,				\
+		"Reread btree nodes at various points to verify the "	\
+		"mergesort in the read path against modifications "	\
+		"done in memory")
 
 /* Parameters that should only be compiled in in debug mode: */
 #define BCH_DEBUG_PARAMS_DEBUG()					\
@@ -273,10 +277,6 @@ do {									\
 		"information) when iterating over keys")		\
 	BCH_DEBUG_PARAM(debug_check_btree_accounting,			\
 		"Verify btree accounting for keys within a node")	\
-	BCH_DEBUG_PARAM(verify_btree_ondisk,				\
-		"Reread btree nodes at various points to verify the "	\
-		"mergesort in the read path against modifications "	\
-		"done in memory")					\
 	BCH_DEBUG_PARAM(journal_seq_verify,				\
 		"Store the journal sequence number in the version "	\
 		"number of every btree key, and verify that btree "	\
@@ -545,6 +545,8 @@ struct btree_iter_buf {
 	struct btree_iter	*iter;
 };
 
+#define REPLICAS_DELTA_LIST_MAX	(1U << 16)
+
 struct bch_fs {
 	struct closure		cl;
 
@@ -572,6 +574,7 @@ struct bch_fs {
 	struct bch_replicas_cpu replicas;
 	struct bch_replicas_cpu replicas_gc;
 	struct mutex		replicas_gc_lock;
+	mempool_t		replicas_delta_pool;
 
 	struct journal_entry_res btree_root_journal_res;
 	struct journal_entry_res replicas_journal_res;
@@ -644,6 +647,7 @@ struct bch_fs {
 	struct mutex		btree_trans_lock;
 	struct list_head	btree_trans_list;
 	mempool_t		btree_iters_pool;
+	mempool_t		btree_trans_mem_pool;
 	struct btree_iter_buf  __percpu	*btree_iters_bufs;
 
 	struct srcu_struct	btree_trans_barrier;
@@ -813,11 +817,9 @@ struct bch_fs {
 	/* DEBUG JUNK */
 	struct dentry		*debug;
 	struct btree_debug	btree_debug[BTREE_ID_NR];
-#ifdef CONFIG_BCACHEFS_DEBUG
 	struct btree		*verify_data;
 	struct btree_node	*verify_ondisk;
 	struct mutex		verify_lock;
-#endif
 
 	u64			*unused_inode_hints;
 	unsigned		inode_shard_bits;

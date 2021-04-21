@@ -33,21 +33,21 @@ static inline unsigned btree_cache_can_free(struct btree_cache *bc)
 	return max_t(int, 0, bc->used - bc->reserve);
 }
 
-static void __btree_node_data_free(struct bch_fs *c, struct btree *b)
-{
-	EBUG_ON(btree_node_write_in_flight(b));
-
-	kvpfree(b->data, btree_bytes(c));
-	b->data = NULL;
-	vfree(b->aux_data);
-	b->aux_data = NULL;
-}
-
 static void btree_node_data_free(struct bch_fs *c, struct btree *b)
 {
 	struct btree_cache *bc = &c->btree_cache;
 
-	__btree_node_data_free(c, b);
+	EBUG_ON(btree_node_write_in_flight(b));
+
+	kvpfree(b->data, btree_bytes(c));
+	b->data = NULL;
+#ifdef __KERNEL__
+	vfree(b->aux_data);
+#else
+	munmap(b->aux_data, btree_aux_data_bytes(b));
+#endif
+	b->aux_data = NULL;
+
 	bc->used--;
 	list_move(&b->list, &bc->freed);
 }
@@ -75,8 +75,13 @@ static int btree_node_data_alloc(struct bch_fs *c, struct btree *b, gfp_t gfp)
 	b->data = kvpmalloc(btree_bytes(c), gfp);
 	if (!b->data)
 		return -ENOMEM;
-
+#ifdef __KERNEL__
 	b->aux_data = vmalloc_exec(btree_aux_data_bytes(b), gfp);
+#else
+	b->aux_data = mmap(NULL, btree_aux_data_bytes(b),
+			   PROT_READ|PROT_WRITE|PROT_EXEC,
+			   MAP_PRIVATE|MAP_ANONYMOUS, 0, 0);
+#endif
 	if (!b->aux_data) {
 		kvpfree(b->data, btree_bytes(c));
 		b->data = NULL;
@@ -100,7 +105,7 @@ static struct btree *__btree_node_mem_alloc(struct bch_fs *c)
 	return b;
 }
 
-static struct btree *btree_node_mem_alloc(struct bch_fs *c)
+struct btree *__bch2_btree_node_mem_alloc(struct bch_fs *c)
 {
 	struct btree_cache *bc = &c->btree_cache;
 	struct btree *b = __btree_node_mem_alloc(c);
@@ -360,12 +365,10 @@ void bch2_fs_btree_cache_exit(struct bch_fs *c)
 	flags = memalloc_nofs_save();
 	mutex_lock(&bc->lock);
 
-#ifdef CONFIG_BCACHEFS_DEBUG
 	if (c->verify_data)
 		list_move(&c->verify_data->list, &bc->live);
 
 	kvpfree(c->verify_ondisk, btree_bytes(c));
-#endif
 
 	for (i = 0; i < BTREE_ID_NR; i++)
 		if (c->btree_roots[i].b)
@@ -419,30 +422,14 @@ int bch2_fs_btree_cache_init(struct bch_fs *c)
 	bch2_recalc_btree_reserve(c);
 
 	for (i = 0; i < bc->reserve; i++)
-		if (!btree_node_mem_alloc(c)) {
+		if (!__bch2_btree_node_mem_alloc(c)) {
 			ret = -ENOMEM;
 			goto out;
 		}
 
 	list_splice_init(&bc->live, &bc->freeable);
 
-#ifdef CONFIG_BCACHEFS_DEBUG
 	mutex_init(&c->verify_lock);
-
-	c->verify_ondisk = kvpmalloc(btree_bytes(c), GFP_KERNEL);
-	if (!c->verify_ondisk) {
-		ret = -ENOMEM;
-		goto out;
-	}
-
-	c->verify_data = btree_node_mem_alloc(c);
-	if (!c->verify_data) {
-		ret = -ENOMEM;
-		goto out;
-	}
-
-	list_del_init(&c->verify_data->list);
-#endif
 
 	bc->shrink.count_objects	= bch2_btree_cache_count;
 	bc->shrink.scan_objects		= bch2_btree_cache_scan;
@@ -703,6 +690,41 @@ static int lock_node_check_fn(struct six_lock *lock, void *p)
 	return b->hash_val == btree_ptr_hash_val(k) ? 0 : -1;
 }
 
+static noinline void btree_bad_header(struct bch_fs *c, struct btree *b)
+{
+	char buf1[100], buf2[100], buf3[100], buf4[100];
+
+	if (!test_bit(BCH_FS_INITIAL_GC_DONE, &c->flags))
+		return;
+
+	bch2_bpos_to_text(&PBUF(buf1), b->key.k.type == KEY_TYPE_btree_ptr_v2
+		? bkey_i_to_btree_ptr_v2(&b->key)->v.min_key
+		: POS_MIN);
+	bch2_bpos_to_text(&PBUF(buf2), b->data->min_key);
+
+	bch2_bpos_to_text(&PBUF(buf3), b->key.k.p);
+	bch2_bpos_to_text(&PBUF(buf4), b->data->max_key);
+	bch2_fs_inconsistent(c, "btree node header doesn't match ptr\n"
+			     "btree: ptr %u header %llu\n"
+			     "level: ptr %u header %llu\n"
+			     "min ptr %s node header %s\n"
+			     "max ptr %s node header %s",
+			     b->c.btree_id,	BTREE_NODE_ID(b->data),
+			     b->c.level,	BTREE_NODE_LEVEL(b->data),
+			     buf1, buf2, buf3, buf4);
+}
+
+static inline void btree_check_header(struct bch_fs *c, struct btree *b)
+{
+	if (b->c.btree_id != BTREE_NODE_ID(b->data) ||
+	    b->c.level != BTREE_NODE_LEVEL(b->data) ||
+	    bpos_cmp(b->data->max_key, b->key.k.p) ||
+	    (b->key.k.type == KEY_TYPE_btree_ptr_v2 &&
+	     bpos_cmp(b->data->min_key,
+		      bkey_i_to_btree_ptr_v2(&b->key)->v.min_key)))
+		btree_bad_header(c, b);
+}
+
 /**
  * bch_btree_node_get - find a btree node in the cache and lock it, reading it
  * in from disk if necessary.
@@ -833,10 +855,7 @@ lock_node:
 
 	EBUG_ON(b->c.btree_id != iter->btree_id);
 	EBUG_ON(BTREE_NODE_LEVEL(b->data) != level);
-	EBUG_ON(bpos_cmp(b->data->max_key, k->k.p));
-	EBUG_ON(b->key.k.type == KEY_TYPE_btree_ptr_v2 &&
-		bpos_cmp(b->data->min_key,
-			 bkey_i_to_btree_ptr_v2(&b->key)->v.min_key));
+	btree_check_header(c, b);
 
 	return b;
 }
@@ -916,10 +935,7 @@ lock_node:
 
 	EBUG_ON(b->c.btree_id != btree_id);
 	EBUG_ON(BTREE_NODE_LEVEL(b->data) != level);
-	EBUG_ON(bpos_cmp(b->data->max_key, k->k.p));
-	EBUG_ON(b->key.k.type == KEY_TYPE_btree_ptr_v2 &&
-		bpos_cmp(b->data->min_key,
-			 bkey_i_to_btree_ptr_v2(&b->key)->v.min_key));
+	btree_check_header(c, b);
 out:
 	bch2_btree_cache_cannibalize_unlock(c);
 	return b;

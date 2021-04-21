@@ -218,8 +218,14 @@ static int btree_key_cache_fill(struct btree_trans *trans,
 		goto err;
 	}
 
-	if (k.k->u64s > ck->u64s) {
-		new_u64s = roundup_pow_of_two(k.k->u64s);
+	/*
+	 * bch2_varint_decode can read past the end of the buffer by at
+	 * most 7 bytes (it won't be used):
+	 */
+	new_u64s = k.k->u64s + 1;
+
+	if (new_u64s > ck->u64s) {
+		new_u64s = roundup_pow_of_two(new_u64s);
 		new_k = kmalloc(new_u64s * sizeof(u64), GFP_NOFS);
 		if (!new_k) {
 			ret = -ENOMEM;
@@ -385,12 +391,18 @@ retry:
 		goto evict;
 	}
 
+	/*
+	 * Since journal reclaim depends on us making progress here, and the
+	 * allocator/copygc depend on journal reclaim making progress, we need
+	 * to be using alloc reserves:
+	 * */
 	ret   = bch2_btree_iter_traverse(b_iter) ?:
 		bch2_trans_update(trans, b_iter, ck->k, BTREE_TRIGGER_NORUN) ?:
 		bch2_trans_commit(trans, NULL, NULL,
 				  BTREE_INSERT_NOUNLOCK|
 				  BTREE_INSERT_NOCHECK_RW|
 				  BTREE_INSERT_NOFAIL|
+				  BTREE_INSERT_USE_RESERVE|
 				  (ck->journal.seq == journal_last_seq(j)
 				   ? BTREE_INSERT_JOURNAL_RESERVED
 				   : 0)|
