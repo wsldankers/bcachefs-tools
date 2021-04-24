@@ -1154,6 +1154,27 @@ static void bch2_insert_fixup_btree_ptr(struct btree_update *as, struct btree *b
 	set_btree_node_need_write(b);
 }
 
+static void
+__bch2_btree_insert_keys_interior(struct btree_update *as, struct btree *b,
+				  struct btree_iter *iter, struct keylist *keys,
+				  struct btree_node_iter node_iter)
+{
+	struct bkey_i *insert = bch2_keylist_front(keys);
+	struct bkey_packed *k;
+
+	BUG_ON(btree_node_type(b) != BKEY_TYPE_btree);
+
+	while ((k = bch2_btree_node_iter_prev_all(&node_iter, b)) &&
+	       (bkey_cmp_left_packed(b, k, &insert->k.p) >= 0))
+		;
+
+	while (!bch2_keylist_empty(keys)) {
+		bch2_insert_fixup_btree_ptr(as, b, iter,
+				bch2_keylist_front(keys), &node_iter);
+		bch2_keylist_pop_front(keys);
+	}
+}
+
 /*
  * Move keys from n1 (original replacement node, now lower node) to n2 (higher
  * node)
@@ -1284,16 +1305,9 @@ static void btree_split_insert_keys(struct btree_update *as, struct btree *b,
 	struct bkey_packed *src, *dst, *n;
 	struct bset *i;
 
-	BUG_ON(btree_node_type(b) != BKEY_TYPE_btree);
-
 	bch2_btree_node_iter_init(&node_iter, b, &k->k.p);
 
-	while (!bch2_keylist_empty(keys)) {
-		k = bch2_keylist_front(keys);
-
-		bch2_insert_fixup_btree_ptr(as, b, iter, k, &node_iter);
-		bch2_keylist_pop_front(keys);
-	}
+	__bch2_btree_insert_keys_interior(as, b, iter, keys, node_iter);
 
 	/*
 	 * We can't tolerate whiteouts here - with whiteouts there can be
@@ -1439,24 +1453,8 @@ bch2_btree_insert_keys_interior(struct btree_update *as, struct btree *b,
 				struct btree_iter *iter, struct keylist *keys)
 {
 	struct btree_iter *linked;
-	struct btree_node_iter node_iter;
-	struct bkey_i *insert = bch2_keylist_front(keys);
-	struct bkey_packed *k;
 
-	/* Don't screw up @iter's position: */
-	node_iter = iter->l[b->c.level].iter;
-
-	/*
-	 * btree_split(), btree_gc_coalesce() will insert keys before
-	 * the iterator's current position - they know the keys go in
-	 * the node the iterator points to:
-	 */
-	while ((k = bch2_btree_node_iter_prev_all(&node_iter, b)) &&
-	       (bkey_cmp_left_packed(b, k, &insert->k.p) >= 0))
-		;
-
-	for_each_keylist_key(keys, insert)
-		bch2_insert_fixup_btree_ptr(as, b, iter, insert, &node_iter);
+	__bch2_btree_insert_keys_interior(as, b, iter, keys, iter->l[b->c.level].iter);
 
 	btree_update_updated_node(as, b);
 
@@ -1611,11 +1609,12 @@ retry:
 
 		bch2_bpos_to_text(&PBUF(buf1), prev->data->max_key);
 		bch2_bpos_to_text(&PBUF(buf2), next->data->min_key);
-		bch2_fs_inconsistent(c,
-				     "btree topology error in btree merge:\n"
-				     "prev ends at   %s\n"
-				     "next starts at %s\n",
-				     buf1, buf2);
+		bch_err(c,
+			"btree topology error in btree merge:\n"
+			"  prev ends at   %s\n"
+			"  next starts at %s",
+			buf1, buf2);
+		bch2_topology_error(c);
 		ret = -EIO;
 		goto err;
 	}
@@ -1795,6 +1794,56 @@ retry:
 out:
 	bch2_btree_iter_downgrade(iter);
 	return ret;
+}
+
+struct async_btree_rewrite {
+	struct bch_fs		*c;
+	struct work_struct	work;
+	enum btree_id		btree_id;
+	unsigned		level;
+	struct bpos		pos;
+	__le64			seq;
+};
+
+void async_btree_node_rewrite_work(struct work_struct *work)
+{
+	struct async_btree_rewrite *a =
+		container_of(work, struct async_btree_rewrite, work);
+	struct bch_fs *c = a->c;
+	struct btree_trans trans;
+	struct btree_iter *iter;
+
+	bch2_trans_init(&trans, c, 0, 0);
+	iter = bch2_trans_get_node_iter(&trans, a->btree_id, a->pos,
+					BTREE_MAX_DEPTH, a->level, 0);
+	bch2_btree_node_rewrite(c, iter, a->seq, 0);
+	bch2_trans_iter_put(&trans, iter);
+	bch2_trans_exit(&trans);
+	percpu_ref_put(&c->writes);
+	kfree(a);
+}
+
+void bch2_btree_node_rewrite_async(struct bch_fs *c, struct btree *b)
+{
+	struct async_btree_rewrite *a = kmalloc(sizeof(*a), GFP_NOFS);
+
+	if (!percpu_ref_tryget(&c->writes))
+		return;
+
+	a = kmalloc(sizeof(*a), GFP_NOFS);
+	if (!a) {
+		percpu_ref_put(&c->writes);
+		return;
+	}
+
+	a->c		= c;
+	a->btree_id	= b->c.btree_id;
+	a->level	= b->c.level;
+	a->pos		= b->key.k.p;
+	a->seq		= b->data->keys.seq;
+
+	INIT_WORK(&a->work, async_btree_node_rewrite_work);
+	queue_work(system_long_wq, &a->work);
 }
 
 static void __bch2_btree_node_update_key(struct bch_fs *c,

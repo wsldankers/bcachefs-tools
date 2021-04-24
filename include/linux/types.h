@@ -76,4 +76,6 @@ typedef __u64 __bitwise __be64;
 
 typedef u64 sector_t;
 
+typedef int (*cmp_func_t)(const void *a, const void *b);
+
 #endif /* _TOOLS_LINUX_TYPES_H_ */
