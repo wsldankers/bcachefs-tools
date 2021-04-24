@@ -1154,24 +1154,6 @@ static void bch2_insert_fixup_btree_ptr(struct btree_update *as, struct btree *b
 	set_btree_node_need_write(b);
 }
 
-static void
-__bch2_btree_insert_keys_interior(struct btree_update *as, struct btree *b,
-				  struct btree_iter *iter, struct keylist *keys,
-				  struct btree_node_iter node_iter)
-{
-	struct bkey_i *insert = bch2_keylist_front(keys);
-	struct bkey_packed *k;
-
-	BUG_ON(btree_node_type(b) != BKEY_TYPE_btree);
-
-	while ((k = bch2_btree_node_iter_prev_all(&node_iter, b)) &&
-	       (bkey_cmp_left_packed(b, k, &insert->k.p) >= 0))
-		;
-
-	for_each_keylist_key(keys, insert)
-		bch2_insert_fixup_btree_ptr(as, b, iter, insert, &node_iter);
-}
-
 /*
  * Move keys from n1 (original replacement node, now lower node) to n2 (higher
  * node)
@@ -1302,9 +1284,16 @@ static void btree_split_insert_keys(struct btree_update *as, struct btree *b,
 	struct bkey_packed *src, *dst, *n;
 	struct bset *i;
 
+	BUG_ON(btree_node_type(b) != BKEY_TYPE_btree);
+
 	bch2_btree_node_iter_init(&node_iter, b, &k->k.p);
 
-	__bch2_btree_insert_keys_interior(as, b, iter, keys, node_iter);
+	while (!bch2_keylist_empty(keys)) {
+		k = bch2_keylist_front(keys);
+
+		bch2_insert_fixup_btree_ptr(as, b, iter, k, &node_iter);
+		bch2_keylist_pop_front(keys);
+	}
 
 	/*
 	 * We can't tolerate whiteouts here - with whiteouts there can be
@@ -1450,8 +1439,24 @@ bch2_btree_insert_keys_interior(struct btree_update *as, struct btree *b,
 				struct btree_iter *iter, struct keylist *keys)
 {
 	struct btree_iter *linked;
+	struct btree_node_iter node_iter;
+	struct bkey_i *insert = bch2_keylist_front(keys);
+	struct bkey_packed *k;
 
-	__bch2_btree_insert_keys_interior(as, b, iter, keys, iter->l[b->c.level].iter);
+	/* Don't screw up @iter's position: */
+	node_iter = iter->l[b->c.level].iter;
+
+	/*
+	 * btree_split(), btree_gc_coalesce() will insert keys before
+	 * the iterator's current position - they know the keys go in
+	 * the node the iterator points to:
+	 */
+	while ((k = bch2_btree_node_iter_prev_all(&node_iter, b)) &&
+	       (bkey_cmp_left_packed(b, k, &insert->k.p) >= 0))
+		;
+
+	for_each_keylist_key(keys, insert)
+		bch2_insert_fixup_btree_ptr(as, b, iter, insert, &node_iter);
 
 	btree_update_updated_node(as, b);
 
