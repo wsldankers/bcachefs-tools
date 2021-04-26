@@ -395,6 +395,7 @@ static inline void rht_assign_unlock(struct bucket_table *tbl,
 	rcu_assign_pointer(*bkt, (void *)obj);
 	preempt_enable();
 	__release(bitlock);
+	bit_spin_wake(0, (unsigned long *) bkt);
 }
 
 /**
