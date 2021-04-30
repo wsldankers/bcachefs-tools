@@ -197,7 +197,7 @@ static inline struct bch_devs_mask bch2_online_devs(struct bch_fs *c)
 	return devs;
 }
 
-struct bch_fs *bch2_bdev_to_fs(struct block_device *);
+struct bch_fs *bch2_dev_to_fs(dev_t);
 struct bch_fs *bch2_uuid_to_fs(uuid_le);
 
 bool bch2_dev_state_allowed(struct bch_fs *, struct bch_dev *,
