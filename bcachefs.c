@@ -56,6 +56,7 @@ static void usage(void)
 	     "  device evacuate          Migrate data off of a specific device\n"
 	     "  device set-state         Mark a device as failed\n"
 	     "  device resize            Resize filesystem on a device\n"
+	     "  device journal-resize    Resize journal on a device\n"
 	     "\n"
 	     "Commands for managing filesystem data:\n"
 	     "  data rereplicate         Rereplicate degraded data\n"
