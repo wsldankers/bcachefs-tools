@@ -472,23 +472,28 @@ static inline u32 bkey_generation(struct bkey_s_c k)
 
 struct btree_iter *bch2_inode_create(struct btree_trans *trans,
 				     struct bch_inode_unpacked *inode_u,
-				     u32 snapshot)
+				     u32 snapshot, u64 cpu)
 {
 	struct bch_fs *c = trans->c;
 	struct btree_iter *iter = NULL;
 	struct bkey_s_c k;
 	u64 min, max, start, pos, *hint;
 	int ret = 0;
+	unsigned bits = (c->opts.inodes_32bit ? 31 : 63);
 
-	u64 cpu = raw_smp_processor_id();
-	unsigned bits = (c->opts.inodes_32bit
-		? 31 : 63) - c->inode_shard_bits;
+	if (c->opts.shard_inode_numbers) {
+		bits -= c->inode_shard_bits;
 
-	min = (cpu << bits);
-	max = (cpu << bits) | ~(ULLONG_MAX << bits);
+		min = (cpu << bits);
+		max = (cpu << bits) | ~(ULLONG_MAX << bits);
 
-	min = max_t(u64, min, BLOCKDEV_INODE_MAX);
-	hint = c->unused_inode_hints + cpu;
+		min = max_t(u64, min, BLOCKDEV_INODE_MAX);
+		hint = c->unused_inode_hints + cpu;
+	} else {
+		min = BLOCKDEV_INODE_MAX;
+		max = ~(ULLONG_MAX << bits);
+		hint = c->unused_inode_hints;
+	}
 
 	start = READ_ONCE(*hint);
 
