@@ -20,7 +20,7 @@
 
 set -e
 
-PYTEST=pytest-3
+PYTEST="${PYTEST:-pytest-3}"
 spam=$(tempfile)
 unset BCACHEFS_FUSE BCACHEFS_TEST_USE_VALGRIND D
 

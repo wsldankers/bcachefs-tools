@@ -49,6 +49,8 @@ def run(cmd, *args, valgrind=False, check=False):
         vout = tempfile.NamedTemporaryFile()
         vcmd = ['valgrind',
                '--leak-check=full',
+               '--gen-suppressions=all',
+               '--suppressions=valgrind-suppressions.txt',
                '--log-file={}'.format(vout.name)]
         cmds = vcmd + cmds
 
@@ -161,6 +163,8 @@ class BFuse:
             vlog = tempfile.NamedTemporaryFile()
             cmd += [ 'valgrind',
                      '--leak-check=full',
+                     '--gen-suppressions=all',
+                     '--suppressions=valgrind-suppressions.txt',
                      '--log-file={}'.format(vlog.name) ]
 
         cmd += [ BCH_PATH,
