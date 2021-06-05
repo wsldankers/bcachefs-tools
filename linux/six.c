@@ -139,7 +139,7 @@ static __always_inline bool do_six_trylock_type(struct six_lock *lock,
 						bool try)
 {
 	const struct six_lock_vals l[] = LOCK_VALS;
-	union six_lock_state old, new;
+	union six_lock_state old = {0}, new;
 	bool ret;
 	u64 v;
 
