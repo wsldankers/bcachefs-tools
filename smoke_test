@@ -71,14 +71,13 @@ test
 echo -- Test: debug with valgrind --
 test_vg
 
-# Fuse tests disabled, fuse is broken due to transaction put API
-#echo -- Test: fuse debug --
-#export BCACHEFS_FUSE=1
-#build
-#test
-#
-#echo -- Test: fuse debug with valgrind --
-#test_vg
+echo -- Test: fuse debug --
+export BCACHEFS_FUSE=1
+build
+test
+
+echo -- Test: fuse debug with valgrind --
+test_vg
 
 rm -f ${spam}
 trap "set +x; echo; echo SUCCESS." EXIT
