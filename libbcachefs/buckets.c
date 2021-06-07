@@ -631,6 +631,12 @@ void bch2_mark_metadata_bucket(struct bch_fs *c, struct bch_dev *ca,
 	BUG_ON(type != BCH_DATA_sb &&
 	       type != BCH_DATA_journal);
 
+	/*
+	 * Backup superblock might be past the end of our normal usable space:
+	 */
+	if (b >= ca->mi.nbuckets)
+		return;
+
 	preempt_disable();
 
 	if (likely(c)) {
@@ -1873,7 +1879,9 @@ static int __bch2_trans_mark_reflink_p(struct btree_trans *trans,
 	}
 
 	bch2_btree_iter_set_pos(iter, bkey_start_pos(k.k));
-	bch2_trans_update(trans, iter, n, 0);
+	ret = bch2_trans_update(trans, iter, n, 0);
+	if (ret)
+		goto err;
 out:
 	ret = sectors;
 err:
@@ -2081,6 +2089,12 @@ static int __bch2_trans_mark_metadata_bucket(struct btree_trans *trans,
 		.offset = bucket_to_sector(ca, b),
 	};
 	int ret = 0;
+
+	/*
+	 * Backup superblock might be past the end of our normal usable space:
+	 */
+	if (b >= ca->mi.nbuckets)
+		return 0;
 
 	a = bch2_trans_start_alloc_update(trans, &iter, &ptr, &u);
 	if (IS_ERR(a))
