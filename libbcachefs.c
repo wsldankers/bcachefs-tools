@@ -257,7 +257,7 @@ struct bch_sb *bch2_format(struct bch_opt_strs	fs_opt_strs,
 
 		idx = bch2_disk_path_find_or_create(&sb, i->group);
 		if (idx < 0)
-			die("error creating disk path: %s", idx);
+			die("error creating disk path: %s", i->group);
 
 		SET_BCH_MEMBER_GROUP(m,	idx + 1);
 	}

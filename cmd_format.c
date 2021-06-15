@@ -258,7 +258,7 @@ int cmd_format(int argc, char *argv[])
 						darray_size(device_paths),
 						bch2_opts_empty());
 		if (IS_ERR(c))
-			die("error opening %s: %s", device_paths.item,
+			die("error opening %s: %s", device_paths.item[0],
 			    strerror(-PTR_ERR(c)));
 
 		bch2_fs_stop(c);
