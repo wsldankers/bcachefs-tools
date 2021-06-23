@@ -511,7 +511,7 @@ static int btree_update_nodes_written_trans(struct btree_trans *trans,
 		ret = bch2_trans_mark_key(trans,
 					  bkey_s_c_null,
 					  bkey_i_to_s_c(k),
-					  0, 0, BTREE_TRIGGER_INSERT);
+					  BTREE_TRIGGER_INSERT);
 		if (ret)
 			return ret;
 	}
@@ -520,7 +520,7 @@ static int btree_update_nodes_written_trans(struct btree_trans *trans,
 		ret = bch2_trans_mark_key(trans,
 					  bkey_i_to_s_c(k),
 					  bkey_s_c_null,
-					  0, 0, BTREE_TRIGGER_OVERWRITE);
+					  BTREE_TRIGGER_OVERWRITE);
 		if (ret)
 			return ret;
 	}
@@ -936,6 +936,8 @@ bch2_btree_update_start(struct btree_iter *iter, unsigned level,
 		? BCH_DISK_RESERVATION_NOFAIL : 0;
 	int journal_flags = 0;
 	int ret = 0;
+
+	BUG_ON(!iter->should_be_locked);
 
 	if (flags & BTREE_INSERT_JOURNAL_RESERVED)
 		journal_flags |= JOURNAL_RES_GET_RESERVED;

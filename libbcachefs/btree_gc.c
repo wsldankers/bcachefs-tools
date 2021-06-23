@@ -86,12 +86,17 @@ static int bch2_gc_check_topology(struct bch_fs *c,
 		if (bpos_cmp(expected_start, bp->v.min_key)) {
 			bch2_topology_error(c);
 
-			if (fsck_err(c, "btree node with incorrect min_key at btree %s level %u:\n"
-				     "  prev %s\n"
-				     "  cur %s",
-				     bch2_btree_ids[b->c.btree_id], b->c.level,
-				     buf1,
-				     (bch2_bkey_val_to_text(&PBUF(buf2), c, bkey_i_to_s_c(cur.k)), buf2))) {
+			if (__fsck_err(c,
+				  FSCK_CAN_FIX|
+				  FSCK_CAN_IGNORE|
+				  FSCK_NO_RATELIMIT,
+				  "btree node with incorrect min_key at btree %s level %u:\n"
+				  "  prev %s\n"
+				  "  cur %s",
+				  bch2_btree_ids[b->c.btree_id], b->c.level,
+				  buf1,
+				  (bch2_bkey_val_to_text(&PBUF(buf2), c, bkey_i_to_s_c(cur.k)), buf2)) &&
+			    !test_bit(BCH_FS_TOPOLOGY_REPAIR_DONE, &c->flags)) {
 				bch_info(c, "Halting mark and sweep to start topology repair pass");
 				return FSCK_ERR_START_TOPOLOGY_REPAIR;
 			} else {
@@ -103,12 +108,17 @@ static int bch2_gc_check_topology(struct bch_fs *c,
 	if (is_last && bpos_cmp(cur.k->k.p, node_end)) {
 		bch2_topology_error(c);
 
-		if (fsck_err(c, "btree node with incorrect max_key at btree %s level %u:\n"
-			     "  %s\n"
-			     "  expected %s",
-			     bch2_btree_ids[b->c.btree_id], b->c.level,
-			     (bch2_bkey_val_to_text(&PBUF(buf1), c, bkey_i_to_s_c(cur.k)), buf1),
-			     (bch2_bpos_to_text(&PBUF(buf2), node_end), buf2))) {
+		if (__fsck_err(c,
+			  FSCK_CAN_FIX|
+			  FSCK_CAN_IGNORE|
+			  FSCK_NO_RATELIMIT,
+			  "btree node with incorrect max_key at btree %s level %u:\n"
+			  "  %s\n"
+			  "  expected %s",
+			  bch2_btree_ids[b->c.btree_id], b->c.level,
+			  (bch2_bkey_val_to_text(&PBUF(buf1), c, bkey_i_to_s_c(cur.k)), buf1),
+			  (bch2_bpos_to_text(&PBUF(buf2), node_end), buf2)) &&
+		    !test_bit(BCH_FS_TOPOLOGY_REPAIR_DONE, &c->flags)) {
 			bch_info(c, "Halting mark and sweep to start topology repair pass");
 			return FSCK_ERR_START_TOPOLOGY_REPAIR;
 		} else {
@@ -286,6 +296,7 @@ static int bch2_btree_repair_topology_recurse(struct bch_fs *c, struct btree *b)
 	if (!b->c.level)
 		return 0;
 again:
+	prev = NULL;
 	have_child = dropped_children = false;
 	bch2_bkey_buf_init(&prev_k);
 	bch2_bkey_buf_init(&cur_k);
@@ -310,7 +321,7 @@ again:
 			ret = bch2_journal_key_delete(c, b->c.btree_id,
 						      b->c.level, cur_k.k->k.p);
 			if (ret)
-				goto err;
+				break;
 			continue;
 		}
 
@@ -328,19 +339,24 @@ again:
 			ret = bch2_journal_key_delete(c, b->c.btree_id,
 						      b->c.level, cur_k.k->k.p);
 			if (ret)
-				goto err;
+				break;
 			continue;
 		}
 
 		if (prev)
 			six_unlock_read(&prev->c.lock);
+		prev = NULL;
 
 		if (ret == DROP_PREV_NODE) {
 			bch2_btree_node_evict(c, prev_k.k);
 			ret = bch2_journal_key_delete(c, b->c.btree_id,
 						      b->c.level, prev_k.k->k.p);
 			if (ret)
-				goto err;
+				break;
+
+			bch2_btree_and_journal_iter_exit(&iter);
+			bch2_bkey_buf_exit(&prev_k, c);
+			bch2_bkey_buf_exit(&cur_k, c);
 			goto again;
 		} else if (ret)
 			break;
@@ -640,6 +656,7 @@ static int bch2_gc_mark_key(struct bch_fs *c, enum btree_id btree_id,
 	struct bkey_ptrs_c ptrs;
 	const struct bch_extent_ptr *ptr;
 	unsigned flags =
+		BTREE_TRIGGER_INSERT|
 		BTREE_TRIGGER_GC|
 		(initial ? BTREE_TRIGGER_NOATOMIC : 0);
 	int ret = 0;
@@ -681,7 +698,7 @@ static int bch2_gc_mark_key(struct bch_fs *c, enum btree_id btree_id,
 		*max_stale = max(*max_stale, ptr_stale(ca, ptr));
 	}
 
-	bch2_mark_key(c, *k, 0, k->k->size, NULL, 0, flags);
+	bch2_mark_key(c, *k, flags);
 fsck_err:
 err:
 	if (ret)
@@ -854,11 +871,16 @@ static int bch2_gc_btree_init_recurse(struct bch_fs *c, struct btree *b,
 			if (ret == -EIO) {
 				bch2_topology_error(c);
 
-				if (fsck_err(c, "Unreadable btree node at btree %s level %u:\n"
-					"  %s",
-					bch2_btree_ids[b->c.btree_id],
-					b->c.level - 1,
-					(bch2_bkey_val_to_text(&PBUF(buf), c, bkey_i_to_s_c(cur.k)), buf))) {
+				if (__fsck_err(c,
+					  FSCK_CAN_FIX|
+					  FSCK_CAN_IGNORE|
+					  FSCK_NO_RATELIMIT,
+					  "Unreadable btree node at btree %s level %u:\n"
+					  "  %s",
+					  bch2_btree_ids[b->c.btree_id],
+					  b->c.level - 1,
+					  (bch2_bkey_val_to_text(&PBUF(buf), c, bkey_i_to_s_c(cur.k)), buf)) &&
+				    !test_bit(BCH_FS_TOPOLOGY_REPAIR_DONE, &c->flags)) {
 					ret = FSCK_ERR_START_TOPOLOGY_REPAIR;
 					bch_info(c, "Halting mark and sweep to start topology repair pass");
 					goto fsck_err;
@@ -1052,8 +1074,7 @@ static void bch2_mark_pending_btree_node_frees(struct bch_fs *c)
 	for_each_pending_btree_node_free(c, as, d)
 		if (d->index_update_done)
 			bch2_mark_key(c, bkey_i_to_s_c(&d->key),
-				      0, 0, NULL, 0,
-				      BTREE_TRIGGER_GC);
+				      BTREE_TRIGGER_INSERT|BTREE_TRIGGER_GC);
 
 	mutex_unlock(&c->btree_interior_update_lock);
 }
@@ -1558,11 +1579,14 @@ again:
 		if (ret)
 			goto out;
 		bch_info(c, "topology repair pass done");
+
+		set_bit(BCH_FS_TOPOLOGY_REPAIR_DONE, &c->flags);
 	}
 
 	ret = bch2_gc_btrees(c, initial, metadata_only);
 
 	if (ret == FSCK_ERR_START_TOPOLOGY_REPAIR &&
+	    !test_bit(BCH_FS_TOPOLOGY_REPAIR_DONE, &c->flags) &&
 	    !test_bit(BCH_FS_INITIAL_GC_DONE, &c->flags)) {
 		set_bit(BCH_FS_NEED_ANOTHER_GC, &c->flags);
 		ret = 0;

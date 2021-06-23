@@ -863,7 +863,8 @@ static int ec_stripe_update_ptrs(struct bch_fs *c,
 		extent_stripe_ptr_add(e, s, ec_ptr, block);
 
 		bch2_btree_iter_set_pos(iter, bkey_start_pos(&sk.k->k));
-		ret   = bch2_trans_update(&trans, iter, sk.k, 0) ?:
+		ret   = bch2_btree_iter_traverse(iter) ?:
+			bch2_trans_update(&trans, iter, sk.k, 0) ?:
 			bch2_trans_commit(&trans, NULL, NULL,
 					BTREE_INSERT_NOFAIL);
 		if (ret == -EINTR)
@@ -1633,7 +1634,8 @@ static int bch2_stripes_read_fn(struct bch_fs *c, struct bkey_s_c k)
 
 	if (k.k->type == KEY_TYPE_stripe)
 		ret = __ec_stripe_mem_alloc(c, k.k->p.offset, GFP_KERNEL) ?:
-			bch2_mark_key(c, k, 0, 0, NULL, 0,
+			bch2_mark_key(c, k,
+				      BTREE_TRIGGER_INSERT|
 				      BTREE_TRIGGER_NOATOMIC);
 
 	return ret;
