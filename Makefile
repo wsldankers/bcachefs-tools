@@ -156,6 +156,10 @@ update-bcachefs-sources:
 	git add libbcachefs/*.[ch]
 	cp $(LINUX_DIR)/include/trace/events/bcachefs.h include/trace/events/
 	git add include/trace/events/bcachefs.h
+	cp $(LINUX_DIR)/include/linux/xxhash.h include/linux/
+	git add include/linux/xxhash.h
+	cp $(LINUX_DIR)/lib/xxhash.c linux/
+	git add linux/xxhash.c
 	cp $(LINUX_DIR)/kernel/locking/six.c linux/
 	git add linux/six.c
 	cp $(LINUX_DIR)/include/linux/six.h include/linux/
