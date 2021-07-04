@@ -1542,7 +1542,9 @@ struct btree *bch2_btree_iter_next_node(struct btree_iter *iter)
 
 static void btree_iter_set_search_pos(struct btree_iter *iter, struct bpos new_pos)
 {
+#ifdef CONFIG_BCACHEFS_DEBUG
 	struct bpos old_pos = iter->real_pos;
+#endif
 	int cmp = bpos_cmp(new_pos, iter->real_pos);
 	unsigned l = iter->level;
 
@@ -1761,7 +1763,7 @@ struct bkey_s_c bch2_btree_iter_peek_prev(struct btree_iter *iter)
 		if (!k.k ||
 		    ((iter->flags & BTREE_ITER_IS_EXTENTS)
 		     ? bkey_cmp(bkey_start_pos(k.k), iter->pos) >= 0
-		     : bkey_cmp(bkey_start_pos(k.k), iter->pos) > 0))
+		     : bkey_cmp(k.k->p, iter->pos) > 0))
 			k = btree_iter_level_prev(iter, l);
 
 		if (likely(k.k))

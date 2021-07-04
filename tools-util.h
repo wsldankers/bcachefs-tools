@@ -22,7 +22,7 @@
 
 #define noreturn __attribute__((noreturn))
 
-void die(const char *, ...) __attribute__((format(printf, 1, 2))) noreturn;
+void die(const char *, ...) noreturn;
 char *mprintf(const char *, ...)
 	__attribute__ ((format (printf, 1, 2)));
 void *xcalloc(size_t, size_t);

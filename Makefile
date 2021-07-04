@@ -22,15 +22,26 @@ LDFLAGS+=$(CFLAGS) $(EXTRA_LDFLAGS)
 
 VERSION?=$(shell git describe --dirty=+ 2>/dev/null || echo v0.1-nogit)
 
-include Kbuild.include
+CC_VERSION=$(shell $(CC) -v 2>&1|grep -E '(gcc|clang) version')
 
-CFLAGS+=$(call cc-disable-warning, unused-but-set-variable)
-CFLAGS+=$(call cc-disable-warning, stringop-overflow)
-CFLAGS+=$(call cc-disable-warning, zero-length-bounds)
-CFLAGS+=$(call cc-disable-warning, missing-braces)
-CFLAGS+=$(call cc-disable-warning, zero-length-array)
-CFLAGS+=$(call cc-disable-warning, shift-overflow)
-CFLAGS+=$(call cc-disable-warning, enum-conversion)
+ifneq (,$(findstring gcc,$(CC_VERSION)))
+	CFLAGS+=-Wno-unused-but-set-variable			\
+		-Wno-zero-length-bounds				\
+		-Wno-stringop-overflow
+endif
+
+ifneq (,$(findstring clang,$(CC_VERSION)))
+	CFLAGS+=-Wno-missing-braces				\
+		-Wno-zero-length-array				\
+		-Wno-shift-overflow				\
+		-Wno-enum-conversion
+endif
+
+ifdef BCACHEFS_DEBUG
+	CFLAGS+=-Werror
+	CFLAGS+=-DCONFIG_BCACHEFS_DEBUG=y
+endif
+	CFLAGS+=-DCONFIG_VALGRIND=y
 
 PKGCONFIG_LIBS="blkid uuid liburcu libsodium zlib liblz4 libzstd libudev"
 ifdef BCACHEFS_FUSE
@@ -87,10 +98,6 @@ bcachefs: $(filter-out ./tests/%.o, $(OBJS))
 
 MOUNT_SRCS=$(shell find mount/src -type f -iname '*.rs') \
     mount/Cargo.toml mount/Cargo.lock mount/build.rs
-
-debug: CFLAGS+=-Werror -DCONFIG_BCACHEFS_DEBUG=y -DCONFIG_VALGRIND=y
-debug: bcachefs
-
 libbcachefs_mount.a: $(MOUNT_SRCS)
 	LIBBCACHEFS_INCLUDE=$(CURDIR) cargo build --manifest-path mount/Cargo.toml --release
 	cp mount/target/release/libbcachefs_mount.a $@
@@ -155,8 +162,6 @@ update-bcachefs-sources:
 	git add include/linux/list_nulls.h
 	cp $(LINUX_DIR)/include/linux/poison.h include/linux/
 	git add include/linux/poison.h
-	cp $(LINUX_DIR)/scripts/Kbuild.include ./
-	git add Kbuild.include
 	$(RM) libbcachefs/*.mod.c
 	git -C $(LINUX_DIR) rev-parse HEAD | tee .bcachefs_revision
 	git add .bcachefs_revision
