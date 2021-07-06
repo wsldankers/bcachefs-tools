@@ -146,11 +146,9 @@ clean:
 
 .PHONY: deb
 deb: all
-# --unsigned-source --unsigned-changes --no-pre-clean --build=binary
-# --diff-ignore --tar-ignore
 	debuild -us -uc -nc -b -i -I
 
-.PHONE: update-bcachefs-sources
+.PHONY: update-bcachefs-sources
 update-bcachefs-sources:
 	git rm -rf --ignore-unmatch libbcachefs
 	test -d libbcachefs || mkdir libbcachefs
@@ -170,6 +168,6 @@ update-bcachefs-sources:
 	git -C $(LINUX_DIR) rev-parse HEAD | tee .bcachefs_revision
 	git add .bcachefs_revision
 
-.PHONE: update-commit-bcachefs-sources
+.PHONY: update-commit-bcachefs-sources
 update-commit-bcachefs-sources: update-bcachefs-sources
 	git commit -m "Update bcachefs sources to $(shell git -C $(LINUX_DIR) show --oneline --no-patch)"
