@@ -73,7 +73,7 @@ else
 endif
 
 .PHONY: all
-all: bcachefs
+all: bcachefs bcachefs.5
 
 .PHONY: tests
 tests: tests/test_helper
@@ -88,6 +88,13 @@ TAGS:
 
 tags:
 	ctags -R .
+
+DOCSRC := gen.h bcachefs.5.rst
+DOCGENERATED := bcachefs.5 doc/autogen/gen.csv
+DOCDEPS := $(addprefix ./doc/autogen/,$(DOCSRC))
+bcachefs.5: $(DOCDEPS)  libbcachefs/opts.h
+	CC=$(CC) doc/autogen/gen.sh
+	rst2man doc/autogen/bcachefs.5.rst bcachefs.5
 
 SRCS=$(shell find . -type f -iname '*.c')
 DEPS=$(SRCS:.c=.d)
@@ -118,9 +125,6 @@ endif
 # Rebuild the 'version' command any time the version string changes
 cmd_version.o : .version
 
-doc/bcachefs.5: doc/bcachefs.5.txt
-	a2x -f manpage doc/bcachefs.5.txt
-
 .PHONY: install
 install: INITRAMFS_HOOK=$(INITRAMFS_DIR)/hooks/bcachefs
 install: INITRAMFS_SCRIPT=$(INITRAMFS_DIR)/scripts/local-premount/bcachefs
@@ -137,7 +141,7 @@ install: bcachefs
 
 .PHONY: clean
 clean:
-	$(RM) bcachefs mount.bcachefs libbcachefs_mount.a tests/test_helper .version $(OBJS) $(DEPS)
+	$(RM) bcachefs mount.bcachefs libbcachefs_mount.a tests/test_helper .version $(OBJS) $(DEPS) $(DOCGENERATED)
 	$(RM) -rf mount/target
 
 .PHONY: deb

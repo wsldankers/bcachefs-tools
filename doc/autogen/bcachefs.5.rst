@@ -1,21 +1,23 @@
-BCACHEFS(5)
-===========
+========
+bcachefs
+========
 
-NAME
-----
-bcachefs - bcachefs overview, user's manual and configuration
+--------------------------------------------------
+bcachefs overview, user's manual and configuration
+--------------------------------------------------
+:Manual section: 5
 
 DESCRIPTION
 -----------
 Bcachefs is a multi device copy on write filesystem that supports
 
- Checksumming
- Compression
- Encryption
- Reflink
- Caching
- Replication
- Erasure coding (reed-solomon)
+- Checksumming
+- Compression
+- Encryption
+- Reflink
+- Caching
+- Replication
+- Erasure coding (reed-solomon)
 
 And more. This document is intended to be an overview of the various features
 and use cases.
@@ -31,8 +33,10 @@ set on individual files and directories, via the bcachefs setattr command (which
 internally mostly works via the extended attribute interface, but the setattr
 command takes care to propagate options to children correctly).
 
- * TODO: include master list of options from opts.h
-#include "opts.mdwn"
+.. csv-table:: Options
+   :file: gen.csv
+   :header-rows: 1
+   :delim: ;
 
 Device management
 -----------------
@@ -58,6 +62,8 @@ group.
 
 For example, given disks formatted with these labels:
 
+.. code-block:: bash
+
   bcachefs format -g controller1.hdd.hdd1 /dev/sda	\
                   -g controller1.hdd.hdd2 /dev/sdb	\
                   -g controller1.ssd.ssd1 /dev/sdc	\
@@ -73,9 +79,9 @@ Data placement, caching
 
 The following options control which disks data is written to:
 
- * foreground_target
- * background_target
- * promote_target
+- foreground_target
+- background_target
+- promote_target
 
 The foreground_target option is used to direct writes from applications. The
 background_target option, if set, will cause data to be moved to that target in
@@ -86,7 +92,9 @@ a cached copy of the data being read to that target, if it doesn't exist.
 
 Together, these options can be used for writeback caching, like so:
 
-  foregroud_target=ssd
+.. code-block:: bash
+
+  foreground_target=ssd
   background_target=hdd
   promote_target=ssd
 
@@ -96,6 +104,8 @@ per-file options. This is done by setting the device's durability to 0.
 
 These options can all be set on individual files or directories. They can also
 be used to pin a specific file or directory to a specific device or target:
+
+.. code-block:: bash
 
   foreground_target=ssd
   background_target=

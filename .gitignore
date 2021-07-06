@@ -17,3 +17,4 @@ tests/__pycache__/
 
 mount/target
 mount.bcachefs
+doc/autogen/gen.csv
