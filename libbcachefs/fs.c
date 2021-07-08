@@ -27,6 +27,7 @@
 #include <linux/exportfs.h>
 #include <linux/fiemap.h>
 #include <linux/module.h>
+#include <linux/pagemap.h>
 #include <linux/posix_acl.h>
 #include <linux/random.h>
 #include <linux/statfs.h>

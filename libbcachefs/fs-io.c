@@ -99,8 +99,7 @@ static int write_invalidate_inode_pages_range(struct address_space *mapping,
 	 * is continually redirtying a specific page
 	 */
 	do {
-		if (!mapping->nrpages &&
-		    !mapping->nrexceptional)
+		if (!mapping->nrpages)
 			return 0;
 
 		ret = filemap_write_and_wait_range(mapping, start, end);
