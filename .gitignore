@@ -1,5 +1,6 @@
 /result
 bcachefs
+bcachefs.5
 .*
 *.o
 *.d
