@@ -51,5 +51,10 @@ debug_check_no_locks_held(void)
 {
 }
 
+static inline int lock_class_is_held(struct lock_class_key *k)
+{
+	return 0;
+}
+
 #endif /* __TOOLS_LINUX_LOCKDEP_H */
 
