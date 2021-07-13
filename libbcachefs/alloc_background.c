@@ -130,7 +130,7 @@ static int bch2_alloc_unpack_v2(struct bkey_alloc_unpacked *out,
 
 #define x(_name, _bits)							\
 	if (fieldnr < a.v->nr_fields) {					\
-		ret = bch2_varint_decode(in, end, &v);			\
+		ret = bch2_varint_decode_fast(in, end, &v);		\
 		if (ret < 0)						\
 			return ret;					\
 		in += ret;						\
@@ -166,7 +166,7 @@ static void bch2_alloc_pack_v2(struct bkey_alloc_buf *dst,
 	nr_fields++;							\
 									\
 	if (src._name) {						\
-		out += bch2_varint_encode(out, src._name);		\
+		out += bch2_varint_encode_fast(out, src._name);		\
 									\
 		last_nonzero_field = out;				\
 		last_nonzero_fieldnr = nr_fields;			\
@@ -1231,4 +1231,23 @@ int bch2_dev_allocator_start(struct bch_dev *ca)
 void bch2_fs_allocator_background_init(struct bch_fs *c)
 {
 	spin_lock_init(&c->freelist_lock);
+}
+
+void bch2_open_buckets_to_text(struct printbuf *out, struct bch_fs *c)
+{
+	struct open_bucket *ob;
+
+	for (ob = c->open_buckets;
+	     ob < c->open_buckets + ARRAY_SIZE(c->open_buckets);
+	     ob++) {
+		spin_lock(&ob->lock);
+		if (ob->valid && !ob->on_partial_list) {
+			pr_buf(out, "%zu ref %u type %s\n",
+			       ob - c->open_buckets,
+			       atomic_read(&ob->pin),
+			       bch2_data_types[ob->type]);
+		}
+		spin_unlock(&ob->lock);
+	}
+
 }

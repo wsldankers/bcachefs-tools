@@ -105,6 +105,7 @@ struct super_block {
 #define DT_LNK		10
 #define DT_SOCK		12
 #define DT_WHT		14
+#define DT_MAX		16
 #endif
 
 /*

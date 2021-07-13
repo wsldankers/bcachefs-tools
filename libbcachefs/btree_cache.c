@@ -233,7 +233,7 @@ wait_on_io:
 		if (bch2_verify_btree_ondisk)
 			bch2_btree_node_write(c, b, SIX_LOCK_intent);
 		else
-			__bch2_btree_node_write(c, b);
+			__bch2_btree_node_write(c, b, false);
 
 		six_unlock_write(&b->c.lock);
 		six_unlock_intent(&b->c.lock);
@@ -691,7 +691,9 @@ static noinline struct btree *bch2_btree_node_fill(struct bch_fs *c,
 	 * currently fails for iterators that aren't pointed at a valid btree
 	 * node
 	 */
-	if (iter && !bch2_trans_relock(iter->trans))
+	if (iter &&
+	    (!bch2_trans_relock(iter->trans) ||
+	     !bch2_btree_iter_relock(iter, _THIS_IP_)))
 		return ERR_PTR(-EINTR);
 
 	if (!six_relock_type(&b->c.lock, lock_type, seq))
@@ -851,7 +853,9 @@ lock_node:
 		 * currently fails for iterators that aren't pointed at a valid
 		 * btree node
 		 */
-		if (iter && !bch2_trans_relock(iter->trans))
+		if (iter &&
+		    (!bch2_trans_relock(iter->trans) ||
+		     !bch2_btree_iter_relock(iter, _THIS_IP_)))
 			return ERR_PTR(-EINTR);
 
 		if (!six_relock_type(&b->c.lock, lock_type, seq))
@@ -1002,7 +1006,7 @@ wait_on_io:
 	six_lock_write(&b->c.lock, NULL, NULL);
 
 	if (btree_node_dirty(b)) {
-		__bch2_btree_node_write(c, b);
+		__bch2_btree_node_write(c, b, false);
 		six_unlock_write(&b->c.lock);
 		six_unlock_intent(&b->c.lock);
 		goto wait_on_io;
