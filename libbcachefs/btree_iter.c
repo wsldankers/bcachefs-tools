@@ -347,7 +347,6 @@ bool __bch2_btree_node_lock(struct btree *b, struct bpos pos,
 #ifdef CONFIG_BCACHEFS_DEBUG
 static void bch2_btree_iter_verify_locks(struct btree_iter *iter)
 {
-	struct bch_fs *c = iter->trans->c;
 	unsigned l;
 
 	if (!(iter->trans->iters_linked & (1ULL << iter->idx))) {
@@ -623,7 +622,7 @@ static void bch2_btree_iter_verify(struct btree_iter *iter)
 	       (iter->flags & BTREE_ITER_ALL_SNAPSHOTS) &&
 	       !btree_type_has_snapshots(iter->btree_id));
 
-	for (i = 0; i < BTREE_MAX_DEPTH; i++) {
+	for (i = 0; i < (type != BTREE_ITER_CACHED ? BTREE_MAX_DEPTH : 1); i++) {
 		if (!iter->l[i].b) {
 			BUG_ON(c->btree_roots[iter->btree_id].b->c.level > i);
 			break;
@@ -1618,7 +1617,9 @@ inline bool bch2_btree_iter_advance(struct btree_iter *iter)
 inline bool bch2_btree_iter_rewind(struct btree_iter *iter)
 {
 	struct bpos pos = bkey_start_pos(&iter->k);
-	bool ret = bpos_cmp(pos, POS_MIN) != 0;
+	bool ret = (iter->flags & BTREE_ITER_ALL_SNAPSHOTS
+		    ? bpos_cmp(pos, POS_MIN)
+		    : bkey_cmp(pos, POS_MIN)) != 0;
 
 	if (ret && !(iter->flags & BTREE_ITER_IS_EXTENTS))
 		pos = bkey_predecessor(iter, pos);
