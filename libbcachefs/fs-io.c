@@ -801,6 +801,8 @@ static void bchfs_read(struct btree_trans *trans, struct btree_iter *iter,
 
 	bch2_bkey_buf_init(&sk);
 retry:
+	bch2_trans_begin(trans);
+
 	while (1) {
 		struct bkey_s_c k;
 		unsigned bytes, sectors, offset_into_extent;
@@ -2301,8 +2303,6 @@ int bch2_truncate(struct user_namespace *mnt_userns,
 	struct bch_fs *c = inode->v.i_sb->s_fs_info;
 	struct address_space *mapping = inode->v.i_mapping;
 	struct bch_inode_unpacked inode_u;
-	struct btree_trans trans;
-	struct btree_iter *iter;
 	u64 new_i_size = iattr->ia_size;
 	s64 i_sectors_delta = 0;
 	int ret = 0;
@@ -2323,16 +2323,7 @@ int bch2_truncate(struct user_namespace *mnt_userns,
 	inode_dio_wait(&inode->v);
 	bch2_pagecache_block_get(&inode->ei_pagecache_lock);
 
-	/*
-	 * fetch current on disk i_size: inode is locked, i_size can only
-	 * increase underneath us:
-	 */
-	bch2_trans_init(&trans, c, 0, 0);
-	iter = bch2_inode_peek(&trans, &inode_u, inode->v.i_ino, 0);
-	ret = PTR_ERR_OR_ZERO(iter);
-	bch2_trans_iter_put(&trans, iter);
-	bch2_trans_exit(&trans);
-
+	ret = bch2_inode_find_by_inum(c, inode->v.i_ino, &inode_u);
 	if (ret)
 		goto err;
 
@@ -2557,6 +2548,8 @@ static long bchfs_fcollapse_finsert(struct bch_inode_info *inode,
 		struct bpos atomic_end;
 		unsigned trigger_flags = 0;
 
+		bch2_trans_begin(&trans);
+
 		k = insert
 			? bch2_btree_iter_peek_prev(src)
 			: bch2_btree_iter_peek(src);
@@ -2684,13 +2677,13 @@ static int __bchfs_fallocate(struct bch_inode_info *inode, int mode,
 		/* already reserved */
 		if (k.k->type == KEY_TYPE_reservation &&
 		    bkey_s_c_to_reservation(k).v->nr_replicas >= replicas) {
-			bch2_btree_iter_next_slot(iter);
+			bch2_btree_iter_advance(iter);
 			continue;
 		}
 
 		if (bkey_extent_is_data(k.k) &&
 		    !(mode & FALLOC_FL_ZERO_RANGE)) {
-			bch2_btree_iter_next_slot(iter);
+			bch2_btree_iter_advance(iter);
 			continue;
 		}
 

@@ -118,18 +118,16 @@ void bch2_xattr_to_text(struct printbuf *out, struct bch_fs *c,
 		      le16_to_cpu(xattr.v->x_val_len));
 }
 
-int bch2_xattr_get(struct bch_fs *c, struct bch_inode_info *inode,
-		   const char *name, void *buffer, size_t size, int type)
+static int bch2_xattr_get_trans(struct btree_trans *trans, struct bch_inode_info *inode,
+				const char *name, void *buffer, size_t size, int type)
 {
-	struct bch_hash_info hash = bch2_hash_info_init(c, &inode->ei_inode);
-	struct btree_trans trans;
+	struct bch_hash_info hash = bch2_hash_info_init(trans->c, &inode->ei_inode);
 	struct btree_iter *iter;
 	struct bkey_s_c_xattr xattr;
+	struct bkey_s_c k;
 	int ret;
 
-	bch2_trans_init(&trans, c, 0, 0);
-
-	iter = bch2_hash_lookup(&trans, bch2_xattr_hash_desc, &hash,
+	iter = bch2_hash_lookup(trans, bch2_xattr_hash_desc, &hash,
 				inode->v.i_ino,
 				&X_SEARCH(type, name, strlen(name)),
 				0);
@@ -137,7 +135,12 @@ int bch2_xattr_get(struct bch_fs *c, struct bch_inode_info *inode,
 	if (ret)
 		goto err;
 
-	xattr = bkey_s_c_to_xattr(bch2_btree_iter_peek_slot(iter));
+	k = bch2_btree_iter_peek_slot(iter);
+	ret = bkey_err(k);
+	if (ret)
+		goto err;
+
+	xattr = bkey_s_c_to_xattr(k);
 	ret = le16_to_cpu(xattr.v->x_val_len);
 	if (buffer) {
 		if (ret > size)
@@ -145,12 +148,16 @@ int bch2_xattr_get(struct bch_fs *c, struct bch_inode_info *inode,
 		else
 			memcpy(buffer, xattr_val(xattr.v), ret);
 	}
-	bch2_trans_iter_put(&trans, iter);
+	bch2_trans_iter_put(trans, iter);
 err:
-	bch2_trans_exit(&trans);
-
-	BUG_ON(ret == -EINTR);
 	return ret == -ENOENT ? -ENODATA : ret;
+}
+
+int bch2_xattr_get(struct bch_fs *c, struct bch_inode_info *inode,
+		   const char *name, void *buffer, size_t size, int type)
+{
+	return bch2_trans_do(c, NULL, NULL, 0,
+		bch2_xattr_get_trans(&trans, inode, name, buffer, size, type));
 }
 
 int bch2_xattr_set(struct btree_trans *trans, u64 inum,

@@ -111,10 +111,19 @@ void bch2_btree_node_iter_fix(struct btree_iter *, struct btree *,
 			      struct btree_node_iter *, struct bkey_packed *,
 			      unsigned, unsigned);
 
+bool bch2_btree_iter_relock_intent(struct btree_iter *);
 bool bch2_btree_iter_relock(struct btree_iter *, unsigned long);
 
 bool bch2_trans_relock(struct btree_trans *);
 void bch2_trans_unlock(struct btree_trans *);
+
+__always_inline
+static inline int btree_trans_restart(struct btree_trans *trans)
+{
+	trans->restarted = true;
+	bch2_trans_unlock(trans);
+	return -EINTR;
+}
 
 bool __bch2_btree_iter_upgrade(struct btree_iter *, unsigned);
 
@@ -146,8 +155,6 @@ void bch2_btree_iter_node_drop(struct btree_iter *, struct btree *);
 void bch2_btree_iter_reinit_node(struct btree_iter *, struct btree *);
 
 int __must_check bch2_btree_iter_traverse(struct btree_iter *);
-
-int bch2_btree_iter_traverse_all(struct btree_trans *);
 
 struct btree *bch2_btree_iter_peek_node(struct btree_iter *);
 struct btree *bch2_btree_iter_next_node(struct btree_iter *);
@@ -316,22 +323,7 @@ static inline void set_btree_iter_dontneed(struct btree_trans *trans, struct btr
 	trans->iters_touched &= ~(1ULL << iter->idx);
 }
 
-#define TRANS_RESET_NOTRAVERSE		(1 << 0)
-#define TRANS_RESET_NOUNLOCK		(1 << 1)
-
-void bch2_trans_reset(struct btree_trans *, unsigned);
-
-/**
- * bch2_trans_begin() - ensure lock consistency of transaction on retry
- * @trans: transaction to prepare
- *
- * Ensure lock ordering is correct before potentially retrying a transaction
- * after a failed trylock.
- */
-static inline void bch2_trans_begin(struct btree_trans *trans)
-{
-	return bch2_trans_reset(trans, 0);
-}
+void bch2_trans_begin(struct btree_trans *);
 
 void *bch2_trans_kmalloc(struct btree_trans *, size_t);
 void bch2_trans_init(struct btree_trans *, struct bch_fs *, unsigned, size_t);

@@ -22,7 +22,7 @@ LDFLAGS+=$(CFLAGS) $(EXTRA_LDFLAGS)
 
 VERSION?=$(shell git describe --dirty=+ 2>/dev/null || echo v0.1-nogit)
 
-include Kbuild.include
+include Makefile.compiler
 
 CFLAGS+=$(call cc-disable-warning, unused-but-set-variable)
 CFLAGS+=$(call cc-disable-warning, stringop-overflow)
@@ -178,8 +178,8 @@ update-bcachefs-sources:
 	git add include/linux/list_nulls.h
 	cp $(LINUX_DIR)/include/linux/poison.h include/linux/
 	git add include/linux/poison.h
-	cp $(LINUX_DIR)/scripts/Kbuild.include ./
-	git add Kbuild.include
+	cp $(LINUX_DIR)/scripts/Makefile.compiler ./
+	git add Makefile.compiler
 	$(RM) libbcachefs/*.mod.c
 	git -C $(LINUX_DIR) rev-parse HEAD | tee .bcachefs_revision
 	git add .bcachefs_revision

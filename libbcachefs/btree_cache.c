@@ -648,8 +648,10 @@ static noinline struct btree *bch2_btree_node_fill(struct bch_fs *c,
 	 * Parent node must be locked, else we could read in a btree node that's
 	 * been freed:
 	 */
-	if (iter && !bch2_btree_node_relock(iter, level + 1))
+	if (iter && !bch2_btree_node_relock(iter, level + 1)) {
+		btree_trans_restart(iter->trans);
 		return ERR_PTR(-EINTR);
+	}
 
 	b = bch2_btree_node_mem_alloc(c);
 	if (IS_ERR(b))
@@ -686,18 +688,17 @@ static noinline struct btree *bch2_btree_node_fill(struct bch_fs *c,
 	if (!sync)
 		return NULL;
 
-	/*
-	 * XXX: this will probably always fail because btree_iter_relock()
-	 * currently fails for iterators that aren't pointed at a valid btree
-	 * node
-	 */
 	if (iter &&
 	    (!bch2_trans_relock(iter->trans) ||
-	     !bch2_btree_iter_relock(iter, _THIS_IP_)))
+	     !bch2_btree_iter_relock_intent(iter))) {
+		BUG_ON(!iter->trans->restarted);
 		return ERR_PTR(-EINTR);
+	}
 
-	if (!six_relock_type(&b->c.lock, lock_type, seq))
+	if (!six_relock_type(&b->c.lock, lock_type, seq)) {
+		btree_trans_restart(iter->trans);
 		return ERR_PTR(-EINTR);
+	}
 
 	return b;
 }
@@ -718,6 +719,7 @@ static noinline void btree_bad_header(struct bch_fs *c, struct btree *b)
 		return;
 
 	bch2_bkey_val_to_text(&PBUF(buf1), c, bkey_i_to_s_c(&b->key));
+	bch2_bpos_to_text(&PBUF(buf2), b->data->min_key);
 	bch2_bpos_to_text(&PBUF(buf3), b->data->max_key);
 
 	bch2_fs_inconsistent(c, "btree node header doesn't match ptr\n"
@@ -752,20 +754,23 @@ static inline void btree_check_header(struct bch_fs *c, struct btree *b)
  * The btree node will have either a read or a write lock held, depending on
  * the @write parameter.
  */
-struct btree *bch2_btree_node_get(struct bch_fs *c, struct btree_iter *iter,
+struct btree *bch2_btree_node_get(struct btree_trans *trans, struct btree_iter *iter,
 				  const struct bkey_i *k, unsigned level,
 				  enum six_lock_type lock_type,
 				  unsigned long trace_ip)
 {
+	struct bch_fs *c = trans->c;
 	struct btree_cache *bc = &c->btree_cache;
 	struct btree *b;
 	struct bset_tree *t;
 
 	EBUG_ON(level >= BTREE_MAX_DEPTH);
 
-	b = btree_node_mem_ptr(k);
-	if (b)
-		goto lock_node;
+	if (c->opts.btree_node_mem_ptr_optimization) {
+		b = btree_node_mem_ptr(k);
+		if (b)
+			goto lock_node;
+	}
 retry:
 	b = btree_cache_find(bc, k);
 	if (unlikely(!b)) {
@@ -818,7 +823,7 @@ lock_node:
 
 		if (!btree_node_lock(b, k->k.p, level, iter, lock_type,
 				     lock_node_check_fn, (void *) k, trace_ip)) {
-			if (b->hash_val != btree_ptr_hash_val(k))
+			if (!trans->restarted)
 				goto retry;
 			return ERR_PTR(-EINTR);
 		}
@@ -830,10 +835,11 @@ lock_node:
 			if (bch2_btree_node_relock(iter, level + 1))
 				goto retry;
 
-			trace_trans_restart_btree_node_reused(iter->trans->ip,
+			trace_trans_restart_btree_node_reused(trans->ip,
 							      trace_ip,
 							      iter->btree_id,
 							      &iter->real_pos);
+			btree_trans_restart(trans);
 			return ERR_PTR(-EINTR);
 		}
 	}
@@ -842,19 +848,20 @@ lock_node:
 		u32 seq = b->c.lock.state.seq;
 
 		six_unlock_type(&b->c.lock, lock_type);
-		bch2_trans_unlock(iter->trans);
+		bch2_trans_unlock(trans);
 
 		bch2_btree_node_wait_on_read(b);
 
 		/*
-		 * XXX: check if this always fails - btree_iter_relock()
-		 * currently fails for iterators that aren't pointed at a valid
-		 * btree node
+		 * should_be_locked is not set on this iterator yet, so we need
+		 * to relock it specifically:
 		 */
 		if (iter &&
-		    (!bch2_trans_relock(iter->trans) ||
-		     !bch2_btree_iter_relock(iter, _THIS_IP_)))
+		    (!bch2_trans_relock(trans) ||
+		     !bch2_btree_iter_relock_intent(iter))) {
+			BUG_ON(!trans->restarted);
 			return ERR_PTR(-EINTR);
+		}
 
 		if (!six_relock_type(&b->c.lock, lock_type, seq))
 			goto retry;
@@ -899,9 +906,11 @@ struct btree *bch2_btree_node_get_noiter(struct bch_fs *c,
 
 	EBUG_ON(level >= BTREE_MAX_DEPTH);
 
-	b = btree_node_mem_ptr(k);
-	if (b)
-		goto lock_node;
+	if (c->opts.btree_node_mem_ptr_optimization) {
+		b = btree_node_mem_ptr(k);
+		if (b)
+			goto lock_node;
+	}
 retry:
 	b = btree_cache_find(bc, k);
 	if (unlikely(!b)) {
@@ -966,9 +975,9 @@ out:
 	return b;
 }
 
-void bch2_btree_node_prefetch(struct bch_fs *c, struct btree_iter *iter,
-			      const struct bkey_i *k,
-			      enum btree_id btree_id, unsigned level)
+int bch2_btree_node_prefetch(struct bch_fs *c, struct btree_iter *iter,
+			     const struct bkey_i *k,
+			     enum btree_id btree_id, unsigned level)
 {
 	struct btree_cache *bc = &c->btree_cache;
 	struct btree *b;
@@ -978,9 +987,10 @@ void bch2_btree_node_prefetch(struct bch_fs *c, struct btree_iter *iter,
 
 	b = btree_cache_find(bc, k);
 	if (b)
-		return;
+		return 0;
 
-	bch2_btree_node_fill(c, iter, k, btree_id, level, SIX_LOCK_read, false);
+	b = bch2_btree_node_fill(c, iter, k, btree_id, level, SIX_LOCK_read, false);
+	return PTR_ERR_OR_ZERO(b);
 }
 
 void bch2_btree_node_evict(struct bch_fs *c, const struct bkey_i *k)
