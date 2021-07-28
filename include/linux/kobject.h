@@ -98,12 +98,9 @@ static inline void kobject_put(struct kobject *kobj)
 
 static inline void kobject_del(struct kobject *kobj)
 {
-	struct kernfs_node *sd;
-
 	if (!kobj)
 		return;
 
-	sd = kobj->sd;
 	kobj->state_in_sysfs = 0;
 #if 0
 	kobj_kset_leave(kobj);
