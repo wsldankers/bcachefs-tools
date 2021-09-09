@@ -203,6 +203,8 @@ read_attribute(new_stripes);
 read_attribute(io_timers_read);
 read_attribute(io_timers_write);
 
+read_attribute(data_op_data_progress);
+
 #ifdef CONFIG_BCACHEFS_TESTS
 write_attribute(perf_test);
 #endif /* CONFIG_BCACHEFS_TESTS */
@@ -239,6 +241,37 @@ static size_t bch2_btree_avg_write_size(struct bch_fs *c)
 	return nr ? div64_u64(sectors, nr) : 0;
 }
 
+static long stats_to_text(struct printbuf *out, struct bch_fs *c,
+			  struct bch_move_stats *stats)
+{
+	pr_buf(out, "%s: data type %s btree_id %s position: ",
+		stats->name,
+		bch2_data_types[stats->data_type],
+		bch2_btree_ids[stats->btree_id]);
+	bch2_bpos_to_text(out, stats->pos);
+	pr_buf(out, "%s", "\n");
+
+	return 0;
+}
+
+static long data_progress_to_text(struct printbuf *out, struct bch_fs *c)
+{
+	long ret = 0;
+	struct bch_move_stats *iter;
+
+	mutex_lock(&c->data_progress_lock);
+
+	if (list_empty(&c->data_progress_list))
+		pr_buf(out, "%s", "no progress to report\n");
+	else
+		list_for_each_entry(iter, &c->data_progress_list, list) {
+			stats_to_text(out, c, iter);
+		}
+
+	mutex_unlock(&c->data_progress_lock);
+	return ret;
+}
+
 static int fs_alloc_debug_to_text(struct printbuf *out, struct bch_fs *c)
 {
 	struct bch_fs_usage_online *fs_usage = bch2_fs_usage_read(c);
@@ -257,7 +290,7 @@ static int fs_alloc_debug_to_text(struct printbuf *out, struct bch_fs *c)
 static int bch2_compression_stats_to_text(struct printbuf *out, struct bch_fs *c)
 {
 	struct btree_trans trans;
-	struct btree_iter *iter;
+	struct btree_iter iter;
 	struct bkey_s_c k;
 	u64 nr_uncompressed_extents = 0, uncompressed_sectors = 0,
 	    nr_compressed_extents = 0,
@@ -292,6 +325,7 @@ static int bch2_compression_stats_to_text(struct printbuf *out, struct bch_fs *c
 				break;
 			}
 		}
+	bch2_trans_iter_exit(&trans, &iter);
 
 	ret = bch2_trans_exit(&trans) ?: ret;
 	if (ret)
@@ -431,6 +465,11 @@ SHOW(bch2_fs)
 	}
 	if (attr == &sysfs_io_timers_write) {
 		bch2_io_timers_to_text(&out, &c->io_clock[WRITE]);
+		return out.pos - buf;
+	}
+
+	if (attr == &sysfs_data_op_data_progress) {
+		data_progress_to_text(&out, c);
 		return out.pos - buf;
 	}
 
@@ -595,6 +634,8 @@ struct attribute *bch2_fs_internal_files[] = {
 
 	&sysfs_io_timers_read,
 	&sysfs_io_timers_write,
+
+	&sysfs_data_op_data_progress,
 
 	&sysfs_internal_uuid,
 	NULL

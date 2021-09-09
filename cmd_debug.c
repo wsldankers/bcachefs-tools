@@ -64,7 +64,7 @@ static void dump_one_device(struct bch_fs *c, struct bch_dev *ca, int fd)
 		const struct bch_extent_ptr *ptr;
 		struct bkey_ptrs_c ptrs;
 		struct btree_trans trans;
-		struct btree_iter *iter;
+		struct btree_iter iter;
 		struct btree *b;
 
 		bch2_trans_init(&trans, c, 0, 0);
@@ -95,6 +95,8 @@ static void dump_one_device(struct bch_fs *c, struct bch_dev *ca, int fd)
 						  ptr->offset << 9,
 						  btree_bytes(c));
 		}
+
+		bch2_trans_iter_exit(&trans, &iter);
 		bch2_trans_exit(&trans);
 	}
 
@@ -181,7 +183,7 @@ static void list_keys(struct bch_fs *c, enum btree_id btree_id,
 		      struct bpos start, struct bpos end)
 {
 	struct btree_trans trans;
-	struct btree_iter *iter;
+	struct btree_iter iter;
 	struct bkey_s_c k;
 	char buf[512];
 	int ret;
@@ -196,7 +198,7 @@ static void list_keys(struct bch_fs *c, enum btree_id btree_id,
 		bch2_bkey_val_to_text(&PBUF(buf), c, k);
 		puts(buf);
 	}
-	bch2_trans_iter_put(&trans, iter);
+	bch2_trans_iter_exit(&trans, &iter);
 
 	bch2_trans_exit(&trans);
 }
@@ -205,7 +207,7 @@ static void list_btree_formats(struct bch_fs *c, enum btree_id btree_id, unsigne
 			       struct bpos start, struct bpos end)
 {
 	struct btree_trans trans;
-	struct btree_iter *iter;
+	struct btree_iter iter;
 	struct btree *b;
 	char buf[4096];
 
@@ -218,7 +220,7 @@ static void list_btree_formats(struct bch_fs *c, enum btree_id btree_id, unsigne
 		bch2_btree_node_to_text(&PBUF(buf), c, b);
 		puts(buf);
 	}
-	bch2_trans_iter_put(&trans, iter);
+	bch2_trans_iter_exit(&trans, &iter);
 
 	bch2_trans_exit(&trans);
 }
@@ -227,7 +229,7 @@ static void list_nodes(struct bch_fs *c, enum btree_id btree_id, unsigned level,
 		       struct bpos start, struct bpos end)
 {
 	struct btree_trans trans;
-	struct btree_iter *iter;
+	struct btree_iter iter;
 	struct btree *b;
 	char buf[4096];
 
@@ -241,7 +243,7 @@ static void list_nodes(struct bch_fs *c, enum btree_id btree_id, unsigned level,
 		fputs(buf, stdout);
 		putchar('\n');
 	}
-	bch2_trans_iter_put(&trans, iter);
+	bch2_trans_iter_exit(&trans, &iter);
 
 	bch2_trans_exit(&trans);
 }
@@ -346,7 +348,7 @@ static void list_nodes_ondisk(struct bch_fs *c, enum btree_id btree_id, unsigned
 			      struct bpos start, struct bpos end)
 {
 	struct btree_trans trans;
-	struct btree_iter *iter;
+	struct btree_iter iter;
 	struct btree *b;
 	char buf[4096];
 
@@ -362,7 +364,7 @@ static void list_nodes_ondisk(struct bch_fs *c, enum btree_id btree_id, unsigned
 
 		print_node_ondisk(c, b);
 	}
-	bch2_trans_iter_put(&trans, iter);
+	bch2_trans_iter_exit(&trans, &iter);
 
 	bch2_trans_exit(&trans);
 }
@@ -371,7 +373,7 @@ static void list_nodes_keys(struct bch_fs *c, enum btree_id btree_id, unsigned l
 			    struct bpos start, struct bpos end)
 {
 	struct btree_trans trans;
-	struct btree_iter *iter;
+	struct btree_iter iter;
 	struct btree_node_iter node_iter;
 	struct bkey unpacked;
 	struct bkey_s_c k;
@@ -393,7 +395,7 @@ static void list_nodes_keys(struct bch_fs *c, enum btree_id btree_id, unsigned l
 			puts(buf);
 		}
 	}
-	bch2_trans_iter_put(&trans, iter);
+	bch2_trans_iter_exit(&trans, &iter);
 
 	bch2_trans_exit(&trans);
 }

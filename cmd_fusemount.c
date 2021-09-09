@@ -171,7 +171,7 @@ static void bcachefs_fuse_setattr(fuse_req_t req, fuse_ino_t inum,
 	struct bch_fs *c = fuse_req_userdata(req);
 	struct bch_inode_unpacked inode_u;
 	struct btree_trans trans;
-	struct btree_iter *iter;
+	struct btree_iter iter;
 	u64 now;
 	int ret;
 
@@ -185,8 +185,7 @@ retry:
 	bch2_trans_begin(&trans);
 	now = bch2_current_time(c);
 
-	iter = bch2_inode_peek(&trans, &inode_u, inum, BTREE_ITER_INTENT);
-	ret = PTR_ERR_OR_ZERO(iter);
+	ret = bch2_inode_peek(&trans, &iter, &inode_u, inum, BTREE_ITER_INTENT);
 	if (ret)
 		goto err;
 
@@ -208,11 +207,11 @@ retry:
 		inode_u.bi_mtime = now;
 	/* TODO: CTIME? */
 
-	ret   = bch2_inode_write(&trans, iter, &inode_u) ?:
+	ret   = bch2_inode_write(&trans, &iter, &inode_u) ?:
 		bch2_trans_commit(&trans, NULL, NULL,
 				  BTREE_INSERT_NOFAIL);
 err:
-        bch2_trans_iter_put(&trans, iter);
+        bch2_trans_iter_exit(&trans, &iter);
 	if (ret == -EINTR)
 		goto retry;
 
@@ -523,7 +522,7 @@ static void bcachefs_fuse_read(fuse_req_t req, fuse_ino_t inum,
 static int inode_update_times(struct bch_fs *c, fuse_ino_t inum)
 {
 	struct btree_trans trans;
-	struct btree_iter *iter;
+	struct btree_iter iter;
 	struct bch_inode_unpacked inode_u;
 	int ret = 0;
 	u64 now;
@@ -533,15 +532,14 @@ retry:
 	bch2_trans_begin(&trans);
 	now = bch2_current_time(c);
 
-	iter = bch2_inode_peek(&trans, &inode_u, inum, BTREE_ITER_INTENT);
-	ret = PTR_ERR_OR_ZERO(iter);
+	ret = bch2_inode_peek(&trans, &iter, &inode_u, inum, BTREE_ITER_INTENT);
 	if (ret)
 		goto err;
 
 	inode_u.bi_mtime = now;
 	inode_u.bi_ctime = now;
 
-	ret = bch2_inode_write(&trans, iter, &inode_u);
+	ret = bch2_inode_write(&trans, &iter, &inode_u);
 	if (ret)
 		goto err;
 
@@ -549,7 +547,7 @@ retry:
 				BTREE_INSERT_NOFAIL);
 
 err:
-        bch2_trans_iter_put(&trans, iter);
+        bch2_trans_iter_exit(&trans, &iter);
 	if (ret == -EINTR)
 		goto retry;
 
