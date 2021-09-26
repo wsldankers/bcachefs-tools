@@ -138,8 +138,9 @@ static void create_link(struct bch_fs *c,
 	struct bch_inode_unpacked inode;
 
 	int ret = bch2_trans_do(c, NULL, NULL, 0,
-		bch2_link_trans(&trans, parent->bi_inum, inum,
-				&parent_u, &inode, &qstr));
+		bch2_link_trans(&trans,
+				(subvol_inum) { 1, parent->bi_inum }, &parent_u,
+				(subvol_inum) { 1, inum }, &inode, &qstr));
 	if (ret)
 		die("error creating hardlink: %s", strerror(-ret));
 }
@@ -155,9 +156,10 @@ static struct bch_inode_unpacked create_file(struct bch_fs *c,
 
 	int ret = bch2_trans_do(c, NULL, NULL, 0,
 		bch2_create_trans(&trans,
-				  parent->bi_inum, parent,
+				  (subvol_inum) { 1, parent->bi_inum }, parent,
 				  &new_inode, &qstr,
-				  uid, gid, mode, rdev, NULL, NULL));
+				  uid, gid, mode, rdev, NULL, NULL,
+				  (subvol_inum) {}, 0));
 	if (ret)
 		die("error creating file: %s", strerror(-ret));
 
@@ -225,7 +227,9 @@ static void copy_xattrs(struct bch_fs *c, struct bch_inode_unpacked *dst,
 		const struct xattr_handler *h = xattr_resolve_name(&attr);
 
 		int ret = bch2_trans_do(c, NULL, NULL, 0,
-				bch2_xattr_set(&trans, dst->bi_inum, &hash_info, attr,
+				bch2_xattr_set(&trans,
+					       (subvol_inum) { 1, dst->bi_inum },
+					       &hash_info, attr,
 					       val, val_size, h->flags, 0));
 		if (ret < 0)
 			die("error creating xattr: %s", strerror(-ret));
@@ -569,7 +573,8 @@ static void copy_fs(struct bch_fs *c, int src_fd, const char *src_path,
 	syncfs(src_fd);
 
 	struct bch_inode_unpacked root_inode;
-	int ret = bch2_inode_find_by_inum(c, BCACHEFS_ROOT_INO, &root_inode);
+	int ret = bch2_inode_find_by_inum(c, (subvol_inum) { 1, BCACHEFS_ROOT_INO },
+					  &root_inode);
 	if (ret)
 		die("error looking up root directory: %s", strerror(-ret));
 

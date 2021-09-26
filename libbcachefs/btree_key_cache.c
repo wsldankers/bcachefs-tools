@@ -163,6 +163,11 @@ btree_key_cache_create(struct btree_key_cache *c,
 		was_new = false;
 	}
 
+	if (btree_id == BTREE_ID_subvolumes)
+		six_lock_pcpu_alloc(&ck->c.lock);
+	else
+		six_lock_pcpu_free(&ck->c.lock);
+
 	ck->c.level		= 0;
 	ck->c.btree_id		= btree_id;
 	ck->key.btree_id	= btree_id;
@@ -296,7 +301,7 @@ retry:
 		if (!ck)
 			goto retry;
 
-		mark_btree_node_locked(trans, path, 0, SIX_LOCK_intent);
+		mark_btree_node_locked(path, 0, SIX_LOCK_intent);
 		path->locks_want = 1;
 	} else {
 		enum six_lock_type lock_want = __btree_lock_want(path, 0);
@@ -318,7 +323,7 @@ retry:
 			goto retry;
 		}
 
-		mark_btree_node_locked(trans, path, 0, lock_want);
+		mark_btree_node_locked(path, 0, lock_want);
 	}
 
 	path->l[0].lock_seq	= ck->c.lock.state.seq;
@@ -366,7 +371,8 @@ static int btree_key_cache_flush_pos(struct btree_trans *trans,
 
 	bch2_trans_iter_init(trans, &b_iter, key.btree_id, key.pos,
 			     BTREE_ITER_SLOTS|
-			     BTREE_ITER_INTENT);
+			     BTREE_ITER_INTENT|
+			     BTREE_ITER_ALL_SNAPSHOTS);
 	bch2_trans_iter_init(trans, &c_iter, key.btree_id, key.pos,
 			     BTREE_ITER_CACHED|
 			     BTREE_ITER_CACHED_NOFILL|

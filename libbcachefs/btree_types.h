@@ -209,6 +209,7 @@ struct btree_node_iter {
 #define BTREE_ITER_WITH_UPDATES		(1 << 10)
 #define __BTREE_ITER_ALL_SNAPSHOTS	(1 << 11)
 #define BTREE_ITER_ALL_SNAPSHOTS	(1 << 12)
+#define BTREE_ITER_FILTER_SNAPSHOTS	(1 << 13)
 
 enum btree_path_uptodate {
 	BTREE_ITER_UPTODATE		= 0,
@@ -255,7 +256,6 @@ struct btree_path {
 	}			l[BTREE_MAX_DEPTH];
 #ifdef CONFIG_BCACHEFS_DEBUG
 	unsigned long		ip_allocated;
-	unsigned long		ip_locked;
 #endif
 };
 
@@ -369,7 +369,6 @@ struct btree_trans {
 	struct bpos		locking_pos;
 	u8			locking_btree_id;
 	u8			locking_level;
-	u8			traverse_all_idx;
 	pid_t			pid;
 #endif
 	unsigned long		ip;
@@ -607,7 +606,8 @@ static inline bool btree_node_is_extents(struct btree *b)
 
 #define BTREE_NODE_TYPE_HAS_MEM_TRIGGERS		\
 	((1U << BKEY_TYPE_alloc)|			\
-	 (1U << BKEY_TYPE_stripes))
+	 (1U << BKEY_TYPE_stripes)|			\
+	 (1U << BKEY_TYPE_snapshots))
 
 #define BTREE_NODE_TYPE_HAS_TRIGGERS			\
 	(BTREE_NODE_TYPE_HAS_TRANS_TRIGGERS|		\
@@ -654,7 +654,8 @@ enum btree_update_flags {
 
 #define BTREE_TRIGGER_WANTS_OLD_AND_NEW		\
 	((1U << KEY_TYPE_stripe)|		\
-	 (1U << KEY_TYPE_inode))
+	 (1U << KEY_TYPE_inode)|		\
+	 (1U << KEY_TYPE_snapshot))
 
 static inline bool btree_node_type_needs_gc(enum btree_node_type type)
 {
@@ -670,11 +671,6 @@ struct btree_root {
 	u8			alive;
 	s8			error;
 };
-
-/*
- * Optional hook that will be called just prior to a btree node update, when
- * we're holding the write lock and we know what key is about to be overwritten:
- */
 
 enum btree_insert_ret {
 	BTREE_INSERT_OK,
@@ -695,9 +691,5 @@ enum btree_node_sibling {
 	btree_prev_sib,
 	btree_next_sib,
 };
-
-typedef struct btree_nr_keys (*sort_fix_overlapping_fn)(struct bset *,
-							struct btree *,
-							struct btree_node_iter *);
 
 #endif /* _BCACHEFS_BTREE_TYPES_H */

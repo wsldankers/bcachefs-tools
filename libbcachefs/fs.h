@@ -45,9 +45,19 @@ struct bch_inode_info {
 	struct mutex		ei_quota_lock;
 	struct bch_qid		ei_qid;
 
+	u32			ei_subvol;
+
 	/* copy of inode in btree: */
 	struct bch_inode_unpacked ei_inode;
 };
+
+static inline subvol_inum inode_inum(struct bch_inode_info *inode)
+{
+	return (subvol_inum) {
+		.subvol	= inode->ei_subvol,
+		.inum	= inode->ei_inode.bi_inum,
+	};
+}
 
 /*
  * Set if we've gotten a btree error for this inode, and thus the vfs inode and
@@ -135,6 +145,10 @@ struct bch_inode_unpacked;
 
 #ifndef NO_BCACHEFS_FS
 
+struct bch_inode_info *
+__bch2_create(struct user_namespace *, struct bch_inode_info *,
+	      struct dentry *, umode_t, dev_t, subvol_inum, unsigned);
+
 int bch2_fs_quota_transfer(struct bch_fs *,
 			   struct bch_inode_info *,
 			   struct bch_qid,
@@ -154,7 +168,7 @@ static inline int bch2_set_projid(struct bch_fs *c,
 				      KEY_TYPE_QUOTA_PREALLOC);
 }
 
-struct inode *bch2_vfs_inode_get(struct bch_fs *, u64);
+struct inode *bch2_vfs_inode_get(struct bch_fs *, subvol_inum);
 
 /* returns 0 if we want to do the update, or error is passed up */
 typedef int (*inode_set_fn)(struct bch_inode_info *,
@@ -170,6 +184,7 @@ int __must_check bch2_write_inode(struct bch_fs *, struct bch_inode_info *,
 int bch2_setattr_nonsize(struct user_namespace *,
 			 struct bch_inode_info *,
 			 struct iattr *);
+int __bch2_unlink(struct inode *, struct dentry *, int);
 
 void bch2_vfs_exit(void);
 int bch2_vfs_init(void);

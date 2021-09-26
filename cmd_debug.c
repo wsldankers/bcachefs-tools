@@ -191,6 +191,7 @@ static void list_keys(struct bch_fs *c, enum btree_id btree_id,
 	bch2_trans_init(&trans, c, 0, 0);
 
 	for_each_btree_key(&trans, iter, btree_id, start,
+			   BTREE_ITER_ALL_SNAPSHOTS|
 			   BTREE_ITER_PREFETCH, k, ret) {
 		if (bkey_cmp(k.k->p, end) > 0)
 			break;
