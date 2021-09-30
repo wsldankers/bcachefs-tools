@@ -498,6 +498,9 @@ int cmd_device_resize(int argc, char *argv[])
 
 		u64 nbuckets = size / le16_to_cpu(m->bucket_size);
 
+		if (nbuckets < le64_to_cpu(m->nbuckets))
+			die("Shrinking not supported yet");
+
 		printf("resizing %s to %llu buckets\n", dev, nbuckets);
 		bchu_disk_resize(fs, idx, nbuckets);
 	} else {
@@ -518,6 +521,9 @@ int cmd_device_resize(int argc, char *argv[])
 		}
 
 		u64 nbuckets = size / le16_to_cpu(resize->mi.bucket_size);
+
+		if (nbuckets < le64_to_cpu(resize->mi.nbuckets))
+			die("Shrinking not supported yet");
 
 		printf("resizing %s to %llu buckets\n", dev, nbuckets);
 		int ret = bch2_dev_resize(c, resize, nbuckets);
