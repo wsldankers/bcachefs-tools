@@ -278,9 +278,10 @@ __attribute__((constructor(102)))
 static void blkdev_init(void)
 {
 	struct task_struct *p;
+	long err = io_setup(256, &aio_ctx);
 
-	if (io_setup(256, &aio_ctx))
-		die("io_setup() error: %m");
+	if (err)
+		die("io_setup() error: %s", strerror(-err));
 
 	p = kthread_run(aio_completion_thread, NULL, "aio_completion");
 	BUG_ON(IS_ERR(p));
