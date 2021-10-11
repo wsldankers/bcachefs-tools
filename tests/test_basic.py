@@ -3,7 +3,7 @@
 # Basic bcachefs functionality tests.
 
 import re
-import util
+from tests import util
 
 def test_help():
     ret = util.run_bch(valgrind=True)

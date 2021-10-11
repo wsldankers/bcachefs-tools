@@ -21,7 +21,7 @@
 set -e
 
 PYTEST="${PYTEST:-pytest-3}"
-spam=$(tempfile)
+spam=$(mktemp)
 unset BCACHEFS_FUSE BCACHEFS_TEST_USE_VALGRIND BCACHEFS_DEBUG
 
 trap "set +x; cat ${spam}; rm -f ${spam} ; echo; echo FAILED." EXIT
@@ -44,7 +44,6 @@ function build() {
 function test() {
     echo Running tests.
     (
-        cd tests
         ${PYTEST} -n${JOBS}
     ) > ${spam} 2>&1
 }
@@ -53,7 +52,6 @@ function test_vg() {
     echo Running tests with valgrind.
     (
         export BCACHEFS_TEST_USE_VALGRIND=yes
-        cd tests
         ${PYTEST} -n${JOBS}
     ) > ${spam} 2>&1
 }
@@ -71,13 +69,13 @@ test
 echo -- Test: debug with valgrind --
 test_vg
 
-echo -- Test: fuse debug --
-export BCACHEFS_FUSE=1
-build
-test
+#echo -- Test: fuse debug --
+#export BCACHEFS_FUSE=1
+#build
+#test
 
-echo -- Test: fuse debug with valgrind --
-test_vg
+#echo -- Test: fuse debug with valgrind --
+#test_vg
 
 rm -f ${spam}
 trap "set +x; echo; echo SUCCESS." EXIT

@@ -3,7 +3,7 @@
 # pytest fixture definitions.
 
 import pytest
-import util
+from tests import util
 
 @pytest.fixture
 def bfuse(tmpdir):

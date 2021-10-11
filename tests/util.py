@@ -2,18 +2,18 @@
 
 import errno
 import os
-import pytest
 import re
 import subprocess
-import sys
 import tempfile
 import threading
 import time
 
 from pathlib import Path
 
-DIR = Path('..')
-BCH_PATH = DIR / 'bcachefs'
+BASE_PATH= os.path.dirname(__file__)
+BCH_PATH = os.path.abspath(os.path.join(BASE_PATH, '..', 'bcachefs'))
+VALGRIND_PATH= os.path.abspath(os.path.join(BASE_PATH,
+    'valgrind-suppressions.txt'))
 
 VPAT = re.compile(r'ERROR SUMMARY: (\d+) errors from (\d+) contexts')
 
@@ -46,21 +46,22 @@ def run(cmd, *args, valgrind=False, check=False):
     cmds = [cmd] + list(args)
     valgrind = valgrind and ENABLE_VALGRIND
 
+    print("Running '{}'".format(cmds))
     if valgrind:
         vout = tempfile.NamedTemporaryFile()
         vcmd = ['valgrind',
                '--leak-check=full',
                '--gen-suppressions=all',
-               '--suppressions=valgrind-suppressions.txt',
+               '--suppressions={}'.format(VALGRIND_PATH),
                '--log-file={}'.format(vout.name)]
         cmds = vcmd + cmds
 
-    print("Running '{}'".format(cmds))
-    res = subprocess.run(cmds, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                         encoding='utf-8', check=check)
-
-    if valgrind:
+        res = subprocess.run(cmds, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, encoding='utf-8', check=check)
         check_valgrind(vout.read().decode('utf-8'))
+    else:
+        res = subprocess.run(cmds, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, encoding='utf-8', check=check)
 
     return res
 
@@ -75,7 +76,7 @@ def sparse_file(lpath, size):
     This is typically used to create device files for bcachefs.
     """
     path = Path(lpath)
-    f = path.touch(mode = 0o600, exist_ok = False)
+    path.touch(mode = 0o600, exist_ok = False)
     os.truncate(path, size)
 
     return path
@@ -195,7 +196,8 @@ class BFuse:
 
         self.stdout = out1 + out2
         self.stderr = err.read()
-        self.vout = vlog.read().decode('utf-8')
+        if vlog:
+            self.vout = vlog.read().decode('utf-8')
 
     def expect(self, pipe, regex):
         """Wait for the child process to mount."""
@@ -230,7 +232,8 @@ class BFuse:
             print("Waiting for thread to exit.")
             self.thread.join(timeout)
             if self.thread.is_alive():
-                self.proc.kill()
+                if self.proc:
+                    self.proc.kill()
                 self.thread.join()
         else:
             print("Thread was already done.")
@@ -242,6 +245,9 @@ class BFuse:
             check_valgrind(self.vout)
 
     def verify(self):
+        # avoid throwing exception in assertion
+        assert self.stdout is not None
+        assert self.stderr is not None
         assert self.returncode == 0
         assert len(self.stdout) > 0
         assert len(self.stderr) == 0

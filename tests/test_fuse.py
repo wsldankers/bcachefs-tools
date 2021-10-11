@@ -4,7 +4,7 @@
 
 import pytest
 import os
-import util
+from tests import util
 
 pytestmark = pytest.mark.skipif(
     not util.have_fuse(), reason="bcachefs not built with fuse support.")

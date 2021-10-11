@@ -85,7 +85,7 @@ tests: tests/test_helper
 
 .PHONY: check
 check: tests bcachefs
-	cd tests; $(PYTEST)
+	$(PYTEST)
 
 .PHONY: TAGS tags
 TAGS:

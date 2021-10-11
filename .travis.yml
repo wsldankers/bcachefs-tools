@@ -9,6 +9,7 @@ addons:
     apt:
         packages:
             - valgrind
+            - python3-docutils
             - python3-pytest
             - python3-pytest-xdist
             - meson
