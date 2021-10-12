@@ -1,8 +1,17 @@
 {
-   <insert_a_suppression_name_here>
+   call_rcu_memb
    Memcheck:Leak
    match-leak-kinds: possible,definite
    ...
    fun:get_default_call_rcu_data_memb
    fun:call_rcu_memb
+}
+{
+   call_rcu_data_init
+   Memcheck:Leak
+   match-leak-kinds: possible
+   fun:calloc
+   fun:_dl_allocate_tls
+   ...
+   fun:call_rcu_data_init
 }
