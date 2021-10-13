@@ -165,10 +165,19 @@ static bool bch2_btree_node_upgrade(struct btree_trans *trans,
 {
 	struct btree *b = path->l[level].b;
 
-	EBUG_ON(btree_lock_want(path, level) != BTREE_NODE_INTENT_LOCKED);
-
 	if (!is_btree_node(path, level))
 		return false;
+
+	switch (btree_lock_want(path, level)) {
+	case BTREE_NODE_UNLOCKED:
+		BUG_ON(btree_node_locked(path, level));
+		return true;
+	case BTREE_NODE_READ_LOCKED:
+		BUG_ON(btree_node_intent_locked(path, level));
+		return bch2_btree_node_relock(trans, path, level);
+	case BTREE_NODE_INTENT_LOCKED:
+		break;
+	}
 
 	if (btree_node_intent_locked(path, level))
 		return true;
@@ -364,7 +373,8 @@ static void bch2_btree_path_verify_locks(struct btree_path *path)
 	unsigned l;
 
 	if (!path->nodes_locked) {
-		BUG_ON(path->uptodate == BTREE_ITER_UPTODATE);
+		BUG_ON(path->uptodate == BTREE_ITER_UPTODATE &&
+		       btree_path_node(path, path->level));
 		return;
 	}
 
@@ -1351,7 +1361,8 @@ retry_all:
 
 		EBUG_ON(!(trans->paths_allocated & (1ULL << path->idx)));
 
-		if (path->nodes_locked)
+		if (path->nodes_locked ||
+		    !btree_path_node(path, path->level))
 			i++;
 	}
 
@@ -1866,13 +1877,14 @@ bch2_btree_iter_traverse(struct btree_iter *iter)
 
 struct btree *bch2_btree_iter_peek_node(struct btree_iter *iter)
 {
+	struct btree_trans *trans = iter->trans;
 	struct btree *b = NULL;
 	int ret;
 
 	EBUG_ON(iter->path->cached);
 	bch2_btree_iter_verify(iter);
 
-	ret = bch2_btree_path_traverse(iter->trans, iter->path, iter->flags);
+	ret = bch2_btree_path_traverse(trans, iter->path, iter->flags);
 	if (ret)
 		goto out;
 
@@ -1884,7 +1896,11 @@ struct btree *bch2_btree_iter_peek_node(struct btree_iter *iter)
 
 	bkey_init(&iter->k);
 	iter->k.p = iter->pos = b->key.k.p;
+
+	iter->path = btree_path_set_pos(trans, iter->path, b->key.k.p,
+					iter->flags & BTREE_ITER_INTENT);
 	iter->path->should_be_locked = true;
+	BUG_ON(iter->path->uptodate);
 out:
 	bch2_btree_iter_verify_entry_exit(iter);
 	bch2_btree_iter_verify(iter);
@@ -1949,7 +1965,11 @@ struct btree *bch2_btree_iter_next_node(struct btree_iter *iter)
 
 	bkey_init(&iter->k);
 	iter->k.p = iter->pos = b->key.k.p;
+
+	iter->path = btree_path_set_pos(trans, iter->path, b->key.k.p,
+					iter->flags & BTREE_ITER_INTENT);
 	iter->path->should_be_locked = true;
+	BUG_ON(iter->path->uptodate);
 out:
 	bch2_btree_iter_verify_entry_exit(iter);
 	bch2_btree_iter_verify(iter);
