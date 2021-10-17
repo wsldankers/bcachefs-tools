@@ -368,9 +368,9 @@ static void aio_op(struct bio *bio, struct iovec *iov, unsigned i, int opcode)
 			? bio->bi_bdev->bd_sync_fd
 			: bio->bi_bdev->bd_fd,
 		.aio_lio_opcode	= opcode,
-		.u.v.vec	= iov,
-		.u.v.nr		= i,
-		.u.v.offset	= bio->bi_iter.bi_sector << 9,
+		.u.c.buf        = iov,
+		.u.c.nbytes     = i,
+		.u.c.offset     = bio->bi_iter.bi_sector << 9,
 
 	}, *iocbp = &iocb;
 
