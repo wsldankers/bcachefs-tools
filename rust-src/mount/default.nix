@@ -27,8 +27,8 @@ in {
 		LIBCLANG_PATH
 		BINDGEN_EXTRA_CLANG_ARGS;
 	
-	preFixup = ''
-		ln $out/bin/mount-bcachefs $out/bin/mount.bcachefs
+	postInstall = ''
+		ln $out/bin/${cargo.package.name} $out/bin/mount.bcachefs
 		ln -s $out/bin $out/sbin
 	'';
 	# -isystem ${llvmPackages.libclang.lib}/lib/clang/${lib.getVersion llvmPackages.libclang}/include";

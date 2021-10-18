@@ -19,11 +19,103 @@ pub struct FileSystem {
 	#[getset(get = "pub")]
 	devices: Vec<PathBuf>,
 }
+impl std::fmt::Debug for FileSystem {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		f.debug_struct("FileSystem")
+			.field("uuid", &self.uuid)
+			.field("encrypted", &self.encrypted)
+			.field("devices", &self.device_string())
+			.finish()
+	}
+}
+use std::fmt;
+impl std::fmt::Display for FileSystem {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		let devs = self.device_string();
+		write!(
+			f,
+			"{:?}: locked?={lock} ({}) ",
+			self.uuid,
+			devs,
+			lock = self.encrypted
+		)
+	}
+}
+
+impl FileSystem {
+	pub(crate) fn new(sb: bcachefs::bch_sb_handle) -> Self {
+		Self {
+			uuid: sb.sb().uuid(),
+			encrypted: sb.sb().crypt().is_some(),
+			sb: sb,
+			devices: Vec::new(),
+		}
+	}
+
+	pub fn device_string(&self) -> String {
+		use itertools::Itertools;
+		self.devices.iter().map(|d| d.display()).join(":")
+	}
+
+	pub fn mount(
+		&self,
+		target: impl AsRef<std::path::Path>,
+		options: impl AsRef<str>,
+	) -> anyhow::Result<()> {
+		tracing::info_span!("mount").in_scope(|| {
+			let src = self.device_string();
+			let (data, mountflags) = parse_mount_options(options);
+			// let fstype = c_str!("bcachefs");
+
+			tracing::info!(msg="mounting bcachefs filesystem", target=%target.as_ref().display());
+			mount_inner(src, target, "bcachefs", mountflags, data)
+		})
+	}
+}
+
+fn mount_inner(
+	src: String,
+	target: impl AsRef<std::path::Path>,
+	fstype: &str,
+	mountflags: u64,
+	data: Option<String>,
+) -> anyhow::Result<()> {
+	use std::{
+		ffi::{c_void, CString},
+		os::{raw::c_char, unix::ffi::OsStrExt},
+	};
+
+	// bind the CStrings to keep them alive
+	let src = CString::new(src)?;
+	let target = CString::new(target.as_ref().as_os_str().as_bytes())?;
+	let data = data.map(CString::new).transpose()?;
+	let fstype = CString::new(fstype)?;
+
+	// convert to pointers for ffi
+	let src = src.as_c_str().to_bytes_with_nul().as_ptr() as *const c_char;
+	let target = target.as_c_str().to_bytes_with_nul().as_ptr() as *const c_char;
+	let data = data.as_ref().map_or(std::ptr::null(), |data| {
+		data.as_c_str().to_bytes_with_nul().as_ptr() as *const c_void
+	});
+	let fstype = fstype.as_c_str().to_bytes_with_nul().as_ptr() as *const c_char;
+	
+	let ret = {let _entered = tracing::info_span!("libc::mount").entered();
+		tracing::info!("mounting filesystem");
+		// REQUIRES: CAP_SYS_ADMIN
+		unsafe { libc::mount(src, target, fstype, mountflags, data) }
+	};
+	match ret {
+		0 => Ok(()),
+		_ => Err(crate::ErrnoError(errno::errno()).into()),
+	}
+}
 
 /// Parse a comma-separated mount options and split out mountflags and filesystem
 /// specific options.
+#[tracing_attributes::instrument(skip(options))]
 fn parse_mount_options(options: impl AsRef<str>) -> (Option<String>, u64) {
 	use either::Either::*;
+	tracing::debug!(msg="parsing mount options", options=?options.as_ref());
 	let (opts, flags) = options
 		.as_ref()
 		.split(",")
@@ -63,112 +155,54 @@ fn parse_mount_options(options: impl AsRef<str>) -> (Option<String>, u64) {
 	)
 }
 
-impl FileSystem {
-	pub(crate) fn new(sb: bcachefs::bch_sb_handle) -> Self {
-		Self {
-			uuid: sb.sb().uuid(),
-			encrypted: sb.sb().crypt().is_some(),
-			sb: sb,
-			devices: vec![],
-		}
-	}
-
-	pub fn mount(
-		&self,
-		target: impl AsRef<std::path::Path>,
-		options: impl AsRef<str>,
-	) -> anyhow::Result<()> {
-		use itertools::Itertools;
-		use std::ffi::c_void;
-		use std::os::raw::c_char;
-		use std::os::unix::ffi::OsStrExt;
-		let src = self.devices.iter().map(|d| d.display()).join(":");
-		let (data, mountflags) = parse_mount_options(options);
-		let fstype = c_str!("bcachefs");
-
-		let src = std::ffi::CString::new(src)?; // bind the CString to keep it alive
-		let target = std::ffi::CString::new(target.as_ref().as_os_str().as_bytes())?; // ditto
-		let data = data.map(|data| std::ffi::CString::new(data)).transpose()?; // ditto
-
-		let src = src.as_c_str().to_bytes_with_nul().as_ptr() as *const c_char;
-		let target = target.as_c_str().to_bytes_with_nul().as_ptr() as *const c_char;
-		let data = data.as_ref().map_or(std::ptr::null(), |data| {
-			data.as_c_str().to_bytes_with_nul().as_ptr() as *const c_void
-		});
-
-		let ret = unsafe { libc::mount(src, target, fstype, mountflags, data) };
-		if ret == 0 {
-			Ok(())
-		} else {
-			Err(crate::ErrnoError(errno::errno()).into())
-		}
-	}
-}
-
-use crate::bcachefs;
+use bch_bindgen::bcachefs;
 use std::collections::HashMap;
 use uuid::Uuid;
-pub fn probe_filesystems() -> anyhow::Result<HashMap<Uuid, FileSystem>> {
-	use std::os::unix::ffi::OsStrExt;
-	let mut udev = udev::Enumerator::new()?;
-	let mut fss = HashMap::new();
-	udev.match_subsystem("block")?;
 
-	{
-		// Stop libbcachefs from spamming the output
-		let _gag = gag::Gag::stdout().unwrap();
-		for dev in udev.scan_devices()? {
-			if let Some(p) = dev.devnode() {
-				let path =
-					std::ffi::CString::new(p.as_os_str().as_bytes()).unwrap();
-				let result = unsafe {
-					let mut opts = std::mem::MaybeUninit::zeroed();
-					let mut sb = std::mem::MaybeUninit::zeroed();
-					let ret = bcachefs::bch2_read_super(
-						path.as_ptr(),
-						opts.as_mut_ptr(),
-						sb.as_mut_ptr(),
-					);
-					if ret == -libc::EACCES {
-						Err(std::io::Error::new(
-							std::io::ErrorKind::PermissionDenied,
-							"no permission",
-						))
-					} else if ret != 0 {
-						Err(std::io::Error::new(
-							std::io::ErrorKind::Other,
-							"failed to read super",
-						))
-					} else {
-						Ok((opts.assume_init(), sb.assume_init()))
-					}
-				};
-				match result {
-					Ok((_, sb)) => match fss.get_mut(&sb.sb().uuid()) {
-						None => {
-							let mut fs = FileSystem::new(sb);
-							fs.devices.push(p.to_owned());
-							fss.insert(fs.uuid, fs);
-						}
-						Some(fs) => {
-							fs.devices.push(p.to_owned());
-						}
-					},
-					Err(e) if e.kind()
-						!= std::io::ErrorKind::PermissionDenied =>
-					{
-						()
-					}
-					e @ Err(_) => {
-						e?;
-					}
-				}
-			}
-		}
-		// Flush stdout so buffered output don't get printed after we remove the gag
-		unsafe {
-			libc::fflush(stdout);
+#[tracing_attributes::instrument]
+pub fn probe_filesystems() -> anyhow::Result<HashMap<Uuid, FileSystem>> {
+	tracing::trace!("enumerating udev devices");
+	let mut udev = udev::Enumerator::new()?;
+
+	udev.match_subsystem("block")?; // find kernel block devices
+
+	let mut fs_map = HashMap::new();
+	let devresults = 
+			udev.scan_devices()?
+			.into_iter()
+			.filter_map(|dev| dev.devnode().map(ToOwned::to_owned));
+	
+	for pathbuf in devresults {
+		match get_super_block_uuid(&pathbuf)? {
+
+				Ok((uuid_key, superblock)) => {
+					let fs = fs_map.entry(uuid_key).or_insert_with(|| {
+						tracing::info!(msg="found bcachefs pool", uuid=?uuid_key);
+						FileSystem::new(superblock)
+					});
+
+					fs.devices.push(pathbuf);
+				},
+
+				Err(e) => { tracing::debug!(inner2_error=?e);}
 		}
 	}
-	Ok(fss)
+
+	
+	tracing::info!(msg = "found filesystems", count = fs_map.len());
+	Ok(fs_map)
+}
+
+// #[tracing_attributes::instrument(skip(dev, fs_map))]
+fn get_super_block_uuid(path: &std::path::Path) -> std::io::Result<std::io::Result<(Uuid, bcachefs::bch_sb_handle)>> {
+	let sb = bch_bindgen::rs::read_super(&path)?;
+	let super_block = match sb { 
+		Err(e) => { return Ok(Err(e)); }
+		Ok(sb) => sb,
+	};
+
+	let uuid = (&super_block).sb().uuid();
+	tracing::debug!(found="bcachefs superblock", devnode=?path, ?uuid);
+
+	Ok(Ok((uuid, super_block)))
 }

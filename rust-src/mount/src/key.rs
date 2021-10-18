@@ -1,12 +1,11 @@
-use log::info;
+use tracing::info;
 
 fn check_for_key(key_name: &std::ffi::CStr) -> anyhow::Result<bool> {
-	use crate::keyutils::{self, keyctl_search};
+	use bch_bindgen::keyutils::{self, keyctl_search};
 	let key_name = key_name.to_bytes_with_nul().as_ptr() as *const _;
 	let key_type = c_str!("logon");
 
-	let key_id =
-		unsafe { keyctl_search(keyutils::KEY_SPEC_USER_KEYRING, key_type, key_name, 0) };
+	let key_id = unsafe { keyctl_search(keyutils::KEY_SPEC_USER_KEYRING, key_type, key_name, 0) };
 	if key_id > 0 {
 		info!("Key has became avaiable");
 		Ok(true)
@@ -31,9 +30,9 @@ fn wait_for_key(uuid: &uuid::Uuid) -> anyhow::Result<()> {
 const BCH_KEY_MAGIC: &str = "bch**key";
 use crate::filesystem::FileSystem;
 fn ask_for_key(fs: &FileSystem) -> anyhow::Result<()> {
-	use crate::bcachefs::{self, bch2_chacha_encrypt_key, bch_encrypted_key, bch_key};
 	use anyhow::anyhow;
 	use byteorder::{LittleEndian, ReadBytesExt};
+	use bch_bindgen::bcachefs::{self, bch2_chacha_encrypt_key, bch_encrypted_key, bch_key};
 	use std::os::raw::c_char;
 
 	let key_name = std::ffi::CString::new(format!("bcachefs:{}", fs.uuid())).unwrap();
@@ -62,19 +61,18 @@ fn ask_for_key(fs: &FileSystem) -> anyhow::Result<()> {
 		)
 	};
 	if ret != 0 {
-		Err(anyhow!("chache decryption failure"))
+		Err(anyhow!("chacha decryption failure"))
 	} else if key.magic != bch_key_magic {
 		Err(anyhow!("failed to verify the password"))
 	} else {
 		let key_type = c_str!("logon");
 		let ret = unsafe {
-			crate::keyutils::add_key(
+			bch_bindgen::keyutils::add_key(
 				key_type,
-				key_name.as_c_str().to_bytes_with_nul() as *const _
-					as *const c_char,
+				key_name.as_c_str().to_bytes_with_nul() as *const _ as *const c_char,
 				&output as *const _ as *const _,
 				std::mem::size_of::<bch_key>() as u64,
-				crate::keyutils::KEY_SPEC_USER_KEYRING,
+				bch_bindgen::keyutils::KEY_SPEC_USER_KEYRING,
 			)
 		};
 		if ret == -1 {
@@ -85,9 +83,12 @@ fn ask_for_key(fs: &FileSystem) -> anyhow::Result<()> {
 	}
 }
 
-pub(crate) fn prepare_key(fs: &FileSystem, password: crate::KeyLocation) -> anyhow::Result<()> {
+#[tracing_attributes::instrument]
+pub fn prepare_key(fs: &FileSystem, password: crate::KeyLocation) -> anyhow::Result<()> {
 	use crate::KeyLocation::*;
 	use anyhow::anyhow;
+
+	tracing::info!(msg = "checking if key exists for filesystem");
 	match password {
 		Fail => Err(anyhow!("no key available")),
 		Wait => Ok(wait_for_key(fs.uuid())?),

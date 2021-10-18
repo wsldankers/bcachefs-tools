@@ -32,15 +32,19 @@
 					tools
 					toolsValgrind
 					toolsDebug
+					mount
+					bch_bindgen
 					kernel;
 
-				musl-tools = pkgs.pkgsMusl.bcachefs.tools;
-				musl-mount = pkgs.pkgsMusl.bcachefs.mount;
+				tools-musl = pkgs.pkgsMusl.bcachefs.tools;
+				mount-musl = pkgs.pkgsMusl.bcachefs.mount;
 			};
 
 			checks = { 
 				kernelSrc = packages.kernel.src;
 				inherit (packages) 
+					mount
+					bch_bindgen
 					toolsValgrind;
 			};
 
