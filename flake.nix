@@ -15,6 +15,18 @@
 			version = "${builtins.substring 0 8 self.lastModifiedDate}-${self.shortRev or "dirty"}";
 
 			overlay = import ./nix/overlay.nix inputs;
+			nixosModule = self.nixosModules.bcachefs;
+			nixosModules.bcachefs = import ./rust-src/mount/module.nix;
+			nixosModules.bcachefs-enable-boot = ({config, pkgs, lib, ... }:{
+				# Disable Upstream NixOS Module when this is in use
+				disabledModules = [ "tasks/filesystems/bcachefs.nix" ];
+				# Import needed packages
+				nixpkgs.overlays = [ self.overlay ];
+
+				# Add bcachefs to boot and kernel
+				boot.initrd.supportedFilesystems = [ "bcachefs" ];
+				boot.supportedFilesystems = [ "bcachefs" ];
+			});
 		}
 		// utils.lib.eachSystem supportedSystems (system: 
 		let pkgs = import nixpkgs { 
