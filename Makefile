@@ -66,9 +66,9 @@ else
 	INITRAMFS_DIR=/etc/initramfs-tools
 endif
 
-RST2MAN:=$(shell which rst2man)
+RST2MAN:=$(shell command -v rst2man)
 ifeq ($(RST2MAN),)
-	RST2MAN:=$(shell which rst2man.py)
+	RST2MAN:=$(shell command -v rst2man.py)
 	ifeq ($(RST2MAN),)
 		@echo "WARNING: no rst2man found! Man page not generated."
 	endif
