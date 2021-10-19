@@ -50,5 +50,6 @@
 
 			devShell = devShells.tools;
 			devShells.tools = pkgs.bcachefs.tools.override { inShell = true; };
+			devShells.mount = pkgs.bcachefs.mount.override { inShell = true; };
 		});
 }
