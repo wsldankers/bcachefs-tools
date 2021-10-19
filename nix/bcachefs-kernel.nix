@@ -4,7 +4,7 @@
 , fetchFromGitHub
 , buildLinux
 , commit
-, diffHash ? lib.fakeSha256
+, sha256 ? lib.fakeSha256
 , kernelVersion ? "5.13.0"
 , kernelPatches ? [] # must always be defined in bcachefs' all-packages.nix entry because it's also a top-level attribute supplied by callPackage
 , argsOverride ? {}
@@ -26,7 +26,7 @@ buildLinux {
 		owner = "koverstreet";
 		repo = "bcachefs";
 		rev = commit;
-		sha256 = diffHash;
+		inherit sha256;
 	};
 
 	extraConfig = "BCACHEFS_FS m";
