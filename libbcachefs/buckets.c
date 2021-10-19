@@ -14,6 +14,7 @@
 #include "ec.h"
 #include "error.h"
 #include "movinggc.h"
+#include "recovery.h"
 #include "reflink.h"
 #include "replicas.h"
 #include "subvolume.h"
@@ -1111,10 +1112,9 @@ static s64 __bch2_mark_reflink_p(struct bch_fs *c, struct bkey_s_c_reflink_p p,
 {
 	struct reflink_gc *r;
 	int add = !(flags & BTREE_TRIGGER_OVERWRITE) ? 1 : -1;
+	s64 ret = 0;
 
-	while (1) {
-		if (*r_idx >= c->reflink_gc_nr)
-			goto not_found;
+	while (*r_idx < c->reflink_gc_nr) {
 		r = genradix_ptr(&c->reflink_gc_table, *r_idx);
 		BUG_ON(!r);
 
@@ -1123,16 +1123,49 @@ static s64 __bch2_mark_reflink_p(struct bch_fs *c, struct bkey_s_c_reflink_p p,
 		(*r_idx)++;
 	}
 
+	if (*r_idx >= c->reflink_gc_nr ||
+	    idx < r->offset - r->size) {
+		ret = p.k->size;
+		goto not_found;
+	}
+
 	BUG_ON((s64) r->refcount + add < 0);
 
 	r->refcount += add;
 	return r->offset - idx;
 not_found:
-	bch2_fs_inconsistent(c,
-		"%llu:%llu len %u points to nonexistent indirect extent %llu",
-		p.k->p.inode, p.k->p.offset, p.k->size, idx);
-	bch2_inconsistent_error(c);
-	return -EIO;
+	if ((flags & BTREE_TRIGGER_GC) &&
+	    (flags & BTREE_TRIGGER_NOATOMIC)) {
+		/*
+		 * XXX: we're replacing the entire reflink pointer with an error
+		 * key, we should just be replacing the part that was missing:
+		 */
+		if (fsck_err(c, "%llu:%llu len %u points to nonexistent indirect extent %llu",
+			     p.k->p.inode, p.k->p.offset, p.k->size, idx)) {
+			struct bkey_i_error *new;
+
+			new = kmalloc(sizeof(*new), GFP_KERNEL);
+			if (!new) {
+				bch_err(c, "%s: error allocating new key", __func__);
+				return -ENOMEM;
+			}
+
+			bkey_init(&new->k);
+			new->k.type	= KEY_TYPE_error;
+			new->k.p	= p.k->p;
+			new->k.size	= p.k->size;
+			ret = bch2_journal_key_insert(c, BTREE_ID_extents, 0, &new->k_i);
+
+		}
+	} else {
+		bch2_fs_inconsistent(c,
+				     "%llu:%llu len %u points to nonexistent indirect extent %llu",
+				     p.k->p.inode, p.k->p.offset, p.k->size, idx);
+		bch2_inconsistent_error(c);
+		ret = -EIO;
+	}
+fsck_err:
+	return ret;
 }
 
 static int bch2_mark_reflink_p(struct bch_fs *c,
@@ -1143,10 +1176,8 @@ static int bch2_mark_reflink_p(struct bch_fs *c,
 	struct bkey_s_c_reflink_p p = bkey_s_c_to_reflink_p(k);
 	struct reflink_gc *ref;
 	size_t l, r, m;
-	u64 idx = le64_to_cpu(p.v->idx) - le32_to_cpu(p.v->front_pad);
-	u64 sectors = (u64) le32_to_cpu(p.v->front_pad) +
-			    le32_to_cpu(p.v->back_pad) +
-			    p.k->size;
+	u64 idx = le64_to_cpu(p.v->idx);
+	unsigned sectors = p.k->size;
 	s64 ret = 0;
 
 	BUG_ON((flags & (BTREE_TRIGGER_INSERT|BTREE_TRIGGER_OVERWRITE)) ==
@@ -1166,7 +1197,7 @@ static int bch2_mark_reflink_p(struct bch_fs *c,
 
 	while (sectors) {
 		ret = __bch2_mark_reflink_p(c, p, idx, flags, &l);
-		if (ret < 0)
+		if (ret <= 0)
 			return ret;
 
 		ret = min_t(s64, ret, sectors);
@@ -1722,33 +1753,12 @@ static int __bch2_trans_mark_reflink_p(struct btree_trans *trans,
 		bch2_fs_inconsistent(c,
 			"%llu:%llu len %u points to nonexistent indirect extent %llu",
 			p.k->p.inode, p.k->p.offset, p.k->size, idx);
+		bch2_inconsistent_error(c);
 		ret = -EIO;
 		goto err;
 	}
 
-	if (!*refcount && (flags & BTREE_TRIGGER_OVERWRITE)) {
-		bch2_fs_inconsistent(c,
-			"%llu:%llu len %u idx %llu indirect extent refcount underflow",
-			p.k->p.inode, p.k->p.offset, p.k->size, idx);
-		ret = -EIO;
-		goto err;
-	}
-
-	if (flags & BTREE_TRIGGER_INSERT) {
-		struct bch_reflink_p *v = (struct bch_reflink_p *) p.v;
-		u64 pad;
-
-		pad = max_t(s64, le32_to_cpu(v->front_pad),
-			    le64_to_cpu(v->idx) - bkey_start_offset(k.k));
-		BUG_ON(pad > U32_MAX);
-		v->front_pad = cpu_to_le32(pad);
-
-		pad = max_t(s64, le32_to_cpu(v->back_pad),
-			    k.k->p.offset - p.k->size - le64_to_cpu(v->idx));
-		BUG_ON(pad > U32_MAX);
-		v->back_pad = cpu_to_le32(pad);
-	}
-
+	BUG_ON(!*refcount && (flags & BTREE_TRIGGER_OVERWRITE));
 	le64_add_cpu(refcount, add);
 
 	if (!*refcount) {
@@ -1771,19 +1781,9 @@ static int bch2_trans_mark_reflink_p(struct btree_trans *trans,
 				     struct bkey_s_c k, unsigned flags)
 {
 	struct bkey_s_c_reflink_p p = bkey_s_c_to_reflink_p(k);
-	u64 idx, sectors;
+	u64 idx = le64_to_cpu(p.v->idx);
+	unsigned sectors = p.k->size;
 	s64 ret = 0;
-
-	if (flags & BTREE_TRIGGER_INSERT) {
-		struct bch_reflink_p *v = (struct bch_reflink_p *) p.v;
-
-		v->front_pad = v->back_pad = 0;
-	}
-
-	idx = le64_to_cpu(p.v->idx) - le32_to_cpu(p.v->front_pad);
-	sectors = (u64) le32_to_cpu(p.v->front_pad) +
-			le32_to_cpu(p.v->back_pad) +
-			p.k->size;
 
 	while (sectors) {
 		ret = __bch2_trans_mark_reflink_p(trans, p, idx, flags);
