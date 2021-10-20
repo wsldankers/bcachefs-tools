@@ -112,7 +112,7 @@ stdenv.mkDerivation {
 
 	preCheck =
 		''
-			makeFlagsArray+=(PYTEST_ARGS="--verbose -n4")
+			makeFlagsArray+=(PYTEST_ARGS="--verbose -n2")
 		'' +
 		lib.optionalString fuseSupport ''
 			rm tests/test_fuse.py
