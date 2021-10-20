@@ -107,7 +107,7 @@ stdenv.mkDerivation {
 	checkFlags = [ 
 		"BCACHEFS_TEST_USE_VALGRIND=${if testWithValgrind then "yes" else "no"}"
 		# cannot escape spaces within make flags, quotes are stripped
-		"PYTEST=pytest" # "PYTEST_ARGS='-n4 --version'"
+		"PYTEST_CMD=pytest" # "PYTEST_ARGS='-n4 --version'"
 	];
 
 	preCheck =
