@@ -1,7 +1,7 @@
 PREFIX?=/usr/local
 PKG_CONFIG?=pkg-config
 INSTALL=install
-PYTEST=pytest-3
+
 CFLAGS+=-std=gnu89 -O2 -g -MMD -Wall -fPIC				\
 	-Wno-pointer-sign					\
 	-fno-strict-aliasing					\
@@ -19,6 +19,24 @@ CFLAGS+=-std=gnu89 -O2 -g -MMD -Wall -fPIC				\
 	-DVERSION_STRING='"$(VERSION)"'				\
 	$(EXTRA_CFLAGS)
 LDFLAGS+=$(CFLAGS) $(EXTRA_LDFLAGS)
+
+## Configure Tools
+PYTEST_ARGS?=
+PYTEST_CMD?=$(shell \
+	command -v pytest-3 \
+	|| which pytest-3 \
+)
+PYTEST:=$(PYTEST_CMD) $(PYTEST_ARGS)
+
+RST2MAN_ARGS?=
+RST2MAN_CMD?=$(shell \
+	command -v rst2man \
+	|| which rst2man \
+	|| command -v rst2man.py \
+	|| which rst2man.py \
+)
+RST2MAN:=$(RST2MAN_CMD) $(RST2MAN_ARGS)
+
 CARGO_ARGS=
 CARGO=cargo $(CARGO_ARGS)
 CARGO_PROFILE=release
@@ -66,14 +84,6 @@ else
 	INITRAMFS_DIR=/etc/initramfs-tools
 endif
 
-RST2MAN:=$(shell command -v rst2man)
-ifeq ($(RST2MAN),)
-	RST2MAN:=$(shell command -v rst2man.py)
-	ifeq ($(RST2MAN),)
-		@echo "WARNING: no rst2man found! Man page not generated."
-	endif
-endif
-
 .PHONY: all
 all: bcachefs bcachefs.5 lib
 
@@ -85,7 +95,11 @@ tests: tests/test_helper
 
 .PHONY: check
 check: tests bcachefs
+ifneq (,$(PYTEST_CMD))
 	$(PYTEST)
+else
+	@echo "WARNING: pytest not found or specified, tests could not be run."
+endif
 
 .PHONY: TAGS tags
 TAGS:
@@ -98,7 +112,7 @@ DOCSRC := opts_macro.h bcachefs.5.rst.tmpl
 DOCGENERATED := bcachefs.5 doc/bcachefs.5.rst
 DOCDEPS := $(addprefix ./doc/,$(DOCSRC))
 bcachefs.5: $(DOCDEPS)  libbcachefs/opts.h
-ifneq (,$(RST2MAN))
+ifneq (,$(RST2MAN_CMD))
 	$(CC) doc/opts_macro.h -I libbcachefs -I include -E 2>/dev/null	\
 		| doc/macro2rst.py
 	$(RST2MAN) doc/bcachefs.5.rst bcachefs.5
@@ -195,6 +209,7 @@ update-bcachefs-sources:
 	$(RM) libbcachefs/*.mod.c
 	git -C $(LINUX_DIR) rev-parse HEAD | tee .bcachefs_revision
 	git add .bcachefs_revision
+	
 
 .PHONY: update-commit-bcachefs-sources
 update-commit-bcachefs-sources: update-bcachefs-sources
