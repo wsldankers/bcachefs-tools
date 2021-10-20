@@ -258,18 +258,18 @@ static inline int bch2_trans_cond_resched(struct btree_trans *trans)
 	}
 }
 
-#define __for_each_btree_node(_trans, _iter, _btree_id, _start,	\
-			      _locks_want, _depth, _flags, _b)		\
+#define __for_each_btree_node(_trans, _iter, _btree_id, _start,		\
+			      _locks_want, _depth, _flags, _b, _ret)	\
 	for (bch2_trans_node_iter_init((_trans), &(_iter), (_btree_id),	\
 				_start, _locks_want, _depth, _flags),	\
 	     _b = bch2_btree_iter_peek_node(&(_iter));			\
-	     (_b);							\
+	     !((_ret) = PTR_ERR_OR_ZERO(_b)) && (_b);			\
 	     (_b) = bch2_btree_iter_next_node(&(_iter)))
 
 #define for_each_btree_node(_trans, _iter, _btree_id, _start,		\
-			    _flags, _b)					\
+			    _flags, _b, _ret)				\
 	__for_each_btree_node(_trans, _iter, _btree_id, _start,		\
-			      0, 0, _flags, _b)
+			      0, 0, _flags, _b, _ret)
 
 static inline struct bkey_s_c __bch2_btree_iter_peek(struct btree_iter *iter,
 						     unsigned flags)
@@ -325,7 +325,7 @@ static inline void set_btree_iter_dontneed(struct btree_iter *iter)
 void *bch2_trans_kmalloc(struct btree_trans *, size_t);
 void bch2_trans_begin(struct btree_trans *);
 void bch2_trans_init(struct btree_trans *, struct bch_fs *, unsigned, size_t);
-int bch2_trans_exit(struct btree_trans *);
+void bch2_trans_exit(struct btree_trans *);
 
 void bch2_btree_trans_to_text(struct printbuf *, struct bch_fs *);
 

@@ -773,7 +773,7 @@ next_nondata:
 out:
 
 	bch2_trans_iter_exit(&trans, &iter);
-	ret = bch2_trans_exit(&trans) ?: ret;
+	bch2_trans_exit(&trans);
 	bch2_bkey_buf_exit(&sk, c);
 
 	return ret;
@@ -885,9 +885,11 @@ static int bch2_move_btree(struct bch_fs *c,
 
 		bch2_trans_node_iter_init(&trans, &iter, id, POS_MIN, 0, 0,
 					  BTREE_ITER_PREFETCH);
-
+retry:
+		ret = 0;
 		while (bch2_trans_begin(&trans),
-		       (b = bch2_btree_iter_peek_node(&iter))) {
+		       (b = bch2_btree_iter_peek_node(&iter)) &&
+		       !(ret = PTR_ERR_OR_ZERO(b))) {
 			if (kthread && kthread_should_stop())
 				break;
 
@@ -915,6 +917,9 @@ next:
 			bch2_trans_cond_resched(&trans);
 			bch2_btree_iter_next_node(&iter);
 		}
+		if (ret == -EINTR)
+			goto retry;
+
 		bch2_trans_iter_exit(&trans, &iter);
 
 		if (kthread && kthread_should_stop())
