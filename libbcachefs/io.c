@@ -206,7 +206,7 @@ int bch2_sum_sector_overwrites(struct btree_trans *trans,
 
 	bch2_trans_copy_iter(&iter, extent_iter);
 
-	for_each_btree_key_continue(iter, BTREE_ITER_SLOTS, old, ret) {
+	for_each_btree_key_continue_norestart(iter, BTREE_ITER_SLOTS, old, ret) {
 		s64 sectors = min(new->k.p.offset, old.k->p.offset) -
 			max(bkey_start_offset(&new->k),
 			    bkey_start_offset(old.k));
@@ -966,7 +966,6 @@ static int bch2_write_extent(struct bch_write_op *op, struct write_point *wp,
 		ret = -EIO;
 		goto err;
 	case PREP_ENCODED_CHECKSUM_ERR:
-		BUG();
 		goto csum_err;
 	case PREP_ENCODED_DO_WRITE:
 		/* XXX look for bug here */
