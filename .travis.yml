@@ -19,7 +19,6 @@ addons:
             - libblkid-dev
             - libkeyutils-dev
             - liblz4-dev
-            - libscrypt-dev
             - libsodium-dev
             - liburcu-dev
             - libzstd-dev

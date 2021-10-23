@@ -6,7 +6,6 @@ Dependencies:
  * libblkid
  * libkeyutils
  * liblz4
- * libscrypt
  * libsodium
  * liburcu
  * libuuid
@@ -17,7 +16,7 @@ Dependencies:
 
 Debian (Bullseye or later) and Ubuntu (20.04 or later): you can install these with
     apt install -y pkg-config libaio-dev libblkid-dev libkeyutils-dev \
-        liblz4-dev libscrypt-dev libsodium-dev liburcu-dev libzstd-dev \
+        liblz4-dev libsodium-dev liburcu-dev libzstd-dev \
         uuid-dev zlib1g-dev valgrind libudev-dev git build-essential \
         python3 python3-docutils
 
@@ -25,10 +24,10 @@ Fedora: install the "Development tools" group along with:
     dnf install -y libaio-devel libsodium-devel \
         libblkid-devel libzstd-devel zlib-devel userspace-rcu-devel \
         lz4-devel libuuid-devel valgrind-devel keyutils-libs-devel \
-        libscrypt-devel findutils
+        findutils
 
 Arch: install bcachefs-tools-git from the AUR.
-Or to build from source, install libscrypt from the AUR along with,
+Or to build from source, install build dependencies with
     pacman -S base-devel libaio keyutils libsodium liburcu zstd valgrind
 
 Then, just make && make install

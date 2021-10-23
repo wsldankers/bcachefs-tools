@@ -15,7 +15,6 @@ BuildRequires:  keyutils-libs-devel
 BuildRequires:  libaio-devel
 BuildRequires:  libattr-devel
 BuildRequires:  libblkid-devel
-BuildRequires:  libscrypt-devel
 BuildRequires:  libsodium-devel
 BuildRequires:  libtool-ltdl-devel
 BuildRequires:  libuuid-devel
@@ -32,7 +31,6 @@ Requires:   keyutils-libs
 Requires:   libaio
 Requires:   libattr
 Requires:   libblkid
-Requires:   libscrypt
 Requires:   libsodium
 Requires:   libtool-ltdl
 Requires:   libuuid

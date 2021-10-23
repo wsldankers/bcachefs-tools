@@ -5,7 +5,6 @@
 , pkg-config
 , attr
 , libuuid
-, libscrypt
 , libsodium
 , keyutils
 
@@ -71,7 +70,6 @@ stdenv.mkDerivation {
 		keyutils # libkeyutils
 		lz4 # liblz4
 		
-		libscrypt
 		libsodium
 		liburcu
 		libuuid

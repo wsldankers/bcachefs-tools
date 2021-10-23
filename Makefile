@@ -73,7 +73,7 @@ endif
 
 CFLAGS+=$(PKGCONFIG_CFLAGS)
 LDLIBS+=$(PKGCONFIG_LDLIBS)
-LDLIBS+=-lm -lpthread -lrt -lscrypt -lkeyutils -laio -ldl
+LDLIBS+=-lm -lpthread -lrt -lkeyutils -laio -ldl
 LDLIBS+=$(EXTRA_LDLIBS)
 
 ifeq ($(PREFIX),/usr)
