@@ -539,7 +539,7 @@ int cmd_device_resize(int argc, char *argv[])
 static void device_resize_journal_usage(void)
 {
 	puts("bcachefs device resize-journal \n"
-	     "Usage: bcachefs device resize-journal device [ size ]\n"
+	     "Usage: bcachefs device resize-journal device size\n"
 	     "\n"
 	     "Options:\n"
 	     "  -h, --help                  display this help and exit\n"
@@ -571,7 +571,7 @@ int cmd_device_resize_journal(int argc, char *argv[])
 
 	char *size_arg = arg_pop();
 	if (!size_arg)
-		size = get_size(dev, dev_fd);
+		die("Please supply a journal size");
 	else if (bch2_strtoull_h(size_arg, &size))
 		die("invalid size");
 

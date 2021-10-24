@@ -56,7 +56,7 @@ static void usage(void)
 	     "  device evacuate          Migrate data off of a specific device\n"
 	     "  device set-state         Mark a device as failed\n"
 	     "  device resize            Resize filesystem on a device\n"
-	     "  device journal-resize    Resize journal on a device\n"
+	     "  device resize-journal    Resize journal on a device\n"
 	     "\n"
 	     "Commands for managing subvolumes and snapshots:\n"
 	     "  subvolume create     Create a new subvolume\n"
