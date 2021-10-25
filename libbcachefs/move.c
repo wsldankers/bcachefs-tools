@@ -768,7 +768,6 @@ next:
 			     &stats->sectors_seen);
 next_nondata:
 		bch2_btree_iter_advance(&iter);
-		bch2_trans_cond_resched(&trans);
 	}
 out:
 
@@ -911,10 +910,12 @@ retry:
 				BUG();
 			}
 
-			ret = bch2_btree_node_rewrite(&trans, &iter,
-					b->data->keys.seq, 0) ?: ret;
+			ret = bch2_btree_node_rewrite(&trans, &iter, b, 0) ?: ret;
+			if (ret == -EINTR)
+				continue;
+			if (ret)
+				break;
 next:
-			bch2_trans_cond_resched(&trans);
 			bch2_btree_iter_next_node(&iter);
 		}
 		if (ret == -EINTR)
@@ -930,6 +931,10 @@ next:
 
 	if (ret)
 		bch_err(c, "error %i in bch2_move_btree", ret);
+
+	/* flush relevant btree updates */
+	closure_wait_event(&c->btree_interior_update_wait,
+			   !bch2_btree_interior_updates_nr_pending(c));
 
 	progress_list_del(c, stats);
 	return ret;
@@ -1074,10 +1079,6 @@ int bch2_data_job(struct bch_fs *c,
 				      op.start_btree,	op.start_pos,
 				      op.end_btree,	op.end_pos,
 				      rereplicate_btree_pred, c, stats) ?: ret;
-
-		closure_wait_event(&c->btree_interior_update_wait,
-				   !bch2_btree_interior_updates_nr_pending(c));
-
 		ret = bch2_replicas_gc2(c) ?: ret;
 
 		ret = bch2_move_data(c,
