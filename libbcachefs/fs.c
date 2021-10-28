@@ -489,7 +489,7 @@ static int bch2_link(struct dentry *old_dentry, struct inode *vdir,
 }
 
 int __bch2_unlink(struct inode *vdir, struct dentry *dentry,
-		  int deleting_snapshot)
+		  bool deleting_snapshot)
 {
 	struct bch_fs *c = vdir->i_sb->s_fs_info;
 	struct bch_inode_info *dir = to_bch_ei(vdir);
@@ -526,7 +526,7 @@ int __bch2_unlink(struct inode *vdir, struct dentry *dentry,
 
 static int bch2_unlink(struct inode *vdir, struct dentry *dentry)
 {
-	return __bch2_unlink(vdir, dentry, -1);
+	return __bch2_unlink(vdir, dentry, false);
 }
 
 static int bch2_symlink(struct user_namespace *mnt_userns,
@@ -1308,6 +1308,53 @@ static void bch2_evict_inode(struct inode *vinode)
 				KEY_TYPE_QUOTA_WARN);
 		bch2_inode_rm(c, inode_inum(inode), true);
 	}
+}
+
+void bch2_evict_subvolume_inodes(struct bch_fs *c,
+				 struct snapshot_id_list *s)
+{
+	struct super_block *sb = c->vfs_sb;
+	struct inode *inode;
+
+	spin_lock(&sb->s_inode_list_lock);
+	list_for_each_entry(inode, &sb->s_inodes, i_sb_list) {
+		if (!snapshot_list_has_id(s, to_bch_ei(inode)->ei_subvol) ||
+		    (inode->i_state & I_FREEING))
+			continue;
+
+		d_mark_dontcache(inode);
+		d_prune_aliases(inode);
+	}
+	spin_unlock(&sb->s_inode_list_lock);
+again:
+	cond_resched();
+	spin_lock(&sb->s_inode_list_lock);
+	list_for_each_entry(inode, &sb->s_inodes, i_sb_list) {
+		if (!snapshot_list_has_id(s, to_bch_ei(inode)->ei_subvol) ||
+		    (inode->i_state & I_FREEING))
+			continue;
+
+		if (!(inode->i_state & I_DONTCACHE)) {
+			d_mark_dontcache(inode);
+			d_prune_aliases(inode);
+		}
+
+		spin_lock(&inode->i_lock);
+		if (snapshot_list_has_id(s, to_bch_ei(inode)->ei_subvol) &&
+		    !(inode->i_state & I_FREEING)) {
+			wait_queue_head_t *wq = bit_waitqueue(&inode->i_state, __I_NEW);
+			DEFINE_WAIT_BIT(wait, &inode->i_state, __I_NEW);
+			prepare_to_wait(wq, &wait.wq_entry, TASK_UNINTERRUPTIBLE);
+			spin_unlock(&inode->i_lock);
+			spin_unlock(&sb->s_inode_list_lock);
+			schedule();
+			finish_wait(wq, &wait.wq_entry);
+			goto again;
+		}
+
+		spin_unlock(&inode->i_lock);
+	}
+	spin_unlock(&sb->s_inode_list_lock);
 }
 
 static int bch2_statfs(struct dentry *dentry, struct kstatfs *buf)
