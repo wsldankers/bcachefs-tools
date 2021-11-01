@@ -1184,9 +1184,8 @@ static int check_extent(struct btree_trans *trans, struct btree_iter *iter,
 	if (fsck_err_on(ret == INT_MAX, c,
 			"extent in missing inode:\n  %s",
 			(bch2_bkey_val_to_text(&PBUF(buf), c, k), buf)))
-		return __bch2_trans_do(trans, NULL, NULL, BTREE_INSERT_LAZY_RW,
-			bch2_btree_delete_at(trans, iter,
-					     BTREE_UPDATE_INTERNAL_SNAPSHOT_NODE));
+		return bch2_btree_delete_at(trans, iter,
+					    BTREE_UPDATE_INTERNAL_SNAPSHOT_NODE);
 
 	if (ret == INT_MAX)
 		return 0;
@@ -1199,9 +1198,8 @@ static int check_extent(struct btree_trans *trans, struct btree_iter *iter,
 			"extent in non regular inode mode %o:\n  %s",
 			i->inode.bi_mode,
 			(bch2_bkey_val_to_text(&PBUF(buf), c, k), buf)))
-		return __bch2_trans_do(trans, NULL, NULL, BTREE_INSERT_LAZY_RW,
-			 bch2_btree_delete_at(trans, iter,
-					      BTREE_UPDATE_INTERNAL_SNAPSHOT_NODE));
+		return bch2_btree_delete_at(trans, iter,
+					    BTREE_UPDATE_INTERNAL_SNAPSHOT_NODE);
 
 	if (!bch2_snapshot_internal_node(c, k.k->p.snapshot)) {
 		for_each_visible_inode(c, s, inode, k.k->p.snapshot, i) {
@@ -1261,7 +1259,9 @@ static int check_extents(struct bch_fs *c)
 			     BTREE_ITER_ALL_SNAPSHOTS);
 
 	do {
-		ret = lockrestart_do(&trans,
+		ret = __bch2_trans_do(&trans, NULL, NULL,
+				      BTREE_INSERT_LAZY_RW|
+				      BTREE_INSERT_NOFAIL,
 			check_extent(&trans, &iter, &w, &s));
 		if (ret)
 			break;

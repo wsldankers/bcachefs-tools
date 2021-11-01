@@ -659,7 +659,8 @@ static void bch2_btree_path_verify(struct btree_trans *trans,
 
 	for (i = 0; i < (!path->cached ? BTREE_MAX_DEPTH : 1); i++) {
 		if (!path->l[i].b) {
-			BUG_ON(c->btree_roots[path->btree_id].b->c.level > i);
+			BUG_ON(!path->cached &&
+			       c->btree_roots[path->btree_id].b->c.level > i);
 			break;
 		}
 
@@ -2646,6 +2647,7 @@ void bch2_trans_begin(struct btree_trans *trans)
 	trans_for_each_update(trans, i)
 		__btree_path_put(i->path, true);
 
+	memset(&trans->journal_res, 0, sizeof(trans->journal_res));
 	trans->extra_journal_res	= 0;
 	trans->nr_updates		= 0;
 	trans->mem_top			= 0;
