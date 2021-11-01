@@ -195,6 +195,18 @@ static void print_fs_usage(const char *path, enum units units)
 	bcache_fs_close(fs);
 }
 
+int fs_usage(void)
+{
+       puts("bcachefs fs - manage a running filesystem\n"
+            "Usage: bcachefs fs <CMD> [OPTION]... path\n"
+            "\n"
+            "Commands:\n"
+            "  usage                      show disk usage\n"
+            "\n"
+            "Report bugs to <linux-bcachefs@vger.kernel.org>");
+       return 0;
+}
+
 int cmd_fs_usage(int argc, char *argv[])
 {
 	enum units units = BYTES;

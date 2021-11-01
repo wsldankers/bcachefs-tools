@@ -9,6 +9,19 @@
 #include "cmds.h"
 #include "libbcachefs.h"
 
+int data_usage(void)
+{
+	puts("bcachefs data - manage filesystem data\n"
+	     "Usage: bcachefs data <CMD> [OPTIONS]\n"
+	     "\n"
+	     "Commands:\n"
+	     "  rereplicate                     Rereplicate degraded data\n"
+	     "  job                             Kick off low level data jobs\n"
+	     "\n"
+	     "Report bugs to <linux-bcache@vger.kernel.org>");
+	return 0;
+}
+
 static void data_rereplicate_usage(void)
 {
 	puts("bcachefs data rereplicate\n"

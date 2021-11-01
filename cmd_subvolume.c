@@ -19,6 +19,20 @@
 #include "libbcachefs/opts.h"
 #include "tools-util.h"
 
+int subvolume_usage(void)
+{
+	puts("bcachefs subvolume - manage subvolumes and snapshots\n"
+	     "Usage: bcachefs subvolume <CMD> [OPTION]\n"
+	     "\n"
+	     "Commands:\n"
+	     "  create                  create a subvolume\n"
+	     "  delete                  delete a subvolume\n"
+	     "  snapshot                create a snapshot\n"
+	     "\n"
+	     "Report bugs to <linux-bcachefs@vger.kernel.org>");
+	return 0;
+}
+
 static void subvolume_create_usage(void)
 {
 	puts("bcachefs subvolume create - create a new subvolume\n"

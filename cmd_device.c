@@ -21,6 +21,25 @@
 #include "libbcachefs/opts.h"
 #include "tools-util.h"
 
+int device_usage(void)
+{
+       puts("bcachefs device - manage devices within a running filesystem\n"
+            "Usage: bcachefs device <CMD> [OPTION]\n"
+            "\n"
+            "Commands:\n"
+            "  add                     add a new device to an existing filesystem\n"
+            "  remove                  remove a device from an existing filesystem\n"
+            "  online                  re-add an existing member to a filesystem\n"
+            "  offline                 take a device offline, without removing it\n"
+            "  evacuate                migrate data off a specific device\n"
+            "  set-state               mark a device as failed\n"
+            "  resize                  resize filesystem on a device\n"
+            "  resize-journal          resize journal on a device\n"
+            "\n"
+            "Report bugs to <linux-bcachefs@vger.kernel.org>");
+       return 0;
+}
+
 static void device_add_usage(void)
 {
 	puts("bcachefs device add - add a device to an existing filesystem\n"

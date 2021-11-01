@@ -92,14 +92,9 @@ static char *full_cmd;
 
 static char *pop_cmd(int *argc, char *argv[])
 {
-	if (*argc < 2) {
-		printf("%s: missing command\n", argv[0]);
-		usage();
-		exit(EXIT_FAILURE);
-	}
-
 	char *cmd = argv[1];
-	memmove(&argv[1], &argv[2], *argc * sizeof(argv[0]));
+	if (!(*argc < 2))
+		memmove(&argv[1], &argv[2], *argc * sizeof(argv[0]));
 	(*argc)--;
 
 	full_cmd = mprintf("%s %s", full_cmd, cmd);
@@ -110,10 +105,11 @@ static int fs_cmds(int argc, char *argv[])
 {
 	char *cmd = pop_cmd(&argc, argv);
 
+	if (argc < 2)
+		return fs_usage();
 	if (!strcmp(cmd, "usage"))
 		return cmd_fs_usage(argc, argv);
 
-	usage();
 	return 0;
 }
 
@@ -121,6 +117,8 @@ static int device_cmds(int argc, char *argv[])
 {
 	char *cmd = pop_cmd(&argc, argv);
 
+	if (argc < 2)
+		return device_usage();
 	if (!strcmp(cmd, "add"))
 		return cmd_device_add(argc, argv);
 	if (!strcmp(cmd, "remove"))
@@ -138,7 +136,6 @@ static int device_cmds(int argc, char *argv[])
 	if (!strcmp(cmd, "resize-journal"))
 		return cmd_device_resize_journal(argc, argv);
 
-	usage();
 	return 0;
 }
 
@@ -146,19 +143,21 @@ static int data_cmds(int argc, char *argv[])
 {
 	char *cmd = pop_cmd(&argc, argv);
 
+	if (argc < 2)
+		return data_usage();
 	if (!strcmp(cmd, "rereplicate"))
 		return cmd_data_rereplicate(argc, argv);
 	if (!strcmp(cmd, "job"))
 		return cmd_data_job(argc, argv);
 
-	usage();
 	return 0;
 }
 
 static int subvolume_cmds(int argc, char *argv[])
 {
 	char *cmd = pop_cmd(&argc, argv);
-
+	if (argc < 2)
+		return subvolume_usage();
 	if (!strcmp(cmd, "create"))
 		return cmd_subvolume_create(argc, argv);
 	if (!strcmp(cmd, "delete"))
@@ -166,7 +165,6 @@ static int subvolume_cmds(int argc, char *argv[])
 	if (!strcmp(cmd, "snapshot"))
 		return cmd_subvolume_snapshot(argc, argv);
 
-	usage();
 	return 0;
 }
 
@@ -179,16 +177,36 @@ int main(int argc, char *argv[])
 	setvbuf(stdout, NULL, _IOLBF, 0);
 
 	char *cmd = pop_cmd(&argc, argv);
+	if (argc < 1) {
+		puts("missing command\n");
+		goto usage;
+	}
+
+	/* these subcommands display usage when argc < 2 */
+	if (!strcmp(cmd, "device"))
+		return device_cmds(argc, argv);
+	if (!strcmp(cmd, "fs"))
+		return fs_cmds(argc, argv);
+	if (!strcmp(cmd, "data"))
+		return data_cmds(argc, argv);
+	if (!strcmp(cmd, "subvolume"))
+		return subvolume_cmds(argc, argv);
+	if (!strcmp(cmd, "format"))
+		return cmd_format(argc, argv);
+	if (!strcmp(cmd, "fsck"))
+		return cmd_fsck(argc, argv);
+
+	if (argc < 2) {
+		printf("%s: missing command\n", argv[0]);
+		usage();
+		exit(EXIT_FAILURE);
+	}
 
 	if (!strcmp(cmd, "version"))
 		return cmd_version(argc, argv);
-	if (!strcmp(cmd, "format"))
-		return cmd_format(argc, argv);
 	if (!strcmp(cmd, "show-super"))
 		return cmd_show_super(argc, argv);
 
-	if (!strcmp(cmd, "fsck"))
-		return cmd_fsck(argc, argv);
 
 #if 0
 	if (!strcmp(cmd, "assemble"))
@@ -200,17 +218,6 @@ int main(int argc, char *argv[])
 	if (!strcmp(cmd, "stop"))
 		return cmd_stop(argc, argv);
 #endif
-
-	if (!strcmp(cmd, "fs"))
-		return fs_cmds(argc, argv);
-
-	if (!strcmp(cmd, "device"))
-		return device_cmds(argc, argv);
-
-	if (!strcmp(cmd, "data"))
-		return data_cmds(argc, argv);
-	if (!strcmp(cmd, "subvolume"))
-		return subvolume_cmds(argc, argv);
 
 	if (!strcmp(cmd, "unlock"))
 		return cmd_unlock(argc, argv);
@@ -245,6 +252,7 @@ int main(int argc, char *argv[])
 	}
 
 	printf("Unknown command %s\n", cmd);
+usage:
 	usage();
 	exit(EXIT_FAILURE);
 }
