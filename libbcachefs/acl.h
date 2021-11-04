@@ -26,7 +26,7 @@ typedef struct {
 	__le32		a_version;
 } bch_acl_header;
 
-struct posix_acl *bch2_get_acl(struct inode *, int);
+struct posix_acl *bch2_get_acl(struct inode *, int, bool);
 
 int bch2_set_acl_trans(struct btree_trans *, subvol_inum,
 		       struct bch_inode_unpacked *,

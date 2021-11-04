@@ -21,6 +21,8 @@ struct request_queue {
 };
 
 struct gendisk {
+	struct backing_dev_info	*bdi;
+	struct backing_dev_info	__bdi;
 };
 
 struct hd_struct {
@@ -38,9 +40,6 @@ struct block_device {
 	struct gendisk		__bd_disk;
 	int			bd_fd;
 	int			bd_sync_fd;
-
-	struct backing_dev_info	*bd_bdi;
-	struct backing_dev_info	__bd_bdi;
 };
 
 #define bdev_kobj(_bdev) (&((_bdev)->kobj))

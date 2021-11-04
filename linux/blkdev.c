@@ -205,8 +205,8 @@ struct block_device *blkdev_get_by_path(const char *path, fmode_t mode,
 	bdev->bd_sync_fd	= sync_fd;
 	bdev->bd_holder		= holder;
 	bdev->bd_disk		= &bdev->__bd_disk;
-	bdev->bd_bdi		= &bdev->__bd_bdi;
-	bdev->queue.backing_dev_info = bdev->bd_bdi;
+	bdev->bd_disk->bdi	= &bdev->bd_disk->__bdi;
+	bdev->queue.backing_dev_info = bdev->bd_disk->bdi;
 
 	return bdev;
 }

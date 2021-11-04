@@ -1509,8 +1509,8 @@ retry_reservation:
 		unsigned pg_offset = (offset + copied) & (PAGE_SIZE - 1);
 		unsigned pg_len = min_t(unsigned, len - copied,
 					PAGE_SIZE - pg_offset);
-		unsigned pg_copied = iov_iter_copy_from_user_atomic(page,
-						iter, pg_offset, pg_len);
+		unsigned pg_copied = copy_page_from_iter_atomic(page,
+						pg_offset, pg_len,iter);
 
 		if (!pg_copied)
 			break;
@@ -1523,7 +1523,6 @@ retry_reservation:
 		}
 
 		flush_dcache_page(page);
-		iov_iter_advance(iter, pg_copied);
 		copied += pg_copied;
 
 		if (pg_copied != pg_len)

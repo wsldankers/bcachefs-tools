@@ -19,7 +19,6 @@
 #include <linux/workqueue.h>
 
 #define PAGE_SECTOR_SHIFT	(PAGE_SHIFT - 9)
-#define PAGE_SECTORS		(1UL << PAGE_SECTOR_SHIFT)
 
 struct closure;
 

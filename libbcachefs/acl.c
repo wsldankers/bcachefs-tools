@@ -212,7 +212,7 @@ bch2_acl_to_xattr(struct btree_trans *trans,
 	return xattr;
 }
 
-struct posix_acl *bch2_get_acl(struct inode *vinode, int type)
+struct posix_acl *bch2_get_acl(struct inode *vinode, int type, bool rcu)
 {
 	struct bch_inode_info *inode = to_bch_ei(vinode);
 	struct bch_fs *c = inode->v.i_sb->s_fs_info;
@@ -223,6 +223,9 @@ struct posix_acl *bch2_get_acl(struct inode *vinode, int type)
 	struct posix_acl *acl = NULL;
 	struct bkey_s_c k;
 	int ret;
+
+	if (rcu)
+		return ERR_PTR(-ECHILD);
 
 	bch2_trans_init(&trans, c, 0, 0);
 retry:

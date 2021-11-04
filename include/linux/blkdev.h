@@ -74,6 +74,17 @@ int blkdev_issue_discard(struct block_device *, sector_t,
 
 #define bdev_get_queue(bdev)		(&((bdev)->queue))
 
+#ifndef SECTOR_SHIFT
+#define SECTOR_SHIFT 9
+#endif
+#ifndef SECTOR_SIZE
+#define SECTOR_SIZE (1 << SECTOR_SHIFT)
+#endif
+
+#define PAGE_SECTORS_SHIFT	(PAGE_SHIFT - SECTOR_SHIFT)
+#define PAGE_SECTORS		(1 << PAGE_SECTORS_SHIFT)
+#define SECTOR_MASK		(PAGE_SECTORS - 1)
+
 #define blk_queue_discard(q)		((void) (q), 0)
 #define blk_queue_nonrot(q)		((void) (q), 0)
 
