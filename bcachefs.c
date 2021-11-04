@@ -195,18 +195,16 @@ int main(int argc, char *argv[])
 		return cmd_format(argc, argv);
 	if (!strcmp(cmd, "fsck"))
 		return cmd_fsck(argc, argv);
+	if (!strcmp(cmd, "version"))
+		return cmd_version(argc, argv);
+	if (!strcmp(cmd, "show-super"))
+		return cmd_show_super(argc, argv);
 
 	if (argc < 2) {
 		printf("%s: missing command\n", argv[0]);
 		usage();
 		exit(EXIT_FAILURE);
 	}
-
-	if (!strcmp(cmd, "version"))
-		return cmd_version(argc, argv);
-	if (!strcmp(cmd, "show-super"))
-		return cmd_show_super(argc, argv);
-
 
 #if 0
 	if (!strcmp(cmd, "assemble"))
