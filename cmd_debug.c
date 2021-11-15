@@ -466,9 +466,9 @@ int cmd_list(int argc, char *argv[])
 	enum btree_id btree_id_start	= 0;
 	enum btree_id btree_id_end	= BTREE_ID_NR;
 	enum btree_id btree_id;
-	unsigned level;
+	unsigned level = 0;
 	struct bpos start = POS_MIN, end = POS_MAX;
-	u64 inum;
+	u64 inum = 0;
 	int mode = 0, opt;
 
 	opt_set(opts, nochanges,	true);
