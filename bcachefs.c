@@ -105,7 +105,7 @@ static int fs_cmds(int argc, char *argv[])
 {
 	char *cmd = pop_cmd(&argc, argv);
 
-	if (argc < 2)
+	if (argc < 1)
 		return fs_usage();
 	if (!strcmp(cmd, "usage"))
 		return cmd_fs_usage(argc, argv);
@@ -117,7 +117,7 @@ static int device_cmds(int argc, char *argv[])
 {
 	char *cmd = pop_cmd(&argc, argv);
 
-	if (argc < 2)
+	if (argc < 1)
 		return device_usage();
 	if (!strcmp(cmd, "add"))
 		return cmd_device_add(argc, argv);
@@ -143,7 +143,7 @@ static int data_cmds(int argc, char *argv[])
 {
 	char *cmd = pop_cmd(&argc, argv);
 
-	if (argc < 2)
+	if (argc < 1)
 		return data_usage();
 	if (!strcmp(cmd, "rereplicate"))
 		return cmd_data_rereplicate(argc, argv);
@@ -156,7 +156,7 @@ static int data_cmds(int argc, char *argv[])
 static int subvolume_cmds(int argc, char *argv[])
 {
 	char *cmd = pop_cmd(&argc, argv);
-	if (argc < 2)
+	if (argc < 1)
 		return subvolume_usage();
 	if (!strcmp(cmd, "create"))
 		return cmd_subvolume_create(argc, argv);
