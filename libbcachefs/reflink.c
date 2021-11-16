@@ -44,7 +44,10 @@ void bch2_reflink_p_to_text(struct printbuf *out, struct bch_fs *c,
 {
 	struct bkey_s_c_reflink_p p = bkey_s_c_to_reflink_p(k);
 
-	pr_buf(out, "idx %llu", le64_to_cpu(p.v->idx));
+	pr_buf(out, "idx %llu front_pad %u back_pad %u",
+	       le64_to_cpu(p.v->idx),
+	       le32_to_cpu(p.v->front_pad),
+	       le32_to_cpu(p.v->back_pad));
 }
 
 bool bch2_reflink_p_merge(struct bch_fs *c, struct bkey_s _l, struct bkey_s_c _r)
@@ -347,7 +350,8 @@ s64 bch2_remap_range(struct bch_fs *c,
 		    inode_u.bi_size < new_i_size) {
 			inode_u.bi_size = new_i_size;
 			ret2  = bch2_inode_write(&trans, &inode_iter, &inode_u) ?:
-				bch2_trans_commit(&trans, NULL, NULL, 0);
+				bch2_trans_commit(&trans, NULL, NULL,
+						  BTREE_INSERT_NOFAIL);
 		}
 
 		bch2_trans_iter_exit(&trans, &inode_iter);

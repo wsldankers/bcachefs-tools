@@ -117,6 +117,8 @@ static inline struct bch_dev_usage *dev_usage_ptr(struct bch_dev *ca,
 						  unsigned journal_seq,
 						  bool gc)
 {
+	BUG_ON(!gc && !journal_seq);
+
 	return this_cpu_ptr(gc
 			    ? ca->usage_gc
 			    : ca->usage[journal_seq & JOURNAL_BUF_MASK]);
@@ -142,6 +144,8 @@ static inline struct bch_fs_usage *fs_usage_ptr(struct bch_fs *c,
 						unsigned journal_seq,
 						bool gc)
 {
+	BUG_ON(!gc && !journal_seq);
+
 	return this_cpu_ptr(gc
 			    ? c->usage_gc
 			    : c->usage[journal_seq & JOURNAL_BUF_MASK]);
@@ -359,6 +363,13 @@ static void bch2_dev_usage_update(struct bch_fs *c, struct bch_dev *ca,
 {
 	struct bch_fs_usage *fs_usage;
 	struct bch_dev_usage *u;
+
+	/*
+	 * Hack for bch2_fs_initialize path, where we're first marking sb and
+	 * journal non-transactionally:
+	 */
+	if (!journal_seq && !test_bit(BCH_FS_INITIALIZED, &c->flags))
+		journal_seq = 1;
 
 	percpu_rwsem_assert_held(&c->mark_lock);
 
@@ -1864,41 +1875,6 @@ int bch2_trans_mark_key(struct btree_trans *trans, struct bkey_s_c old,
 	default:
 		return 0;
 	}
-}
-
-int bch2_trans_mark_update(struct btree_trans *trans,
-			   struct btree_path *path,
-			   struct bkey_i *new,
-			   unsigned flags)
-{
-	struct bkey		_deleted = KEY(0, 0, 0);
-	struct bkey_s_c		deleted = (struct bkey_s_c) { &_deleted, NULL };
-	struct bkey_s_c		old;
-	struct bkey		unpacked;
-	int ret;
-
-	_deleted.p = path->pos;
-
-	if (unlikely(flags & BTREE_TRIGGER_NORUN))
-		return 0;
-
-	if (!btree_node_type_needs_gc(path->btree_id))
-		return 0;
-
-	old = bch2_btree_path_peek_slot(path, &unpacked);
-
-	if (old.k->type == new->k.type &&
-	    ((1U << old.k->type) & BTREE_TRIGGER_WANTS_OLD_AND_NEW)) {
-		ret   = bch2_trans_mark_key(trans, old, bkey_i_to_s_c(new),
-				BTREE_TRIGGER_INSERT|BTREE_TRIGGER_OVERWRITE|flags);
-	} else {
-		ret   = bch2_trans_mark_key(trans, deleted, bkey_i_to_s_c(new),
-				BTREE_TRIGGER_INSERT|flags) ?:
-			bch2_trans_mark_key(trans, old, deleted,
-				BTREE_TRIGGER_OVERWRITE|flags);
-	}
-
-	return ret;
 }
 
 static int __bch2_trans_mark_metadata_bucket(struct btree_trans *trans,

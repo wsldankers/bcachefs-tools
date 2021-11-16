@@ -107,7 +107,12 @@ void bch2_journal_halt(struct journal *j)
 	} while ((v = atomic64_cmpxchg(&j->reservations.counter,
 				       old.v, new.v)) != old.v);
 
-	j->err_seq = journal_cur_seq(j);
+	/*
+	 * XXX: we're not using j->lock here because this can be called from
+	 * interrupt context, this can race with journal_write_done()
+	 */
+	if (!j->err_seq)
+		j->err_seq = journal_cur_seq(j);
 	journal_wake(j);
 	closure_wake_up(&journal_cur_buf(j)->wait);
 }
@@ -551,7 +556,10 @@ int bch2_journal_flush_seq_async(struct journal *j, u64 seq,
 
 	spin_lock(&j->lock);
 
-	BUG_ON(seq > journal_cur_seq(j));
+	if (WARN_ONCE(seq > journal_cur_seq(j),
+		      "requested to flush journal seq %llu, but currently at %llu",
+		      seq, journal_cur_seq(j)))
+		goto out;
 
 	/* Recheck under lock: */
 	if (j->err_seq && seq >= j->err_seq) {

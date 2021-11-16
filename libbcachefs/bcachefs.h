@@ -218,8 +218,8 @@
 #define bch2_fmt(_c, fmt)		"bcachefs (%s): " fmt "\n", ((_c)->name)
 #define bch2_fmt_inum(_c, _inum, fmt)	"bcachefs (%s inum %llu): " fmt "\n", ((_c)->name), (_inum)
 #else
-#define bch2_fmt(_c, fmt)		fmt "\n"
-#define bch2_fmt_inum(_c, _inum, fmt)	"inum %llu: " fmt "\n", (_inum)
+#define bch2_fmt(_c, fmt)		"%s: " fmt "\n", ((_c)->name)
+#define bch2_fmt_inum(_c, _inum, fmt)	"%s inum %llu: " fmt "\n", ((_c)->name), (_inum)
 #endif
 
 #define bch_info(c, fmt, ...) \
@@ -495,6 +495,7 @@ struct bch_dev {
 
 enum {
 	/* startup: */
+	BCH_FS_INITIALIZED,
 	BCH_FS_ALLOC_READ_DONE,
 	BCH_FS_ALLOC_CLEAN,
 	BCH_FS_ALLOCATOR_RUNNING,
