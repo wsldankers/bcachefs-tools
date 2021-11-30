@@ -130,11 +130,13 @@ __trans_next_path_with_node(struct btree_trans *trans, struct btree *b,
 						 (_path)->idx + 1))
 
 struct btree_path * __must_check
-bch2_btree_path_make_mut(struct btree_trans *, struct btree_path *, bool);
+bch2_btree_path_make_mut(struct btree_trans *, struct btree_path *,
+			 bool, unsigned long);
 int __must_check bch2_btree_path_traverse(struct btree_trans *,
 					  struct btree_path *, unsigned);
 struct btree_path *bch2_path_get(struct btree_trans *, bool, enum btree_id,
-				 struct bpos, unsigned, unsigned, bool);
+				 struct bpos, unsigned, unsigned, bool,
+				 unsigned long);
 inline struct bkey_s_c bch2_btree_path_peek_slot(struct btree_path *, struct bkey *);
 
 #ifdef CONFIG_BCACHEFS_DEBUG
@@ -302,13 +304,19 @@ static inline struct bkey_s_c __bch2_btree_iter_peek(struct btree_iter *iter,
 		: bch2_btree_iter_peek(iter);
 }
 
+static inline int btree_trans_too_many_iters(struct btree_trans *trans)
+{
+	return hweight64(trans->paths_allocated) > BTREE_ITER_MAX / 2
+		? -EINTR : 0;
+}
+
 static inline struct bkey_s_c
 __bch2_btree_iter_peek_and_restart(struct btree_trans *trans,
 				   struct btree_iter *iter, unsigned flags)
 {
 	struct bkey_s_c k;
 
-	while ((hweight64(trans->paths_allocated) > BTREE_ITER_MAX / 2) ||
+	while (btree_trans_too_many_iters(trans) ||
 	       (k = __bch2_btree_iter_peek(iter, flags),
 		bkey_err(k) == -EINTR))
 		bch2_trans_begin(trans);

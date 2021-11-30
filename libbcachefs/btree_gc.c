@@ -710,11 +710,14 @@ static int bch2_gc_mark_key(struct btree_trans *trans, enum btree_id btree_id,
 	struct bch_fs *c = trans->c;
 	struct bkey_ptrs_c ptrs;
 	const struct bch_extent_ptr *ptr;
+	struct bkey deleted = KEY(0, 0, 0);
+	struct bkey_s_c old = (struct bkey_s_c) { &deleted, NULL };
 	unsigned flags =
 		BTREE_TRIGGER_GC|
 		(initial ? BTREE_TRIGGER_NOATOMIC : 0);
-	char buf[200];
 	int ret = 0;
+
+	deleted.p = k->k->p;
 
 	if (initial) {
 		BUG_ON(bch2_journal_seq_verify &&
@@ -729,18 +732,6 @@ static int bch2_gc_mark_key(struct btree_trans *trans, enum btree_id btree_id,
 				k->k->version.lo,
 				atomic64_read(&c->key_version)))
 			atomic64_set(&c->key_version, k->k->version.lo);
-
-		if (test_bit(BCH_FS_REBUILD_REPLICAS, &c->flags) ||
-		    fsck_err_on(!bch2_bkey_replicas_marked(c, *k), c,
-				"superblock not marked as containing replicas\n"
-				"  while marking %s",
-				(bch2_bkey_val_to_text(&PBUF(buf), c, *k), buf))) {
-			ret = bch2_mark_bkey_replicas(c, *k);
-			if (ret) {
-				bch_err(c, "error marking bkey replicas: %i", ret);
-				goto err;
-			}
-		}
 	}
 
 	ptrs = bch2_bkey_ptrs_c(*k);
@@ -754,7 +745,7 @@ static int bch2_gc_mark_key(struct btree_trans *trans, enum btree_id btree_id,
 		*max_stale = max(*max_stale, ptr_stale(ca, ptr));
 	}
 
-	ret = bch2_mark_key(trans, *k, flags);
+	ret = bch2_mark_key(trans, old, *k, flags);
 fsck_err:
 err:
 	if (ret)
@@ -1185,14 +1176,14 @@ static int bch2_gc_done(struct bch_fs *c,
 		set_bit(BCH_FS_NEED_ALLOC_WRITE, &c->flags);		\
 	}
 #define copy_bucket_field(_f)						\
-	if (dst->b[b].mark._f != src->b[b].mark._f) {			\
+	if (dst->b[b]._f != src->b[b]._f) {				\
 		if (verify)						\
 			fsck_err(c, "bucket %u:%zu gen %u data type %s has wrong " #_f	\
 				": got %u, should be %u", dev, b,	\
 				dst->b[b].mark.gen,			\
 				bch2_data_types[dst->b[b].mark.data_type],\
-				dst->b[b].mark._f, src->b[b].mark._f);	\
-		dst->b[b]._mark._f = src->b[b].mark._f;			\
+				dst->b[b]._f, src->b[b]._f);		\
+		dst->b[b]._f = src->b[b]._f;				\
 		set_bit(BCH_FS_NEED_ALLOC_WRITE, &c->flags);		\
 	}
 #define copy_dev_field(_f, _msg, ...)					\
@@ -1238,11 +1229,13 @@ static int bch2_gc_done(struct bch_fs *c,
 		size_t b;
 
 		for (b = 0; b < src->nbuckets; b++) {
-			copy_bucket_field(gen);
-			copy_bucket_field(data_type);
+			copy_bucket_field(_mark.gen);
+			copy_bucket_field(_mark.data_type);
+			copy_bucket_field(_mark.stripe);
+			copy_bucket_field(_mark.dirty_sectors);
+			copy_bucket_field(_mark.cached_sectors);
+			copy_bucket_field(stripe_redundancy);
 			copy_bucket_field(stripe);
-			copy_bucket_field(dirty_sectors);
-			copy_bucket_field(cached_sectors);
 
 			dst->b[b].oldest_gen = src->b[b].oldest_gen;
 		}

@@ -15,6 +15,7 @@
 #include "io.h"
 #include "keylist.h"
 #include "recovery.h"
+#include "replicas.h"
 #include "super-io.h"
 #include "util.h"
 
@@ -1272,16 +1273,15 @@ found:
 	return h;
 }
 
-static enum bucket_alloc_ret
-new_stripe_alloc_buckets(struct bch_fs *c, struct ec_stripe_head *h,
-			 struct closure *cl)
+static int new_stripe_alloc_buckets(struct bch_fs *c, struct ec_stripe_head *h,
+				    struct closure *cl)
 {
 	struct bch_devs_mask devs = h->devs;
 	struct open_bucket *ob;
 	struct open_buckets buckets;
 	unsigned i, j, nr_have_parity = 0, nr_have_data = 0;
 	bool have_cache = true;
-	enum bucket_alloc_ret ret = ALLOC_SUCCESS;
+	int ret = 0;
 
 	for (i = 0; i < h->s->new_stripe.key.v.nr_blocks; i++) {
 		if (test_bit(i, h->s->blocks_gotten)) {
@@ -1516,7 +1516,7 @@ struct ec_stripe_head *bch2_ec_stripe_head_get(struct bch_fs *c,
 
 err:
 	bch2_ec_stripe_head_put(c, h);
-	return ERR_PTR(-ret);
+	return ERR_PTR(ret);
 }
 
 void bch2_ec_stop_dev(struct bch_fs *c, struct bch_dev *ca)
@@ -1636,13 +1636,41 @@ int bch2_stripes_write(struct bch_fs *c, unsigned flags)
 
 static int bch2_stripes_read_fn(struct btree_trans *trans, struct bkey_s_c k)
 {
+	const struct bch_stripe *s;
 	struct bch_fs *c = trans->c;
+	struct stripe *m;
+	unsigned i;
 	int ret = 0;
 
-	if (k.k->type == KEY_TYPE_stripe)
-		ret = __ec_stripe_mem_alloc(c, k.k->p.offset, GFP_KERNEL) ?:
-			bch2_mark_key(trans, k,
-				      BTREE_TRIGGER_NOATOMIC);
+	if (k.k->type != KEY_TYPE_stripe)
+		return 0;
+
+	ret = __ec_stripe_mem_alloc(c, k.k->p.offset, GFP_KERNEL);
+	if (ret)
+		return ret;
+
+	s = bkey_s_c_to_stripe(k).v;
+
+	m = genradix_ptr(&c->stripes[0], k.k->p.offset);
+	m->alive	= true;
+	m->sectors	= le16_to_cpu(s->sectors);
+	m->algorithm	= s->algorithm;
+	m->nr_blocks	= s->nr_blocks;
+	m->nr_redundant	= s->nr_redundant;
+	m->blocks_nonempty = 0;
+
+	for (i = 0; i < s->nr_blocks; i++) {
+		m->block_sectors[i] =
+			stripe_blockcount_get(s, i);
+		m->blocks_nonempty += !!m->block_sectors[i];
+		m->ptrs[i] = s->ptrs[i];
+	}
+
+	bch2_bkey_to_replicas(&m->r.e, k);
+
+	spin_lock(&c->ec_stripes_heap_lock);
+	bch2_stripes_heap_update(c, m, k.k->p.offset);
+	spin_unlock(&c->ec_stripes_heap_lock);
 
 	return ret;
 }
