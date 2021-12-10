@@ -104,8 +104,8 @@ int cmd_device_add(int argc, char *argv[])
 	if (!fs_path)
 		die("Please supply a filesystem");
 
-	char *dev_path = arg_pop();
-	if (!dev_path)
+	dev_opts.path = arg_pop();
+	if (!dev_opts.path)
 		die("Please supply a device");
 
 	if (argc)
@@ -113,7 +113,6 @@ int cmd_device_add(int argc, char *argv[])
 
 	struct bchfs_handle fs = bcache_fs_open(fs_path);
 
-	dev_opts.path = dev_path;
 	dev_opts.fd = open_for_format(dev_opts.path, force);
 
 	struct bch_opt_strs fs_opt_strs;
@@ -122,9 +121,9 @@ int cmd_device_add(int argc, char *argv[])
 	struct bch_opts fs_opts = bch2_parse_opts(fs_opt_strs);
 
 	opt_set(fs_opts, block_size,
-		read_file_u64(fs.sysfs_fd, "block_size") >> 9);
+		read_file_u64(fs.sysfs_fd, "options/block_size") >> 9);
 	opt_set(fs_opts, btree_node_size,
-		read_file_u64(fs.sysfs_fd, "btree_node_size") >> 9);
+		read_file_u64(fs.sysfs_fd, "options/btree_node_size") >> 9);
 
 	struct bch_sb *sb = bch2_format(fs_opt_strs,
 					fs_opts,

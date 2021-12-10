@@ -211,7 +211,7 @@ u64 read_file_u64(int dirfd, const char *path)
 {
 	char *buf = read_file_str(dirfd, path);
 	u64 v;
-	if (kstrtou64(buf, 10, &v))
+	if (bch2_strtou64_h(buf, &v))
 		die("read_file_u64: error parsing %s (got %s)", path, buf);
 	free(buf);
 	return v;
@@ -262,7 +262,9 @@ int open_for_format(const char *dev, bool force)
 	const char *fs_type = NULL, *fs_label = NULL;
 	size_t fs_type_len, fs_label_len;
 
-	int fd = xopen(dev, O_RDWR|O_EXCL);
+	int fd = open(dev, O_RDWR|O_EXCL);
+	if (fd < 0)
+		die("Error opening device to format %s: %m", dev);
 
 	if (force)
 		return fd;

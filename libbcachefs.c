@@ -899,7 +899,9 @@ struct bchfs_handle bcache_fs_open(const char *path)
 		free(ctl);
 	} else {
 		/* It's a path: */
-		ret.ioctl_fd = xopen(path, O_RDONLY);
+		ret.ioctl_fd = open(path, O_RDONLY);
+		if (ret.ioctl_fd < 0)
+			die("Error opening filesystem at %s: %m", path);
 
 		struct bch_ioctl_query_uuid uuid;
 		if (ioctl(ret.ioctl_fd, BCH_IOCTL_QUERY_UUID, &uuid) < 0)
