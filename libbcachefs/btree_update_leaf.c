@@ -1300,8 +1300,8 @@ static int need_whiteout_for_snapshot(struct btree_trans *trans,
 	return ret;
 }
 
-int bch2_trans_update(struct btree_trans *trans, struct btree_iter *iter,
-		      struct bkey_i *k, enum btree_update_flags flags)
+int __must_check bch2_trans_update(struct btree_trans *trans, struct btree_iter *iter,
+				   struct bkey_i *k, enum btree_update_flags flags)
 {
 	struct btree_insert_entry *i, n;
 
@@ -1323,8 +1323,6 @@ int bch2_trans_update(struct btree_trans *trans, struct btree_iter *iter,
 		.k		= k,
 		.ip_allocated	= _RET_IP_,
 	};
-
-	__btree_path_get(n.path, true);
 
 #ifdef CONFIG_BCACHEFS_DEBUG
 	trans_for_each_update(trans, i)
@@ -1362,15 +1360,16 @@ int bch2_trans_update(struct btree_trans *trans, struct btree_iter *iter,
 		if (n.cached && !i->cached) {
 			i->k = n.k;
 			i->flags = n.flags;
-
-			__btree_path_get(n.path, false);
-		} else {
-			bch2_path_put(trans, i->path, true);
-			*i = n;
+			return 0;
 		}
+
+		bch2_path_put(trans, i->path, true);
+		*i = n;
 	} else
 		array_insert_item(trans->updates, trans->nr_updates,
 				  i - trans->updates, n);
+
+	__btree_path_get(n.path, true);
 
 	return 0;
 }

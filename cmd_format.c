@@ -33,12 +33,12 @@
 x(0,	replicas,		required_argument)	\
 x(0,	encrypted,		no_argument)		\
 x(0,	no_passphrase,		no_argument)		\
-x('L',	label,			required_argument)	\
+x('L',	fs_label,		required_argument)	\
 x('U',	uuid,			required_argument)	\
 x(0,	fs_size,		required_argument)	\
 x(0,	superblock_size,	required_argument)	\
 x(0,	bucket_size,		required_argument)	\
-x('g',	group,			required_argument)	\
+x('l',	label,			required_argument)	\
 x(0,	discard,		no_argument)		\
 x(0,	data_allowed,		required_argument)	\
 x(0,	durability,		required_argument)	\
@@ -61,7 +61,7 @@ static void usage(void)
 	     "      --replicas=#            Sets both data and metadata replicas\n"
 	     "      --encrypted             Enable whole filesystem encryption (chacha20/poly1305)\n"
 	     "      --no_passphrase         Don't encrypt master encryption key\n"
-	     "  -L, --label=label\n"
+	     "  -L, --fs_label=label\n"
 	     "  -U, --uuid=uuid\n"
 	     "      --superblock_size=size\n"
 	     "\n"
@@ -69,14 +69,14 @@ static void usage(void)
 
 	bch2_opts_usage(OPT_DEVICE);
 
-	puts("  -g, --group=label           Disk group\n"
+	puts("  -l, --label=label           Disk label\n"
 	     "\n"
 	     "  -f, --force\n"
 	     "  -q, --quiet                 Only print errors\n"
 	     "  -h, --help                  Display this help and exit\n"
 	     "\n"
 	     "Device specific options must come before corresponding devices, e.g.\n"
-	     "  bcachefs format --group cache /dev/sdb /dev/sdc\n"
+	     "  bcachefs format --label cache /dev/sdb /dev/sdc\n"
 	     "\n"
 	     "Report bugs to <linux-bcache@vger.kernel.org>");
 }
@@ -147,7 +147,7 @@ int cmd_format(int argc, char *argv[])
 		case O_no_passphrase:
 			no_passphrase = true;
 			break;
-		case O_label:
+		case O_fs_label:
 		case 'L':
 			opts.label = optarg;
 			break;
@@ -176,9 +176,9 @@ int cmd_format(int argc, char *argv[])
 			dev_opts.bucket_size =
 				hatoi_validate(optarg, "bucket size");
 			break;
-		case O_group:
-		case 'g':
-			dev_opts.group = optarg;
+		case O_label:
+		case 'l':
+			dev_opts.label = optarg;
 			break;
 		case O_discard:
 			dev_opts.discard = true;

@@ -247,15 +247,15 @@ struct bch_sb *bch2_format(struct bch_opt_strs	fs_opt_strs,
 		SET_BCH_MEMBER_DURABILITY(m,	i->durability + 1);
 	}
 
-	/* Disk groups */
+	/* Disk labels*/
 	for (i = devs; i < devs + nr_devs; i++) {
 		struct bch_member *m = mi->members + (i - devs);
 		int idx;
 
-		if (!i->group)
+		if (!i->label)
 			continue;
 
-		idx = bch2_disk_path_find_or_create(&sb, i->group);
+		idx = bch2_disk_path_find_or_create(&sb, i->label);
 		if (idx < 0)
 			die("error creating disk path: %s", idx);
 

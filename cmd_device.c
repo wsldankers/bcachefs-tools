@@ -49,7 +49,7 @@ static void device_add_usage(void)
 	     "  -S, --fs_size=size          Size of filesystem on device\n"
 	     "  -B, --bucket=size           Bucket size\n"
 	     "  -D, --discard               Enable discards\n"
-	     "  -g, --group=group           Disk group\n"
+	     "  -l, --label=label           Disk label\n"
 	     "  -f, --force                 Use device even if it appears to already be formatted\n"
 	     "  -h, --help                  Display this help and exit\n"
 	     "\n"
@@ -62,7 +62,7 @@ int cmd_device_add(int argc, char *argv[])
 		{ "fs_size",		required_argument,	NULL, 'S' },
 		{ "bucket",		required_argument,	NULL, 'B' },
 		{ "discard",		no_argument,		NULL, 'D' },
-		{ "group",		required_argument,	NULL, 'g' },
+		{ "label",		required_argument,	NULL, 'l' },
 		{ "force",		no_argument,		NULL, 'f' },
 		{ "help",		no_argument,		NULL, 'h' },
 		{ NULL }
@@ -89,7 +89,7 @@ int cmd_device_add(int argc, char *argv[])
 			dev_opts.discard = true;
 			break;
 		case 'g':
-			dev_opts.group = strdup(optarg);
+			dev_opts.label = strdup(optarg);
 			break;
 		case 'f':
 			force = true;

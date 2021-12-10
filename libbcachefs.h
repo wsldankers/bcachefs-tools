@@ -54,7 +54,7 @@ struct dev_opts {
 	char		*path;
 	u64		size; /* 512 byte sectors */
 	unsigned	bucket_size;
-	const char	*group;
+	const char	*label;
 	unsigned	data_allowed;
 	unsigned	durability;
 	bool		discard;
