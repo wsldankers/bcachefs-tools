@@ -25,7 +25,6 @@ struct stripe {
 
 struct gc_stripe {
 	u16			sectors;
-	u8			algorithm;
 
 	u8			nr_blocks;
 	u8			nr_redundant;
