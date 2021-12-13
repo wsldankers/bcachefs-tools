@@ -231,7 +231,7 @@ struct bch_sb *bch2_format(struct bch_opt_strs	fs_opt_strs,
 	/* Member info: */
 	mi = bch2_sb_resize_members(&sb,
 			(sizeof(*mi) + sizeof(struct bch_member) *
-			 nr_devs) / sizeof(u64));
+			nr_devs) / sizeof(u64));
 
 	for (i = devs; i < devs + nr_devs; i++) {
 		struct bch_member *m = mi->members + (i - devs);
@@ -410,10 +410,10 @@ static int bch2_sb_get_target(struct bch_sb *sb, char *buf, size_t len, u64 v)
 		struct bch_disk_group *g = gi->entries + t.group;
 
 		if (t.group < disk_groups_nr(gi) && !BCH_GROUP_DELETED(g)) {
-			ret = scnprintf(buf, len, "Group %u (%.*s)", t.group,
+			ret = scnprintf(buf, len, "Label %u (%.*s)", t.group,
 				BCH_SB_LABEL_SIZE, g->label);
 		} else {
-			ret = scnprintf(buf, len, "Bad group %u", t.group);
+			ret = scnprintf(buf, len, "Bad label %u", t.group);
 		}
 		break;
 	}
@@ -475,7 +475,7 @@ static void bch2_sb_print_members(struct bch_sb *sb, struct bch_sb_field *f,
 		char member_uuid_str[40];
 		char data_allowed_str[100];
 		char data_has_str[100];
-		char group[BCH_SB_LABEL_SIZE+10];
+		char label [BCH_SB_LABEL_SIZE+10];
 		char time_str[64];
 
 		if (!bch2_member_exists(m))
@@ -487,14 +487,14 @@ static void bch2_sb_print_members(struct bch_sb *sb, struct bch_sb_field *f,
 			unsigned idx = BCH_MEMBER_GROUP(m) - 1;
 
 			if (idx < disk_groups_nr(gi)) {
-				snprintf(group, sizeof(group), "%.*s (%u)",
+				scnprintf(label, sizeof(label), "%.*s (%u)",
 					BCH_SB_LABEL_SIZE,
 					gi->entries[idx].label, idx);
 			} else {
-				strcpy(group, "(bad disk groups section)");
+				strcpy(label, "(bad disk labels section)");
 			}
 		} else {
-			strcpy(group, "(none)");
+			strcpy(label, "(none)");
 		}
 
 		bch2_flags_to_text(&PBUF(data_allowed_str),
@@ -545,7 +545,7 @@ static void bch2_sb_print_members(struct bch_sb *sb, struct bch_sb_field *f,
 		       ? bch2_member_states[BCH_MEMBER_STATE(m)]
 		       : "unknown",
 
-		       group,
+		       label,
 		       data_allowed_str,
 		       data_has_str,
 
@@ -573,7 +573,7 @@ static void bch2_sb_print_crypt(struct bch_sb *sb, struct bch_sb_field *f,
 }
 
 static void bch2_sb_print_replicas_v0(struct bch_sb *sb, struct bch_sb_field *f,
-				   enum units units)
+				      enum units units)
 {
 	struct bch_sb_field_replicas_v0 *replicas = field_to_type(f, replicas_v0);
 	struct bch_replicas_entry_v0 *e;
@@ -636,7 +636,7 @@ static void bch2_sb_print_clean(struct bch_sb *sb, struct bch_sb_field *f,
 }
 
 static void bch2_sb_print_journal_seq_blacklist(struct bch_sb *sb, struct bch_sb_field *f,
-				enum units units)
+						enum units units)
 {
 	struct bch_sb_field_journal_seq_blacklist *bl = field_to_type(f, journal_seq_blacklist);
 	unsigned i, nr = blacklist_nr_entries(bl);

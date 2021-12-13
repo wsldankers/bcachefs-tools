@@ -37,14 +37,14 @@ static void usage(void)
 	     "Repair:\n"
 	     "  fsck                     Check an existing filesystem for errors\n"
 	     "\n"
-	     "Startup/shutdown, assembly of multi device filesystems:\n"
 #if 0
+	     "Startup/shutdown, assembly of multi device filesystems:\n"
 	     "  assemble                 Assemble an existing multi device filesystem\n"
 	     "  incremental              Incrementally assemble an existing multi device filesystem\n"
 	     "  run                      Start a partially assembled filesystem\n"
 	     "  stop	                 Stop a running filesystem\n"
-#endif
 	     "\n"
+#endif
 	     "Commands for managing a running filesystem:\n"
 	     "  fs usage                 Show disk usage\n"
 	     "\n"
