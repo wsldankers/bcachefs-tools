@@ -40,6 +40,7 @@ static void init_layout(struct bch_sb_layout *l,
 			unsigned sb_size,
 			u64 sb_start, u64 sb_end)
 {
+	u64 sb_pos = sb_start;
 	unsigned i;
 
 	memset(l, 0, sizeof(*l));
@@ -51,15 +52,16 @@ static void init_layout(struct bch_sb_layout *l,
 
 	/* Create two superblocks in the allowed range: */
 	for (i = 0; i < l->nr_superblocks; i++) {
-		if (sb_start != BCH_SB_SECTOR)
-			sb_start = round_up(sb_start, block_size);
+		if (sb_pos != BCH_SB_SECTOR)
+			sb_pos = round_up(sb_pos, block_size);
 
-		l->sb_offset[i] = cpu_to_le64(sb_start);
-		sb_start += sb_size;
+		l->sb_offset[i] = cpu_to_le64(sb_pos);
+		sb_pos += sb_size;
 	}
 
-	if (sb_start >= sb_end)
-		die("insufficient space for superblocks");
+	if (sb_pos > sb_end)
+		die("insufficient space for superblocks: start %llu end %llu > %llu size %u",
+		    sb_start, sb_pos, sb_end, sb_size);
 }
 
 void bch2_pick_bucket_size(struct bch_opts opts, struct dev_opts *dev)
