@@ -123,6 +123,7 @@ static void update_inode(struct bch_fs *c,
 	int ret;
 
 	bch2_inode_pack(c, &packed, inode);
+	packed.inode.k.p.snapshot = U32_MAX;
 	ret = bch2_btree_insert(c, BTREE_ID_inodes, &packed.inode.k_i,
 				NULL, NULL, 0);
 	if (ret)
@@ -154,6 +155,8 @@ static struct bch_inode_unpacked create_file(struct bch_fs *c,
 	struct qstr qstr = QSTR(name);
 	struct bch_inode_unpacked new_inode;
 
+	bch2_inode_init_early(c, &new_inode);
+
 	int ret = bch2_trans_do(c, NULL, NULL, 0,
 		bch2_create_trans(&trans,
 				  (subvol_inum) { 1, parent->bi_inum }, parent,
@@ -161,7 +164,7 @@ static struct bch_inode_unpacked create_file(struct bch_fs *c,
 				  uid, gid, mode, rdev, NULL, NULL,
 				  (subvol_inum) {}, 0));
 	if (ret)
-		die("error creating file: %s", strerror(-ret));
+		die("error creating %s: %s", name, strerror(-ret));
 
 	return new_inode;
 }
@@ -236,37 +239,39 @@ static void copy_xattrs(struct bch_fs *c, struct bch_inode_unpacked *dst,
 	}
 }
 
-static char buf[1 << 20] __aligned(PAGE_SIZE);
+#define WRITE_DATA_BUF	(1 << 20)
+
+static char buf[WRITE_DATA_BUF] __aligned(PAGE_SIZE);
 
 static void write_data(struct bch_fs *c,
 		       struct bch_inode_unpacked *dst_inode,
 		       u64 dst_offset, void *buf, size_t len)
 {
-	struct {
-		struct bch_write_op op;
-		struct bio_vec bv[sizeof(buf) / PAGE_SIZE];
-	} o;
+	struct bch_write_op op;
+	struct bio_vec bv[WRITE_DATA_BUF / PAGE_SIZE];
 	struct closure cl;
 
 	BUG_ON(dst_offset	& (block_bytes(c) - 1));
 	BUG_ON(len		& (block_bytes(c) - 1));
+	BUG_ON(len > WRITE_DATA_BUF);
 
 	closure_init_stack(&cl);
 
-	bio_init(&o.op.wbio.bio, o.bv, ARRAY_SIZE(o.bv));
-	bch2_bio_map(&o.op.wbio.bio, buf, len);
+	bio_init(&op.wbio.bio, bv, ARRAY_SIZE(bv));
+	bch2_bio_map(&op.wbio.bio, buf, len);
 
-	bch2_write_op_init(&o.op, c, bch2_opts_to_inode_opts(c->opts));
-	o.op.write_point	= writepoint_hashed(0);
-	o.op.nr_replicas	= 1;
-	o.op.pos		= POS(dst_inode->bi_inum, dst_offset >> 9);
+	bch2_write_op_init(&op, c, bch2_opts_to_inode_opts(c->opts));
+	op.write_point	= writepoint_hashed(0);
+	op.nr_replicas	= 1;
+	op.subvol	= 1;
+	op.pos		= SPOS(dst_inode->bi_inum, dst_offset >> 9, U32_MAX);
 
-	int ret = bch2_disk_reservation_get(c, &o.op.res, len >> 9,
+	int ret = bch2_disk_reservation_get(c, &op.res, len >> 9,
 					    c->opts.data_replicas, 0);
 	if (ret)
 		die("error reserving space in new filesystem: %s", strerror(-ret));
 
-	closure_call(&o.op.cl, bch2_write, NULL, &cl);
+	closure_call(&op.cl, bch2_write, NULL, &cl);
 	closure_sync(&cl);
 
 	dst_inode->bi_sectors += len >> 9;
@@ -318,6 +323,7 @@ static void link_data(struct bch_fs *c, struct bch_inode_unpacked *dst,
 		e = bkey_extent_init(&k.k);
 		e->k.p.inode	= dst->bi_inum;
 		e->k.p.offset	= logical + sectors;
+		e->k.p.snapshot	= U32_MAX;
 		e->k.size	= sectors;
 		bch2_bkey_append_ptr(&e->k_i, (struct bch_extent_ptr) {
 					.offset = physical,
@@ -430,6 +436,7 @@ static void copy_dir(struct copy_fs_state *s,
 
 		if (!strcmp(d->d_name, ".") ||
 		    !strcmp(d->d_name, "..") ||
+		    !strcmp(d->d_name, "lost+found") ||
 		    stat.st_ino == s->bcachefs_inum)
 			continue;
 
