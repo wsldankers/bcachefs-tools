@@ -1271,22 +1271,24 @@ err:
  * When deleting, check if we need to emit a whiteout (because we're overwriting
  * something in an ancestor snapshot)
  */
-static int need_whiteout_for_snapshot(struct btree_trans *trans,
-				      enum btree_id btree_id, struct bpos pos)
+static int need_whiteout_for_snapshot(struct btree_trans *trans, struct btree_iter *orig)
 {
 	struct btree_iter iter;
 	struct bkey_s_c k;
-	u32 snapshot = pos.snapshot;
+	u32 snapshot = orig->pos.snapshot;
 	int ret;
 
-	if (!bch2_snapshot_parent(trans->c, pos.snapshot))
+	if (!bch2_snapshot_parent(trans->c, snapshot))
 		return 0;
 
-	pos.snapshot++;
+	bch2_trans_copy_iter(&iter, orig);
+	iter.flags &= BTREE_ITER_FILTER_SNAPSHOTS;
+	iter.flags |= BTREE_ITER_ALL_SNAPSHOTS;
 
-	for_each_btree_key_norestart(trans, iter, btree_id, pos,
-			   BTREE_ITER_ALL_SNAPSHOTS, k, ret) {
-		if (bkey_cmp(k.k->p, pos))
+	bch2_btree_iter_advance(&iter);
+
+	for_each_btree_key_continue_norestart(iter, 0, k, ret) {
+		if (bkey_cmp(k.k->p, orig->pos))
 			break;
 
 		if (bch2_snapshot_is_ancestor(trans->c, snapshot,
@@ -1312,6 +1314,7 @@ int __must_check bch2_trans_update(struct btree_trans *trans, struct btree_iter 
 
 	BUG_ON(trans->nr_updates >= BTREE_ITER_MAX);
 	BUG_ON(bpos_cmp(k->k.p, iter->path->pos));
+	BUG_ON(bpos_cmp(k->k.p, iter->pos));
 
 	n = (struct btree_insert_entry) {
 		.flags		= flags,
@@ -1332,7 +1335,7 @@ int __must_check bch2_trans_update(struct btree_trans *trans, struct btree_iter 
 
 	if (bkey_deleted(&n.k->k) &&
 	    (iter->flags & BTREE_ITER_FILTER_SNAPSHOTS)) {
-		int ret = need_whiteout_for_snapshot(trans, n.btree_id, n.k->k.p);
+		int ret = need_whiteout_for_snapshot(trans, iter);
 		if (unlikely(ret < 0))
 			return ret;
 

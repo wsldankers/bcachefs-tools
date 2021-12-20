@@ -28,15 +28,6 @@ PYTEST_CMD?=$(shell \
 )
 PYTEST:=$(PYTEST_CMD) $(PYTEST_ARGS)
 
-RST2MAN_ARGS?=
-RST2MAN_CMD?=$(shell \
-	command -v rst2man \
-	|| which rst2man \
-	|| command -v rst2man.py \
-	|| which rst2man.py \
-)
-RST2MAN:=$(RST2MAN_CMD) $(RST2MAN_ARGS)
-
 CARGO_ARGS=
 CARGO=cargo $(CARGO_ARGS)
 CARGO_PROFILE=release
@@ -108,18 +99,6 @@ TAGS:
 tags:
 	ctags -R .
 
-DOCSRC := opts_macro.h bcachefs.5.rst.tmpl
-DOCGENERATED := bcachefs.5 doc/bcachefs.5.rst
-DOCDEPS := $(addprefix ./doc/,$(DOCSRC))
-bcachefs.5: $(DOCDEPS)  libbcachefs/opts.h
-ifneq (,$(RST2MAN_CMD))
-	$(CC) doc/opts_macro.h -I libbcachefs -I include -E 2>/dev/null	\
-		| doc/macro2rst.py
-	$(RST2MAN) doc/bcachefs.5.rst bcachefs.5
-else
-	@echo "WARNING: no rst2man found! Man page not generated."
-endif
-
 SRCS=$(shell find . -type f -iname '*.c')
 DEPS=$(SRCS:.c=.d)
 -include $(DEPS)
@@ -183,6 +162,11 @@ clean:
 .PHONY: deb
 deb: all
 	debuild -us -uc -nc -b -i -I
+
+bcachefs-principles-of-operation.pdf: bcachefs-principles-of-operation.tex
+	pdflatex bcachefs-principles-of-operation.tex && pdflatex bcachefs-principles-of-operation.tex
+
+doc: bcachefs-principles-of-operation.pdf
 
 .PHONY: update-bcachefs-sources
 update-bcachefs-sources:
