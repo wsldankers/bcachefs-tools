@@ -76,7 +76,7 @@ else
 endif
 
 .PHONY: all
-all: bcachefs bcachefs.5 lib
+all: bcachefs lib
 
 .PHONY: lib
 lib: libbcachefs.so
@@ -163,8 +163,9 @@ clean:
 deb: all
 	debuild -us -uc -nc -b -i -I
 
-bcachefs-principles-of-operation.pdf: bcachefs-principles-of-operation.tex
-	pdflatex bcachefs-principles-of-operation.tex && pdflatex bcachefs-principles-of-operation.tex
+doc/bcachefs-principles-of-operation.pdf: doc/bcachefs-principles-of-operation.tex
+	pdflatex doc/bcachefs-principles-of-operation.tex
+	pdflatex doc/bcachefs-principles-of-operation.tex
 
 doc: bcachefs-principles-of-operation.pdf
 
