@@ -248,11 +248,11 @@ unsigned get_blocksize(const char *path, int fd)
 	struct stat statbuf = xfstat(fd);
 
 	if (!S_ISBLK(statbuf.st_mode))
-		return statbuf.st_blksize >> 9;
+		return statbuf.st_blksize;
 
 	unsigned ret;
 	xioctl(fd, BLKPBSZGET, &ret);
-	return ret >> 9;
+	return ret;
 }
 
 /* Open a block device, do magic blkid stuff to probe for existing filesystems: */
