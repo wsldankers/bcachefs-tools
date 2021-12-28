@@ -445,6 +445,7 @@ struct bch_dev {
 	 * Or rcu_read_lock(), but only for ptr_stale():
 	 */
 	struct bucket_array __rcu *buckets[2];
+	struct bucket_gens	*bucket_gens;
 	unsigned long		*buckets_nouse;
 	struct rw_semaphore	bucket_lock;
 
@@ -453,6 +454,7 @@ struct bch_dev {
 	struct bch_dev_usage __percpu	*usage_gc;
 
 	/* Allocator: */
+	u64			new_fs_bucket_idx;
 	struct task_struct __rcu *alloc_thread;
 
 	/*
@@ -748,17 +750,18 @@ struct bch_fs {
 	/* JOURNAL SEQ BLACKLIST */
 	struct journal_seq_blacklist_table *
 				journal_seq_blacklist_table;
-	struct work_struct	journal_seq_blacklist_gc_work;
 
 	/* ALLOCATOR */
 	spinlock_t		freelist_lock;
 	struct closure_waitlist	freelist_wait;
 	u64			blocked_allocate;
 	u64			blocked_allocate_open_bucket;
+
 	open_bucket_idx_t	open_buckets_freelist;
 	open_bucket_idx_t	open_buckets_nr_free;
 	struct closure_waitlist	open_buckets_wait;
 	struct open_bucket	open_buckets[OPEN_BUCKETS_COUNT];
+	open_bucket_idx_t	open_buckets_hash[OPEN_BUCKETS_COUNT];
 
 	struct write_point	btree_write_point;
 	struct write_point	rebalance_write_point;

@@ -231,7 +231,6 @@ struct bch_sb *bch2_format(struct bch_opt_strs	fs_opt_strs,
 		m->first_bucket	= 0;
 		m->bucket_size	= cpu_to_le16(i->bucket_size);
 
-		SET_BCH_MEMBER_REPLACEMENT(m,	BCH_CACHE_REPLACEMENT_lru);
 		SET_BCH_MEMBER_DISCARD(m,	i->discard);
 		SET_BCH_MEMBER_DATA_ALLOWED(m,	i->data_allowed);
 		SET_BCH_MEMBER_DURABILITY(m,	i->durability + 1);
@@ -521,7 +520,6 @@ static void bch2_sb_print_members(struct bch_sb *sb, struct bch_sb_field *f,
 
 		       "    Has data:			%s\n"
 
-		       "    Replacement policy:		%s\n"
 		       "    Discard:			%llu\n",
 		       i, member_uuid_str,
 		       pr_units(le16_to_cpu(m->bucket_size) *
@@ -538,10 +536,6 @@ static void bch2_sb_print_members(struct bch_sb *sb, struct bch_sb_field *f,
 		       label,
 		       data_allowed_str,
 		       data_has_str,
-
-		       BCH_MEMBER_REPLACEMENT(m) < BCH_CACHE_REPLACEMENT_NR
-		       ? bch2_cache_replacement_policies[BCH_MEMBER_REPLACEMENT(m)]
-		       : "unknown",
 
 		       BCH_MEMBER_DISCARD(m));
 	}

@@ -528,8 +528,6 @@ void __bch2_fs_stop(struct bch_fs *c)
 
 	set_bit(BCH_FS_STOPPING, &c->flags);
 
-	cancel_work_sync(&c->journal_seq_blacklist_gc_work);
-
 	down_write(&c->state_lock);
 	bch2_fs_read_only(c);
 	up_write(&c->state_lock);
@@ -691,9 +689,6 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 	mutex_init(&c->snapshot_table_lock);
 
 	spin_lock_init(&c->btree_write_error_lock);
-
-	INIT_WORK(&c->journal_seq_blacklist_gc_work,
-		  bch2_blacklist_entries_gc);
 
 	INIT_LIST_HEAD(&c->journal_entries);
 	INIT_LIST_HEAD(&c->journal_iters);
@@ -1600,8 +1595,6 @@ int bch2_dev_add(struct bch_fs *c, const char *path)
 	struct bch_dev *ca = NULL;
 	struct bch_sb_field_members *mi;
 	struct bch_member dev_mi;
-	struct bucket_array *buckets;
-	struct bucket *g;
 	unsigned dev_idx, nr_devices, u64s;
 	int ret;
 
@@ -1630,20 +1623,6 @@ int bch2_dev_add(struct bch_fs *c, const char *path)
 		bch2_dev_free(ca);
 		return ret;
 	}
-
-	/*
-	 * We want to allocate journal on the new device before adding the new
-	 * device to the filesystem because allocating after we attach requires
-	 * spinning up the allocator thread, and the allocator thread requires
-	 * doing btree writes, which if the existing devices are RO isn't going
-	 * to work
-	 *
-	 * So we have to mark where the superblocks are, but marking allocated
-	 * data normally updates the filesystem usage too, so we have to mark,
-	 * allocate the journal, reset all the marks, then remark after we
-	 * attach...
-	 */
-	bch2_mark_dev_superblock(NULL, ca, 0);
 
 	err = "journal alloc failed";
 	ret = bch2_dev_journal_alloc(ca);
@@ -1705,20 +1684,12 @@ have_slot:
 
 	bch2_dev_usage_journal_reserve(c);
 
-	/*
-	 * Clear marks before marking transactionally in the btree, so that
-	 * per-device accounting gets done correctly:
-	 */
-	down_read(&ca->bucket_lock);
-	buckets = bucket_array(ca);
-	for_each_bucket(g, buckets)
-		atomic64_set(&g->_mark.v, 0);
-	up_read(&ca->bucket_lock);
-
 	err = "error marking superblock";
 	ret = bch2_trans_mark_dev_sb(c, ca);
 	if (ret)
 		goto err_late;
+
+	ca->new_fs_bucket_idx = 0;
 
 	if (ca->mi.state == BCH_MEMBER_STATE_rw) {
 		ret = __bch2_dev_read_write(c, ca);
