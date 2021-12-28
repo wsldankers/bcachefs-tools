@@ -163,8 +163,6 @@ int cmd_format(int argc, char *argv[])
 		case O_fs_size:
 			if (bch2_strtoull_h(optarg, &dev_opts.size))
 				die("invalid filesystem size");
-
-			dev_opts.size >>= 9;
 			break;
 		case O_superblock_size:
 			if (bch2_strtouint_h(optarg, &opts.superblock_size))
@@ -173,8 +171,8 @@ int cmd_format(int argc, char *argv[])
 			opts.superblock_size >>= 9;
 			break;
 		case O_bucket_size:
-			dev_opts.bucket_size =
-				hatoi_validate(optarg, "bucket size");
+			if (bch2_strtoull_h(optarg, &dev_opts.bucket_size))
+				die("bad bucket_size %s", optarg);
 			break;
 		case O_label:
 		case 'l':
@@ -258,7 +256,7 @@ int cmd_format(int argc, char *argv[])
 						darray_size(device_paths),
 						bch2_opts_empty());
 		if (IS_ERR(c))
-			die("error opening %s: %s", device_paths.item,
+			die("error opening %s: %s", device_paths.item[0],
 			    strerror(-PTR_ERR(c)));
 
 		bch2_fs_stop(c);
