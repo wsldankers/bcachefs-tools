@@ -14,18 +14,18 @@
 
 static inline void *__vmalloc(unsigned long size, gfp_t gfp_mask)
 {
+	unsigned i = 0;
 	void *p;
 
 	size = round_up(size, PAGE_SIZE);
 
-	run_shrinkers();
+	do {
+		run_shrinkers();
 
-	p = aligned_alloc(PAGE_SIZE, size);
-	if (!p)
-		return NULL;
-
-	if (gfp_mask & __GFP_ZERO)
-		memset(p, 0, size);
+		p = aligned_alloc(PAGE_SIZE, size);
+		if (p && gfp_mask & __GFP_ZERO)
+			memset(p, 0, size);
+	} while (!p && i++ < 10);
 
 	return p;
 }
