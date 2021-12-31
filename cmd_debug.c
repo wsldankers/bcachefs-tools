@@ -595,9 +595,6 @@ int cmd_list_journal(int argc, char *argv[])
 
 	struct journal_replay *p;
 	struct jset_entry *entry;
-	struct bkey_i *k, *_n;
-
-	/* This could be greatly expanded: */
 
 	list_for_each_entry(p, &c->journal_entries, list) {
 		printf("journal entry   %8llu\n"
@@ -608,14 +605,11 @@ int cmd_list_journal(int argc, char *argv[])
 		       le32_to_cpu(p->j.version),
 		       le64_to_cpu(p->j.last_seq));
 
-		for_each_jset_key(k, _n, entry, &p->j) {
-			char buf[200];
+		vstruct_for_each(&p->j, entry) {
+			char buf[500];
 
-			bch2_bkey_val_to_text(&PBUF(buf), c, bkey_i_to_s_c(k));
-			printf("btree %s l %u: %s\n",
-			       bch2_btree_ids[entry->btree_id],
-			       entry->level,
-			       buf);
+			bch2_journal_entry_to_text(&PBUF(buf), c, entry);
+			printf("  %s\n", buf);
 		}
 	}
 
