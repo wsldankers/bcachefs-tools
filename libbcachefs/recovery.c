@@ -109,17 +109,26 @@ static void journal_iter_fix(struct bch_fs *c, struct journal_iter *iter, unsign
 		iter->idx++;
 }
 
-int bch2_journal_key_insert(struct bch_fs *c, enum btree_id id,
-			    unsigned level, struct bkey_i *k)
+int bch2_journal_key_insert_take(struct bch_fs *c, enum btree_id id,
+				 unsigned level, struct bkey_i *k)
 {
 	struct journal_key n = {
 		.btree_id	= id,
 		.level		= level,
+		.k		= k,
 		.allocated	= true
 	};
 	struct journal_keys *keys = &c->journal_keys;
 	struct journal_iter *iter;
 	unsigned idx = journal_key_search(keys, id, level, k->k.p);
+
+	if (idx < keys->nr &&
+	    journal_key_cmp(&n, &keys->d[idx]) == 0) {
+		if (keys->d[idx].allocated)
+			kfree(keys->d[idx].k);
+		keys->d[idx] = n;
+		return 0;
+	}
 
 	if (keys->nr == keys->size) {
 		struct journal_keys new_keys = {
@@ -140,25 +149,29 @@ int bch2_journal_key_insert(struct bch_fs *c, enum btree_id id,
 		*keys = new_keys;
 	}
 
-	n.k = kmalloc(bkey_bytes(&k->k), GFP_KERNEL);
-	if (!n.k)
-		return -ENOMEM;
+	array_insert_item(keys->d, keys->nr, idx, n);
 
-	bkey_copy(n.k, k);
-
-	if (idx < keys->nr &&
-	    journal_key_cmp(&n, &keys->d[idx]) == 0) {
-		if (keys->d[idx].allocated)
-			kfree(keys->d[idx].k);
-		keys->d[idx] = n;
-	} else {
-		array_insert_item(keys->d, keys->nr, idx, n);
-
-		list_for_each_entry(iter, &c->journal_iters, list)
-			journal_iter_fix(c, iter, idx);
-	}
+	list_for_each_entry(iter, &c->journal_iters, list)
+		journal_iter_fix(c, iter, idx);
 
 	return 0;
+}
+
+int bch2_journal_key_insert(struct bch_fs *c, enum btree_id id,
+			    unsigned level, struct bkey_i *k)
+{
+	struct bkey_i *n;
+	int ret;
+
+	n = kmalloc(bkey_bytes(&k->k), GFP_KERNEL);
+	if (!n)
+		return -ENOMEM;
+
+	bkey_copy(n, k);
+	ret = bch2_journal_key_insert_take(c, id, level, n);
+	if (ret)
+		kfree(n);
+	return ret;
 }
 
 int bch2_journal_key_delete(struct bch_fs *c, enum btree_id id,
@@ -548,8 +561,8 @@ static int bch2_journal_replay_key(struct bch_fs *c, struct journal_key *k)
 
 static int journal_sort_seq_cmp(const void *_l, const void *_r)
 {
-	const struct journal_key *l = _l;
-	const struct journal_key *r = _r;
+	const struct journal_key *l = *((const struct journal_key **)_l);
+	const struct journal_key *r = *((const struct journal_key **)_r);
 
 	return  cmp_int(r->level,	l->level) ?:
 		cmp_int(l->journal_seq, r->journal_seq) ?:
@@ -557,18 +570,30 @@ static int journal_sort_seq_cmp(const void *_l, const void *_r)
 		bpos_cmp(l->k->k.p,	r->k->k.p);
 }
 
-static int bch2_journal_replay(struct bch_fs *c,
-			       struct journal_keys keys)
+static int bch2_journal_replay(struct bch_fs *c)
 {
+	struct journal_keys *keys = &c->journal_keys;
+	struct journal_key **keys_sorted, *k;
 	struct journal *j = &c->journal;
-	struct journal_key *i;
+	struct bch_dev *ca;
+	unsigned idx;
+	size_t i;
 	u64 seq;
 	int ret;
 
-	sort(keys.d, keys.nr, sizeof(keys.d[0]), journal_sort_seq_cmp, NULL);
+	keys_sorted = kmalloc_array(sizeof(*keys_sorted), keys->nr, GFP_KERNEL);
+	if (!keys_sorted)
+		return -ENOMEM;
 
-	if (keys.nr)
-		replay_now_at(j, keys.journal_seq_base);
+	for (i = 0; i < keys->nr; i++)
+		keys_sorted[i] = &keys->d[i];
+
+	sort(keys_sorted, keys->nr,
+	     sizeof(keys_sorted[0]),
+	     journal_sort_seq_cmp, NULL);
+
+	if (keys->nr)
+		replay_now_at(j, keys->journal_seq_base);
 
 	seq = j->replay_journal_seq;
 
@@ -576,26 +601,35 @@ static int bch2_journal_replay(struct bch_fs *c,
 	 * First replay updates to the alloc btree - these will only update the
 	 * btree key cache:
 	 */
-	for_each_journal_key(keys, i) {
+	for (i = 0; i < keys->nr; i++) {
+		k = keys_sorted[i];
+
 		cond_resched();
 
-		if (!i->level && i->btree_id == BTREE_ID_alloc) {
-			j->replay_journal_seq = keys.journal_seq_base + i->journal_seq;
-			ret = bch2_journal_replay_key(c, i);
+		if (!k->level && k->btree_id == BTREE_ID_alloc) {
+			j->replay_journal_seq = keys->journal_seq_base + k->journal_seq;
+			ret = bch2_journal_replay_key(c, k);
 			if (ret)
 				goto err;
 		}
 	}
 
+	/* Now we can start the allocator threads: */
+	set_bit(BCH_FS_ALLOC_REPLAY_DONE, &c->flags);
+	for_each_member_device(ca, c, idx)
+		bch2_wake_allocator(ca);
+
 	/*
 	 * Next replay updates to interior btree nodes:
 	 */
-	for_each_journal_key(keys, i) {
+	for (i = 0; i < keys->nr; i++) {
+		k = keys_sorted[i];
+
 		cond_resched();
 
-		if (i->level) {
-			j->replay_journal_seq = keys.journal_seq_base + i->journal_seq;
-			ret = bch2_journal_replay_key(c, i);
+		if (k->level) {
+			j->replay_journal_seq = keys->journal_seq_base + k->journal_seq;
+			ret = bch2_journal_replay_key(c, k);
 			if (ret)
 				goto err;
 		}
@@ -615,15 +649,17 @@ static int bch2_journal_replay(struct bch_fs *c,
 	/*
 	 * Now replay leaf node updates:
 	 */
-	for_each_journal_key(keys, i) {
+	for (i = 0; i < keys->nr; i++) {
+		k = keys_sorted[i];
+
 		cond_resched();
 
-		if (i->level || i->btree_id == BTREE_ID_alloc)
+		if (k->level || k->btree_id == BTREE_ID_alloc)
 			continue;
 
-		replay_now_at(j, keys.journal_seq_base + i->journal_seq);
+		replay_now_at(j, keys->journal_seq_base + k->journal_seq);
 
-		ret = bch2_journal_replay_key(c, i);
+		ret = bch2_journal_replay_key(c, k);
 		if (ret)
 			goto err;
 	}
@@ -633,10 +669,14 @@ static int bch2_journal_replay(struct bch_fs *c,
 
 	bch2_journal_set_replay_done(j);
 	bch2_journal_flush_all_pins(j);
+	kfree(keys_sorted);
+
 	return bch2_journal_error(j);
 err:
 	bch_err(c, "journal replay: error %d while replaying key at btree %s level %u",
-		ret, bch2_btree_ids[i->btree_id], i->level);
+		ret, bch2_btree_ids[k->btree_id], k->level);
+	kfree(keys_sorted);
+
 	return ret;
 }
 
@@ -1208,7 +1248,7 @@ use_clean:
 
 	bch_verbose(c, "starting journal replay");
 	err = "journal replay failed";
-	ret = bch2_journal_replay(c, c->journal_keys);
+	ret = bch2_journal_replay(c);
 	if (ret)
 		goto err;
 	bch_verbose(c, "journal replay done");
@@ -1380,6 +1420,7 @@ int bch2_fs_initialize(struct bch_fs *c)
 	for (i = 0; i < BTREE_ID_NR; i++)
 		bch2_btree_root_alloc(c, i);
 
+	set_bit(BCH_FS_ALLOC_REPLAY_DONE, &c->flags);
 	set_bit(BCH_FS_BTREE_INTERIOR_REPLAY_DONE, &c->flags);
 	set_bit(JOURNAL_RECLAIM_STARTED, &c->journal.flags);
 

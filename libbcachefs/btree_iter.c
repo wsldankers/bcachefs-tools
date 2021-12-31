@@ -2437,15 +2437,18 @@ struct bkey_s_c bch2_btree_iter_peek_slot(struct btree_iter *iter)
 		if (bkey_cmp(iter->pos, next) < 0) {
 			bkey_init(&iter->k);
 			iter->k.p = iter->pos;
-			bch2_key_resize(&iter->k,
-					min_t(u64, KEY_SIZE_MAX,
-					      (next.inode == iter->pos.inode
-					       ? next.offset
-					       : KEY_OFFSET_MAX) -
-					      iter->pos.offset));
+
+			if (iter->flags & BTREE_ITER_IS_EXTENTS) {
+				bch2_key_resize(&iter->k,
+						min_t(u64, KEY_SIZE_MAX,
+						      (next.inode == iter->pos.inode
+						       ? next.offset
+						       : KEY_OFFSET_MAX) -
+						      iter->pos.offset));
+				EBUG_ON(!iter->k.size);
+			}
 
 			k = (struct bkey_s_c) { &iter->k, NULL };
-			EBUG_ON(!k.k->size);
 		}
 	}
 

@@ -169,11 +169,11 @@ static int set_node_min(struct bch_fs *c, struct btree *b, struct bpos new_min)
 	new->v.min_key		= new_min;
 	SET_BTREE_PTR_RANGE_UPDATED(&new->v, true);
 
-	ret = bch2_journal_key_insert(c, b->c.btree_id, b->c.level + 1, &new->k_i);
-	kfree(new);
-
-	if (ret)
+	ret = bch2_journal_key_insert_take(c, b->c.btree_id, b->c.level + 1, &new->k_i);
+	if (ret) {
+		kfree(new);
 		return ret;
+	}
 
 	bch2_btree_node_drop_keys_outside_node(b);
 
@@ -198,11 +198,11 @@ static int set_node_max(struct bch_fs *c, struct btree *b, struct bpos new_max)
 	new->k.p		= new_max;
 	SET_BTREE_PTR_RANGE_UPDATED(&new->v, true);
 
-	ret = bch2_journal_key_insert(c, b->c.btree_id, b->c.level + 1, &new->k_i);
-	kfree(new);
-
-	if (ret)
+	ret = bch2_journal_key_insert_take(c, b->c.btree_id, b->c.level + 1, &new->k_i);
+	if (ret) {
+		kfree(new);
 		return ret;
+	}
 
 	bch2_btree_node_drop_keys_outside_node(b);
 
@@ -690,10 +690,10 @@ found:
 			}
 		}
 
-		ret = bch2_journal_key_insert(c, btree_id, level, new);
-		kfree(new);
-
-		if (!ret)
+		ret = bch2_journal_key_insert_take(c, btree_id, level, new);
+		if (ret)
+			kfree(new);
+		else
 			*k = bkey_i_to_s_c(new);
 	}
 fsck_err:
