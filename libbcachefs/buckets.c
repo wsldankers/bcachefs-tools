@@ -358,13 +358,6 @@ static void bch2_dev_usage_update(struct bch_fs *c, struct bch_dev *ca,
 	struct bch_fs_usage *fs_usage;
 	struct bch_dev_usage *u;
 
-	/*
-	 * Hack for bch2_fs_initialize path, where we're first marking sb and
-	 * journal non-transactionally:
-	 */
-	if (!journal_seq && !test_bit(BCH_FS_INITIALIZED, &c->flags))
-		journal_seq = 1;
-
 	preempt_disable();
 	fs_usage = fs_usage_ptr(c, journal_seq, gc);
 	u = dev_usage_ptr(ca, journal_seq, gc);
