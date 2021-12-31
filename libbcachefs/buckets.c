@@ -531,20 +531,6 @@ void bch2_mark_alloc_bucket(struct bch_fs *c, struct bch_dev *ca,
 	BUG_ON(owned_by_allocator == old.owned_by_allocator);
 }
 
-static inline u8 bkey_alloc_gen(struct bkey_s_c k)
-{
-	switch (k.k->type) {
-	case KEY_TYPE_alloc:
-		return bkey_s_c_to_alloc(k).v->gen;
-	case KEY_TYPE_alloc_v2:
-		return bkey_s_c_to_alloc_v2(k).v->gen;
-	case KEY_TYPE_alloc_v3:
-		return bkey_s_c_to_alloc_v3(k).v->gen;
-	default:
-		return 0;
-	}
-}
-
 static int bch2_mark_alloc(struct btree_trans *trans,
 			   struct bkey_s_c old, struct bkey_s_c new,
 			   unsigned flags)
@@ -589,7 +575,7 @@ static int bch2_mark_alloc(struct btree_trans *trans,
 		return 0;
 
 	percpu_down_read(&c->mark_lock);
-	if (!gc && new_u.gen != bkey_alloc_gen(old))
+	if (!gc && new_u.gen != old_u.gen)
 		*bucket_gen(ca, new.k->p.offset) = new_u.gen;
 
 	g = __bucket(ca, new.k->p.offset, gc);

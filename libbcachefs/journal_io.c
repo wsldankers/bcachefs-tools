@@ -558,20 +558,20 @@ static void journal_entry_dev_usage_to_text(struct printbuf *out, struct bch_fs 
 		container_of(entry, struct jset_entry_dev_usage, entry);
 	unsigned i, nr_types = jset_entry_dev_usage_nr_types(u);
 
-	pr_buf(out, "dev=%u ", le32_to_cpu(u->dev));
+	pr_buf(out, "dev=%u", le32_to_cpu(u->dev));
 
 	for (i = 0; i < nr_types; i++) {
 		if (i < BCH_DATA_NR)
-			pr_buf(out, "%s", bch2_data_types[i]);
+			pr_buf(out, " %s", bch2_data_types[i]);
 		else
-			pr_buf(out, "(unknown data type %u)", i);
+			pr_buf(out, " (unknown data type %u)", i);
 		pr_buf(out, ": buckets=%llu sectors=%llu fragmented=%llu",
 		       le64_to_cpu(u->d[i].buckets),
 		       le64_to_cpu(u->d[i].sectors),
 		       le64_to_cpu(u->d[i].fragmented));
 	}
 
-	pr_buf(out, "buckets_ec: %llu buckets_unavailable: %llu",
+	pr_buf(out, " buckets_ec: %llu buckets_unavailable: %llu",
 	       le64_to_cpu(u->buckets_ec),
 	       le64_to_cpu(u->buckets_unavailable));
 }
