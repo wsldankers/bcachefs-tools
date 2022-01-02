@@ -605,8 +605,6 @@ static void copy_fs(struct bch_fs *c, int src_fd, const char *src_path,
 
 	darray_free(s.extents);
 	genradix_free(&s.hardlinks);
-
-	bch2_alloc_write_all(c, false);
 }
 
 static void find_superblock_space(ranges extents,

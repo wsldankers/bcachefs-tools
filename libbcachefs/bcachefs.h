@@ -510,8 +510,6 @@ enum {
 	BCH_FS_INITIAL_GC_DONE,
 	BCH_FS_INITIAL_GC_UNFIXED,
 	BCH_FS_TOPOLOGY_REPAIR_DONE,
-	BCH_FS_ALLOC_REPLAY_DONE,
-	BCH_FS_BTREE_INTERIOR_REPLAY_DONE,
 	BCH_FS_FSCK_DONE,
 	BCH_FS_STARTED,
 	BCH_FS_RW,
@@ -531,7 +529,6 @@ enum {
 	/* misc: */
 	BCH_FS_NEED_ANOTHER_GC,
 	BCH_FS_DELETED_NODES,
-	BCH_FS_NEED_ALLOC_WRITE,
 	BCH_FS_REBUILD_REPLICAS,
 	BCH_FS_HOLD_BTREE_WRITES,
 };
@@ -860,7 +857,6 @@ struct bch_fs {
 	u64			reflink_hint;
 	reflink_gc_table	reflink_gc_table;
 	size_t			reflink_gc_nr;
-	size_t			reflink_gc_idx;
 
 	/* VFS IO PATH - fs-io.c */
 	struct bio_set		writepage_bioset;
