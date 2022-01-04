@@ -528,6 +528,8 @@ void __bch2_fs_stop(struct bch_fs *c)
 
 	set_bit(BCH_FS_STOPPING, &c->flags);
 
+	cancel_work_sync(&c->journal_seq_blacklist_gc_work);
+
 	down_write(&c->state_lock);
 	bch2_fs_read_only(c);
 	up_write(&c->state_lock);
@@ -690,6 +692,9 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 
 	spin_lock_init(&c->btree_write_error_lock);
 
+	INIT_WORK(&c->journal_seq_blacklist_gc_work,
+		  bch2_blacklist_entries_gc);
+
 	INIT_LIST_HEAD(&c->journal_entries);
 	INIT_LIST_HEAD(&c->journal_iters);
 
@@ -737,7 +742,7 @@ static struct bch_fs *bch2_fs_alloc(struct bch_sb *sb, struct bch_opts opts)
 	if (ret)
 		goto err;
 
-	scnprintf(c->name, sizeof(c->name), "%pU", &c->sb.user_uuid);
+	uuid_unparse_lower(c->sb.user_uuid.b, c->name);
 
 	/* Compat: */
 	if (sb->version <= bcachefs_metadata_version_inode_v2 &&
@@ -1251,6 +1256,8 @@ static int __bch2_dev_attach_bdev(struct bch_dev *ca, struct bch_sb_handle *sb)
 		ca->disk_sb.bdev->bd_holder = ca;
 	memset(sb, 0, sizeof(*sb));
 
+	ca->dev = ca->disk_sb.bdev->bd_dev;
+
 	percpu_ref_reinit(&ca->io_ref);
 
 	return 0;
@@ -1596,18 +1603,20 @@ int bch2_dev_add(struct bch_fs *c, const char *path)
 	struct bch_sb_field_members *mi;
 	struct bch_member dev_mi;
 	unsigned dev_idx, nr_devices, u64s;
+	char *_errbuf;
+	struct printbuf errbuf;
 	int ret;
+
+	_errbuf = kmalloc(4096, GFP_KERNEL);
+	if (!_errbuf)
+		return -ENOMEM;
+
+	errbuf = _PBUF(_errbuf, 4096);
 
 	ret = bch2_read_super(path, &opts, &sb);
 	if (ret) {
 		bch_err(c, "device add error: error reading super: %i", ret);
-		return ret;
-	}
-
-	err = bch2_sb_validate(&sb);
-	if (err) {
-		bch_err(c, "device add error: error validating super: %s", err);
-		return -EINVAL;
+		goto err;
 	}
 
 	dev_mi = bch2_sb_get_members(sb.sb)->members[sb.sb->dev_idx];
@@ -1615,19 +1624,21 @@ int bch2_dev_add(struct bch_fs *c, const char *path)
 	err = bch2_dev_may_add(sb.sb, c);
 	if (err) {
 		bch_err(c, "device add error: %s", err);
-		return -EINVAL;
+		ret = -EINVAL;
+		goto err;
 	}
 
 	ca = __bch2_dev_alloc(c, &dev_mi);
 	if (!ca) {
 		bch2_free_super(&sb);
-		return -ENOMEM;
+		ret = -ENOMEM;
+		goto err;
 	}
 
 	ret = __bch2_dev_attach_bdev(ca, &sb);
 	if (ret) {
 		bch2_dev_free(ca);
-		return ret;
+		goto err;
 	}
 
 	ret = bch2_dev_journal_alloc(ca);
@@ -1719,10 +1730,12 @@ err:
 	if (ca)
 		bch2_dev_free(ca);
 	bch2_free_super(&sb);
+	kfree(_errbuf);
 	return ret;
 err_late:
 	up_write(&c->state_lock);
-	return -EINVAL;
+	ca = NULL;
+	goto err;
 }
 
 /* Hot add existing device to running filesystem: */
@@ -1869,7 +1882,7 @@ struct bch_dev *bch2_dev_lookup(struct bch_fs *c, const char *path)
 
 	rcu_read_lock();
 	for_each_member_device_rcu(ca, c, i, NULL)
-		if (ca->disk_sb.bdev->bd_dev == dev)
+		if (ca->dev == dev)
 			goto found;
 	ca = ERR_PTR(-ENOENT);
 found:
@@ -1888,19 +1901,27 @@ struct bch_fs *bch2_fs_open(char * const *devices, unsigned nr_devices,
 	struct bch_sb_field_members *mi;
 	unsigned i, best_sb = 0;
 	const char *err;
+	char *_errbuf = NULL;
+	struct printbuf errbuf;
 	int ret = 0;
+
+	if (!try_module_get(THIS_MODULE))
+		return ERR_PTR(-ENODEV);
 
 	pr_verbose_init(opts, "");
 
 	if (!nr_devices) {
-		c = ERR_PTR(-EINVAL);
-		goto out2;
+		ret = -EINVAL;
+		goto err;
 	}
 
-	if (!try_module_get(THIS_MODULE)) {
-		c = ERR_PTR(-ENODEV);
-		goto out2;
+	_errbuf = kmalloc(4096, GFP_KERNEL);
+	if (!_errbuf) {
+		ret = -ENOMEM;
+		goto err;
 	}
+
+	errbuf = _PBUF(_errbuf, 4096);
 
 	sb = kcalloc(nr_devices, sizeof(*sb), GFP_KERNEL);
 	if (!sb) {
@@ -1913,9 +1934,6 @@ struct bch_fs *bch2_fs_open(char * const *devices, unsigned nr_devices,
 		if (ret)
 			goto err;
 
-		err = bch2_sb_validate(&sb[i]);
-		if (err)
-			goto err_print;
 	}
 
 	for (i = 1; i < nr_devices; i++)
@@ -1970,8 +1988,8 @@ struct bch_fs *bch2_fs_open(char * const *devices, unsigned nr_devices,
 	}
 out:
 	kfree(sb);
+	kfree(_errbuf);
 	module_put(THIS_MODULE);
-out2:
 	pr_verbose_init(opts, "ret %i", PTR_ERR_OR_ZERO(c));
 	return c;
 err_print:
@@ -1986,81 +2004,6 @@ err:
 			bch2_free_super(&sb[i]);
 	c = ERR_PTR(ret);
 	goto out;
-}
-
-static const char *__bch2_fs_open_incremental(struct bch_sb_handle *sb,
-					      struct bch_opts opts)
-{
-	const char *err;
-	struct bch_fs *c;
-	bool allocated_fs = false;
-	int ret;
-
-	err = bch2_sb_validate(sb);
-	if (err)
-		return err;
-
-	mutex_lock(&bch_fs_list_lock);
-	c = __bch2_uuid_to_fs(sb->sb->uuid);
-	if (c) {
-		closure_get(&c->cl);
-
-		err = bch2_dev_in_fs(c->disk_sb.sb, sb->sb);
-		if (err)
-			goto err;
-	} else {
-		allocated_fs = true;
-		c = bch2_fs_alloc(sb->sb, opts);
-
-		err = "bch2_fs_alloc() error";
-		if (IS_ERR(c))
-			goto err;
-	}
-
-	err = "bch2_dev_online() error";
-
-	mutex_lock(&c->sb_lock);
-	if (bch2_dev_attach_bdev(c, sb)) {
-		mutex_unlock(&c->sb_lock);
-		goto err;
-	}
-	mutex_unlock(&c->sb_lock);
-
-	if (!c->opts.nostart && bch2_fs_may_start(c)) {
-		err = "error starting filesystem";
-		ret = bch2_fs_start(c);
-		if (ret)
-			goto err;
-	}
-
-	closure_put(&c->cl);
-	mutex_unlock(&bch_fs_list_lock);
-
-	return NULL;
-err:
-	mutex_unlock(&bch_fs_list_lock);
-
-	if (allocated_fs && !IS_ERR(c))
-		bch2_fs_stop(c);
-	else if (c)
-		closure_put(&c->cl);
-
-	return err;
-}
-
-const char *bch2_fs_open_incremental(const char *path)
-{
-	struct bch_sb_handle sb;
-	struct bch_opts opts = bch2_opts_empty();
-	const char *err;
-
-	if (bch2_read_super(path, &opts, &sb))
-		return "error reading superblock";
-
-	err = __bch2_fs_open_incremental(&sb, opts);
-	bch2_free_super(&sb);
-
-	return err;
 }
 
 /* Global interfaces/init */

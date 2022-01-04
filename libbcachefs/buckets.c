@@ -564,9 +564,10 @@ static int bch2_mark_alloc(struct btree_trans *trans,
 		 * before the bucket became empty again, then the we don't have
 		 * to wait on a journal flush before we can reuse the bucket:
 		 */
-		v->journal_seq = !new_u.data_type &&
+		new_u.journal_seq = !new_u.data_type &&
 			bch2_journal_noflush_seq(&c->journal, journal_seq)
-			? 0 : cpu_to_le64(journal_seq);
+			? 0 : journal_seq;
+		v->journal_seq = cpu_to_le64(new_u.journal_seq);
 	}
 
 	ca = bch_dev_bkey_exists(c, new.k->p.inode);
