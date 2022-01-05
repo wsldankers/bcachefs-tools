@@ -5,7 +5,8 @@ Priority: optional
 Standards-Version: 3.9.5
 Build-Depends: debhelper (>= 9), pkg-config, libaio-dev, libblkid-dev,
 	libkeyutils-dev, liblz4-dev, libsodium-dev, liburcu-dev,
-	libzstd-dev, uuid-dev, zlib1g-dev, python3, python3-docutils
+	libzstd-dev, uuid-dev, zlib1g-dev, python3, python3-docutils,
+	libudev-dev
 Homepage: https://bcachefs.org/
 
 Package: bcachefs-tools
