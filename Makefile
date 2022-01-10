@@ -163,7 +163,7 @@ clean:
 deb: all
 	debuild -us -uc -nc -b -i -I
 
-doc/bcachefs-principles-of-operation.pdf: doc/bcachefs-principles-of-operation.tex
+bcachefs-principles-of-operation.pdf: doc/bcachefs-principles-of-operation.tex
 	pdflatex doc/bcachefs-principles-of-operation.tex
 	pdflatex doc/bcachefs-principles-of-operation.tex
 
