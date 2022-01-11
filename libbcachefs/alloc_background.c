@@ -9,6 +9,7 @@
 #include "btree_update_interior.h"
 #include "btree_gc.h"
 #include "buckets.h"
+#include "buckets_waiting_for_journal.h"
 #include "clock.h"
 #include "debug.h"
 #include "ec.h"
@@ -463,19 +464,20 @@ int bch2_bucket_io_time_reset(struct btree_trans *trans, unsigned dev,
 {
 	struct bch_fs *c = trans->c;
 	struct btree_iter iter;
+	struct bkey_s_c k;
 	struct bkey_alloc_unpacked u;
 	u64 *time, now;
 	int ret = 0;
 
 	bch2_trans_iter_init(trans, &iter, BTREE_ID_alloc, POS(dev, bucket_nr),
 			     BTREE_ITER_CACHED|
-			     BTREE_ITER_CACHED_NOFILL|
 			     BTREE_ITER_INTENT);
-	ret = bch2_btree_iter_traverse(&iter);
+	k = bch2_btree_iter_peek_slot(&iter);
+	ret = bkey_err(k);
 	if (ret)
 		goto out;
 
-	u = alloc_mem_to_key(c, &iter);
+	u = bch2_alloc_unpack(k);
 
 	time = rw == READ ? &u.read_time : &u.write_time;
 	now = atomic64_read(&c->io_clock[rw].now);
@@ -542,7 +544,7 @@ static bool bch2_can_invalidate_bucket(struct bch_dev *ca, size_t b,
 static unsigned bucket_sort_key(struct bucket *g, struct bucket_mark m,
 				u64 now, u64 last_seq_ondisk)
 {
-	unsigned used = bucket_sectors_used(m);
+	unsigned used = m.cached_sectors;
 
 	if (used) {
 		/*
@@ -561,8 +563,7 @@ static unsigned bucket_sort_key(struct bucket *g, struct bucket_mark m,
 		 * keys when there's only a small difference, so that we can
 		 * keep sequential buckets together:
 		 */
-		return  (bucket_needs_journal_commit(m, last_seq_ondisk) << 4)|
-			(bucket_gc_gen(g) >> 4);
+		return bucket_gc_gen(g) >> 4;
 	}
 }
 
@@ -611,6 +612,13 @@ static void find_reclaimable_buckets_lru(struct bch_fs *c, struct bch_dev *ca)
 		if (!bch2_can_invalidate_bucket(ca, b, m))
 			continue;
 
+		if (!m.data_type &&
+		    bch2_bucket_needs_journal_commit(c, last_seq_ondisk,
+						     ca->dev_idx, b)) {
+			ca->buckets_waiting_on_journal++;
+			continue;
+		}
+
 		if (e.nr && e.bucket + e.nr == b && e.key == key) {
 			e.nr++;
 		} else {
@@ -647,6 +655,7 @@ static size_t find_reclaimable_buckets(struct bch_fs *c, struct bch_dev *ca)
 
 	ca->inc_gen_needs_gc			= 0;
 	ca->inc_gen_really_needs_gc		= 0;
+	ca->buckets_waiting_on_journal		= 0;
 
 	find_reclaimable_buckets_lru(c, ca);
 
@@ -658,56 +667,34 @@ static size_t find_reclaimable_buckets(struct bch_fs *c, struct bch_dev *ca)
 	return nr;
 }
 
-/*
- * returns sequence number of most recent journal entry that updated this
- * bucket:
- */
-static u64 bucket_journal_seq(struct bch_fs *c, struct bucket_mark m)
-{
-	if (m.journal_seq_valid) {
-		u64 journal_seq = atomic64_read(&c->journal.seq);
-		u64 bucket_seq	= journal_seq;
-
-		bucket_seq &= ~((u64) U16_MAX);
-		bucket_seq |= m.journal_seq;
-
-		if (bucket_seq > journal_seq)
-			bucket_seq -= 1 << 16;
-
-		return bucket_seq;
-	} else {
-		return 0;
-	}
-}
-
 static int bucket_invalidate_btree(struct btree_trans *trans,
-				   struct bch_dev *ca, u64 b)
+				   struct bch_dev *ca, u64 b,
+				   struct bkey_alloc_unpacked *u)
 {
 	struct bch_fs *c = trans->c;
-	struct bkey_alloc_unpacked u;
 	struct btree_iter iter;
+	struct bkey_s_c k;
 	int ret;
 
 	bch2_trans_iter_init(trans, &iter, BTREE_ID_alloc,
 			     POS(ca->dev_idx, b),
 			     BTREE_ITER_CACHED|
-			     BTREE_ITER_CACHED_NOFILL|
 			     BTREE_ITER_INTENT);
 
-	ret = bch2_btree_iter_traverse(&iter);
+	k = bch2_btree_iter_peek_slot(&iter);
+	ret = bkey_err(k);
 	if (ret)
 		goto err;
 
-	u = alloc_mem_to_key(c, &iter);
+	*u = bch2_alloc_unpack(k);
+	u->gen++;
+	u->data_type		= 0;
+	u->dirty_sectors	= 0;
+	u->cached_sectors	= 0;
+	u->read_time		= atomic64_read(&c->io_clock[READ].now);
+	u->write_time		= atomic64_read(&c->io_clock[WRITE].now);
 
-	u.gen++;
-	u.data_type	= 0;
-	u.dirty_sectors	= 0;
-	u.cached_sectors = 0;
-	u.read_time	= atomic64_read(&c->io_clock[READ].now);
-	u.write_time	= atomic64_read(&c->io_clock[WRITE].now);
-
-	ret = bch2_alloc_write(trans, &iter, &u,
+	ret = bch2_alloc_write(trans, &iter, u,
 			       BTREE_TRIGGER_BUCKET_INVALIDATE);
 err:
 	bch2_trans_iter_exit(trans, &iter);
@@ -717,10 +704,17 @@ err:
 static int bch2_invalidate_one_bucket(struct bch_fs *c, struct bch_dev *ca,
 				      u64 *journal_seq, unsigned flags)
 {
-	struct bucket *g;
-	struct bucket_mark m;
+	struct bkey_alloc_unpacked u;
 	size_t b;
+	u64 commit_seq = 0;
 	int ret = 0;
+
+	/*
+	 * If the read-only path is trying to shut down, we can't be generating
+	 * new btree updates:
+	 */
+	if (test_bit(BCH_FS_ALLOCATOR_STOPPING, &c->flags))
+		return 1;
 
 	BUG_ON(!ca->alloc_heap.used ||
 	       !ca->alloc_heap.data[0].nr);
@@ -728,10 +722,6 @@ static int bch2_invalidate_one_bucket(struct bch_fs *c, struct bch_dev *ca,
 
 	/* first, put on free_inc and mark as owned by allocator: */
 	percpu_down_read(&c->mark_lock);
-	g = bucket(ca, b);
-	m = READ_ONCE(g->mark);
-
-	BUG_ON(m.dirty_sectors);
 
 	bch2_mark_alloc_bucket(c, ca, b, true);
 
@@ -740,38 +730,15 @@ static int bch2_invalidate_one_bucket(struct bch_fs *c, struct bch_dev *ca,
 	BUG_ON(!fifo_push(&ca->free_inc, b));
 	spin_unlock(&c->freelist_lock);
 
-	/*
-	 * If we're not invalidating cached data, we only increment the bucket
-	 * gen in memory here, the incremented gen will be updated in the btree
-	 * by bch2_trans_mark_pointer():
-	 */
-	if (!m.cached_sectors &&
-	    !bucket_needs_journal_commit(m, c->journal.last_seq_ondisk)) {
-		BUG_ON(m.data_type);
-		bucket_cmpxchg(g, m, m.gen++);
-		*bucket_gen(ca, b) = m.gen;
-		percpu_up_read(&c->mark_lock);
-		goto out;
-	}
-
 	percpu_up_read(&c->mark_lock);
 
-	/*
-	 * If the read-only path is trying to shut down, we can't be generating
-	 * new btree updates:
-	 */
-	if (test_bit(BCH_FS_ALLOCATOR_STOPPING, &c->flags)) {
-		ret = 1;
-		goto out;
-	}
-
-	ret = bch2_trans_do(c, NULL, journal_seq,
+	ret = bch2_trans_do(c, NULL, &commit_seq,
 			    BTREE_INSERT_NOCHECK_RW|
 			    BTREE_INSERT_NOFAIL|
 			    BTREE_INSERT_JOURNAL_RESERVED|
 			    flags,
-			    bucket_invalidate_btree(&trans, ca, b));
-out:
+			    bucket_invalidate_btree(&trans, ca, b, &u));
+
 	if (!ret) {
 		/* remove from alloc_heap: */
 		struct alloc_heap_entry e, *top = ca->alloc_heap.data;
@@ -783,11 +750,17 @@ out:
 			heap_pop(&ca->alloc_heap, e, bucket_alloc_cmp, NULL);
 
 		/*
-		 * Make sure we flush the last journal entry that updated this
-		 * bucket (i.e. deleting the last reference) before writing to
-		 * this bucket again:
+		 * If we invalidating cached data then we need to wait on the
+		 * journal commit:
 		 */
-		*journal_seq = max(*journal_seq, bucket_journal_seq(c, m));
+		if (u.data_type)
+			*journal_seq = max(*journal_seq, commit_seq);
+
+		/*
+		 * We already waiting on u.alloc_seq when we filtered out
+		 * buckets that need journal commit:
+		 */
+		BUG_ON(*journal_seq > u.journal_seq);
 	} else {
 		size_t b2;
 
@@ -954,8 +927,14 @@ static int bch2_allocator_thread(void *arg)
 			gc_count = c->gc_count;
 			nr = find_reclaimable_buckets(c, ca);
 
-			trace_alloc_scan(ca, nr, ca->inc_gen_needs_gc,
-					 ca->inc_gen_really_needs_gc);
+			if (!nr && ca->buckets_waiting_on_journal) {
+				ret = bch2_journal_flush(&c->journal);
+				if (ret)
+					goto stop;
+			} else if (nr < (ca->mi.nbuckets >> 6) &&
+				   ca->buckets_waiting_on_journal >= nr / 2) {
+				bch2_journal_flush_async(&c->journal, NULL);
+			}
 
 			if ((ca->inc_gen_needs_gc >= ALLOC_SCAN_BATCH(ca) ||
 			     ca->inc_gen_really_needs_gc) &&
@@ -963,6 +942,9 @@ static int bch2_allocator_thread(void *arg)
 				atomic_inc(&c->kick_gc);
 				wake_up_process(c->gc_thread);
 			}
+
+			trace_alloc_scan(ca, nr, ca->inc_gen_needs_gc,
+					 ca->inc_gen_really_needs_gc);
 		}
 
 		ret = bch2_invalidate_buckets(c, ca);
