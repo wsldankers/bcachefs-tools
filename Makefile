@@ -99,7 +99,7 @@ TAGS:
 tags:
 	ctags -R .
 
-SRCS=$(shell find . -type f -iname '*.c')
+SRCS=$(shell find . -type f ! -path '*/.*/*' -iname '*.c')
 DEPS=$(SRCS:.c=.d)
 -include $(DEPS)
 
@@ -150,7 +150,7 @@ install: bcachefs lib
 	$(INSTALL) -m0755 -D initramfs/hook   $(DESTDIR)$(INITRAMFS_HOOK)
 	$(INSTALL) -m0755 -D mount.bcachefs.sh $(DESTDIR)$(ROOT_SBINDIR)
 	$(INSTALL) -m0755 -D libbcachefs.so -t $(DESTDIR)$(PREFIX)/lib/
-  
+
 	sed -i '/^# Note: make install replaces/,$$d' $(DESTDIR)$(INITRAMFS_HOOK)
 	echo "copy_exec $(ROOT_SBINDIR)/bcachefs /sbin/bcachefs" >> $(DESTDIR)$(INITRAMFS_HOOK)
 
@@ -194,7 +194,7 @@ update-bcachefs-sources:
 	$(RM) libbcachefs/*.mod.c
 	git -C $(LINUX_DIR) rev-parse HEAD | tee .bcachefs_revision
 	git add .bcachefs_revision
-	
+
 
 .PHONY: update-commit-bcachefs-sources
 update-commit-bcachefs-sources: update-bcachefs-sources
