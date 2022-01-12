@@ -241,7 +241,7 @@ struct bch_sb *bch2_format(struct bch_opt_strs	fs_opt_strs,
 
 	/* Disk labels*/
 	for (i = devs; i < devs + nr_devs; i++) {
-		struct bch_member *m = mi->members + (i - devs);
+		struct bch_member *m;
 		int idx;
 
 		if (!i->label)
@@ -250,6 +250,13 @@ struct bch_sb *bch2_format(struct bch_opt_strs	fs_opt_strs,
 		idx = bch2_disk_path_find_or_create(&sb, i->label);
 		if (idx < 0)
 			die("error creating disk path: %s", strerror(-idx));
+
+		/*
+		 * Recompute mi and m after each sb modification: its location
+		 * in memory may have changed due to reallocation.
+		 */
+		mi = bch2_sb_get_members(sb.sb);
+		m = mi->members + (i - devs);
 
 		SET_BCH_MEMBER_GROUP(m,	idx + 1);
 	}
