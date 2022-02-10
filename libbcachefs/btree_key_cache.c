@@ -208,18 +208,20 @@ static int btree_key_cache_fill(struct btree_trans *trans,
 				struct btree_path *ck_path,
 				struct bkey_cached *ck)
 {
-	struct btree_iter iter;
+	struct btree_path *path;
 	struct bkey_s_c k;
 	unsigned new_u64s = 0;
 	struct bkey_i *new_k = NULL;
+	struct bkey u;
 	int ret;
 
-	bch2_trans_iter_init(trans, &iter, ck->key.btree_id,
-			     ck->key.pos, BTREE_ITER_SLOTS);
-	k = bch2_btree_iter_peek_slot(&iter);
-	ret = bkey_err(k);
+	path = bch2_path_get(trans, ck->key.btree_id,
+			     ck->key.pos, 0, 0, 0, _THIS_IP_);
+	ret = bch2_btree_path_traverse(trans, path, 0);
 	if (ret)
 		goto err;
+
+	k = bch2_btree_path_peek_slot(path, &u);
 
 	if (!bch2_btree_node_relock(trans, ck_path, 0)) {
 		trace_trans_restart_relock_key_cache_fill(trans->fn,
@@ -261,9 +263,9 @@ static int btree_key_cache_fill(struct btree_trans *trans,
 	bch2_btree_node_unlock_write(trans, ck_path, ck_path->l[0].b);
 
 	/* We're not likely to need this iterator again: */
-	set_btree_iter_dontneed(&iter);
+	path->preserve = false;
 err:
-	bch2_trans_iter_exit(trans, &iter);
+	bch2_path_put(trans, path, 0);
 	return ret;
 }
 
@@ -384,20 +386,26 @@ static int btree_key_cache_flush_pos(struct btree_trans *trans,
 			     BTREE_ITER_CACHED_NOFILL|
 			     BTREE_ITER_CACHED_NOCREATE|
 			     BTREE_ITER_INTENT);
+	b_iter.flags &= ~BTREE_ITER_WITH_KEY_CACHE;
+
 	ret = bch2_btree_iter_traverse(&c_iter);
 	if (ret)
 		goto out;
 
 	ck = (void *) c_iter.path->l[0].b;
-	if (!ck ||
-	    (journal_seq && ck->journal.seq != journal_seq))
+	if (!ck)
 		goto out;
 
 	if (!test_bit(BKEY_CACHED_DIRTY, &ck->flags)) {
-		if (!evict)
-			goto out;
-		goto evict;
+		if (evict)
+			goto evict;
+		goto out;
 	}
+
+	BUG_ON(!ck->valid);
+
+	if (journal_seq && ck->journal.seq != journal_seq)
+		goto out;
 
 	/*
 	 * Since journal reclaim depends on us making progress here, and the
@@ -406,6 +414,7 @@ static int btree_key_cache_flush_pos(struct btree_trans *trans,
 	 * */
 	ret   = bch2_btree_iter_traverse(&b_iter) ?:
 		bch2_trans_update(trans, &b_iter, ck->k,
+				  BTREE_UPDATE_KEY_CACHE_RECLAIM|
 				  BTREE_UPDATE_INTERNAL_SNAPSHOT_NODE|
 				  BTREE_TRIGGER_NORUN) ?:
 		bch2_trans_commit(trans, NULL, NULL,

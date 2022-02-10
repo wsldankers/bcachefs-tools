@@ -202,10 +202,10 @@ struct btree_node_iter {
  */
 #define BTREE_ITER_IS_EXTENTS		(1 << 4)
 #define BTREE_ITER_NOT_EXTENTS		(1 << 5)
-#define BTREE_ITER_ERROR		(1 << 6)
-#define BTREE_ITER_CACHED		(1 << 7)
-#define BTREE_ITER_CACHED_NOFILL	(1 << 8)
-#define BTREE_ITER_CACHED_NOCREATE	(1 << 9)
+#define BTREE_ITER_CACHED		(1 << 6)
+#define BTREE_ITER_CACHED_NOFILL	(1 << 7)
+#define BTREE_ITER_CACHED_NOCREATE	(1 << 8)
+#define BTREE_ITER_WITH_KEY_CACHE	(1 << 9)
 #define BTREE_ITER_WITH_UPDATES		(1 << 10)
 #define BTREE_ITER_WITH_JOURNAL		(1 << 11)
 #define __BTREE_ITER_ALL_SNAPSHOTS	(1 << 12)
@@ -277,6 +277,7 @@ struct btree_iter {
 	struct btree_trans	*trans;
 	struct btree_path	*path;
 	struct btree_path	*update_path;
+	struct btree_path	*key_cache_path;
 
 	enum btree_id		btree_id:4;
 	unsigned		min_depth:4;
@@ -636,6 +637,7 @@ static inline bool btree_type_has_snapshots(enum btree_id id)
 
 enum btree_update_flags {
 	__BTREE_UPDATE_INTERNAL_SNAPSHOT_NODE,
+	__BTREE_UPDATE_KEY_CACHE_RECLAIM,
 
 	__BTREE_TRIGGER_NORUN,		/* Don't run triggers at all */
 
@@ -648,6 +650,7 @@ enum btree_update_flags {
 };
 
 #define BTREE_UPDATE_INTERNAL_SNAPSHOT_NODE (1U << __BTREE_UPDATE_INTERNAL_SNAPSHOT_NODE)
+#define BTREE_UPDATE_KEY_CACHE_RECLAIM	(1U << __BTREE_UPDATE_KEY_CACHE_RECLAIM)
 
 #define BTREE_TRIGGER_NORUN		(1U << __BTREE_TRIGGER_NORUN)
 

@@ -451,7 +451,8 @@ struct bch_dev {
 	 * Or rcu_read_lock(), but only for ptr_stale():
 	 */
 	struct bucket_array __rcu *buckets[2];
-	struct bucket_gens	*bucket_gens;
+	struct bucket_gens __rcu *bucket_gens;
+	u8			*oldest_gen;
 	unsigned long		*buckets_nouse;
 	struct rw_semaphore	bucket_lock;
 
@@ -536,7 +537,6 @@ enum {
 	/* misc: */
 	BCH_FS_NEED_ANOTHER_GC,
 	BCH_FS_DELETED_NODES,
-	BCH_FS_NEED_ALLOC_WRITE,
 	BCH_FS_REBUILD_REPLICAS,
 	BCH_FS_HOLD_BTREE_WRITES,
 };
@@ -716,6 +716,7 @@ struct bch_fs {
 	bool			btree_trans_barrier_initialized;
 
 	struct btree_key_cache	btree_key_cache;
+	unsigned		btree_key_cache_btrees;
 
 	struct workqueue_struct	*btree_update_wq;
 	struct workqueue_struct	*btree_io_complete_wq;
@@ -950,6 +951,11 @@ static inline unsigned block_sectors(const struct bch_fs *c)
 static inline size_t btree_sectors(const struct bch_fs *c)
 {
 	return c->opts.btree_node_size >> 9;
+}
+
+static inline bool btree_id_cached(const struct bch_fs *c, enum btree_id btree)
+{
+	return c->btree_key_cache_btrees & (1U << btree);
 }
 
 static inline struct timespec64 bch2_time_to_timespec(const struct bch_fs *c, s64 time)

@@ -328,7 +328,7 @@ static void link_data(struct bch_fs *c, struct bch_inode_unpacked *dst,
 		bch2_bkey_append_ptr(&e->k_i, (struct bch_extent_ptr) {
 					.offset = physical,
 					.dev = 0,
-					.gen = bucket(ca, b)->mark.gen,
+					.gen = *bucket_gen(ca, b),
 				  });
 
 		ret = bch2_disk_reservation_get(c, &res, sectors, 1,

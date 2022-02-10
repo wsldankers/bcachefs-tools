@@ -520,6 +520,7 @@ static int bch2_mark_alloc(struct btree_trans *trans,
 	    !old_u.data_type != !new_u.data_type &&
 	    new.k->type == KEY_TYPE_alloc_v3) {
 		struct bch_alloc_v3 *v = (struct bch_alloc_v3 *) new.v;
+		u64 old_journal_seq = le64_to_cpu(v->journal_seq);
 
 		BUG_ON(!journal_seq);
 
@@ -529,7 +530,8 @@ static int bch2_mark_alloc(struct btree_trans *trans,
 		 * to wait on a journal flush before we can reuse the bucket:
 		 */
 		new_u.journal_seq = !new_u.data_type &&
-			bch2_journal_noflush_seq(&c->journal, journal_seq)
+			(journal_seq == old_journal_seq ||
+			 bch2_journal_noflush_seq(&c->journal, old_journal_seq))
 			? 0 : journal_seq;
 		v->journal_seq = cpu_to_le64(new_u.journal_seq);
 	}
@@ -2094,7 +2096,7 @@ static void buckets_free_rcu(struct rcu_head *rcu)
 		container_of(rcu, struct bucket_array, rcu);
 
 	kvpfree(buckets,
-		sizeof(struct bucket_array) +
+		sizeof(*buckets) +
 		buckets->nbuckets * sizeof(struct bucket));
 }
 
@@ -2103,7 +2105,7 @@ static void bucket_gens_free_rcu(struct rcu_head *rcu)
 	struct bucket_gens *buckets =
 		container_of(rcu, struct bucket_gens, rcu);
 
-	kvpfree(buckets, sizeof(struct bucket_array) + buckets->nbuckets);
+	kvpfree(buckets, sizeof(*buckets) + buckets->nbuckets);
 }
 
 int bch2_dev_buckets_resize(struct bch_fs *c, struct bch_dev *ca, u64 nbuckets)
@@ -2213,9 +2215,9 @@ err:
 	kvpfree(buckets_nouse,
 		BITS_TO_LONGS(nbuckets) * sizeof(unsigned long));
 	if (bucket_gens)
-		call_rcu(&old_buckets->rcu, bucket_gens_free_rcu);
+		call_rcu(&bucket_gens->rcu, bucket_gens_free_rcu);
 	if (buckets)
-		call_rcu(&old_buckets->rcu, buckets_free_rcu);
+		call_rcu(&buckets->rcu, buckets_free_rcu);
 
 	return ret;
 }
@@ -2230,6 +2232,8 @@ void bch2_dev_buckets_free(struct bch_dev *ca)
 		free_fifo(&ca->free[i]);
 	kvpfree(ca->buckets_nouse,
 		BITS_TO_LONGS(ca->mi.nbuckets) * sizeof(unsigned long));
+	kvpfree(rcu_dereference_protected(ca->bucket_gens, 1),
+		sizeof(struct bucket_gens) + ca->mi.nbuckets);
 	kvpfree(rcu_dereference_protected(ca->buckets[0], 1),
 		sizeof(struct bucket_array) +
 		ca->mi.nbuckets * sizeof(struct bucket));
