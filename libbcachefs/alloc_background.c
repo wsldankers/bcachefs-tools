@@ -540,7 +540,8 @@ static void find_reclaimable_buckets_lru(struct bch_fs *c, struct bch_dev *ca)
 			continue;
 
 		if (!m.data_type &&
-		    bch2_bucket_needs_journal_commit(c, last_seq_ondisk,
+		    bch2_bucket_needs_journal_commit(&c->buckets_waiting_for_journal,
+						     last_seq_ondisk,
 						     ca->dev_idx, b)) {
 			ca->buckets_waiting_on_journal++;
 			continue;

@@ -2317,6 +2317,7 @@ static struct bkey_s_c __bch2_btree_iter_peek(struct btree_iter *iter, struct bp
 			ret = bkey_err(k2);
 			if (ret) {
 				k = k2;
+				bch2_btree_iter_set_pos(iter, iter->pos);
 				goto out;
 			}
 

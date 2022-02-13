@@ -1938,30 +1938,17 @@ int bch2_gc_gens(struct bch_fs *c)
 			}
 		}
 
-	for_each_member_device(ca, c, i) {
-		for_each_btree_key(&trans, iter, BTREE_ID_alloc,
-				   POS(ca->dev_idx, ca->mi.first_bucket),
-				   BTREE_ITER_SLOTS|
-				   BTREE_ITER_PREFETCH, k, ret) {
-			if (bkey_cmp(iter.pos, POS(ca->dev_idx, ca->mi.nbuckets)) >= 0)
-				break;
-
-			ret = __bch2_trans_do(&trans, NULL, NULL,
-					      BTREE_INSERT_LAZY_RW|
-					      BTREE_INSERT_NOFAIL,
-					bch2_alloc_write_oldest_gen(&trans, &iter));
-			if (ret) {
-				bch_err(c, "error writing oldest_gen: %i", ret);
-				break;
-			}
-		}
-		bch2_trans_iter_exit(&trans, &iter);
-
+	for_each_btree_key(&trans, iter, BTREE_ID_alloc, POS_MIN,
+			   BTREE_ITER_PREFETCH, k, ret) {
+		ret = __bch2_trans_do(&trans, NULL, NULL,
+				      BTREE_INSERT_NOFAIL,
+				bch2_alloc_write_oldest_gen(&trans, &iter));
 		if (ret) {
-			percpu_ref_put(&ca->ref);
+			bch_err(c, "error writing oldest_gen: %i", ret);
 			break;
 		}
 	}
+	bch2_trans_iter_exit(&trans, &iter);
 
 	c->gc_gens_btree	= 0;
 	c->gc_gens_pos		= POS_MIN;

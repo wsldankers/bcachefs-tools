@@ -537,11 +537,15 @@ static int bch2_mark_alloc(struct btree_trans *trans,
 	}
 
 	if (old_u.data_type && !new_u.data_type && new_u.journal_seq) {
-		ret = bch2_set_bucket_needs_journal_commit(c,
+		ret = bch2_set_bucket_needs_journal_commit(&c->buckets_waiting_for_journal,
+				c->journal.flushed_seq_ondisk,
 				new_u.dev, new_u.bucket,
 				new_u.journal_seq);
-		if (ret)
+		if (ret) {
+			bch2_fs_fatal_error(c,
+				"error setting bucket_needs_journal_commit: %i", ret);
 			return ret;
+		}
 	}
 
 	ca = bch_dev_bkey_exists(c, new_u.dev);
