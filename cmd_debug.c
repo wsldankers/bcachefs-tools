@@ -606,10 +606,12 @@ int cmd_list_journal(int argc, char *argv[])
 		       le64_to_cpu(p->j.last_seq));
 
 		vstruct_for_each(&p->j, entry) {
-			char buf[500];
+			char _buf[4096];
+			struct printbuf buf = PBUF(_buf);
 
-			bch2_journal_entry_to_text(&PBUF(buf), c, entry);
-			printf("  %s\n", buf);
+			printbuf_indent_push(&buf, 2);
+			bch2_journal_entry_to_text(&buf, c, entry);
+			printf("%s\n", _buf);
 		}
 	}
 
