@@ -58,6 +58,9 @@ static inline int __btree_path_cmp(const struct btree_path *l,
 				   struct bpos		r_pos,
 				   unsigned		r_level)
 {
+	/*
+	 * Must match lock ordering as defined by __bch2_btree_node_lock:
+	 */
 	return   cmp_int(l->btree_id,	r_btree_id) ?:
 		 cmp_int((int) l->cached,	(int) r_cached) ?:
 		 bpos_cmp(l->pos,	r_pos) ?:
@@ -162,7 +165,7 @@ void __bch2_btree_node_lock_write(struct btree_trans *trans, struct btree *b)
 	else
 		this_cpu_sub(*b->c.lock.readers, readers);
 
-	btree_node_lock_type(trans->c, b, SIX_LOCK_write);
+	six_lock_write(&b->c.lock, NULL, NULL);
 
 	if (!b->c.lock.readers)
 		atomic64_add(__SIX_VAL(read_lock, readers),
@@ -300,10 +303,8 @@ bool __bch2_btree_node_lock(struct btree_trans *trans,
 			    six_lock_should_sleep_fn should_sleep_fn, void *p,
 			    unsigned long ip)
 {
-	struct btree_path *linked, *deadlock_path = NULL;
-	u64 start_time = local_clock();
-	unsigned reason = 9;
-	bool ret;
+	struct btree_path *linked;
+	unsigned reason;
 
 	/* Check if it's safe to block: */
 	trans_for_each_path(trans, linked) {
@@ -324,28 +325,28 @@ bool __bch2_btree_node_lock(struct btree_trans *trans,
 		 */
 		if (type == SIX_LOCK_intent &&
 		    linked->nodes_locked != linked->nodes_intent_locked) {
-			deadlock_path = linked;
 			reason = 1;
+			goto deadlock;
 		}
 
 		if (linked->btree_id != path->btree_id) {
-			if (linked->btree_id > path->btree_id) {
-				deadlock_path = linked;
-				reason = 3;
-			}
-			continue;
+			if (linked->btree_id < path->btree_id)
+				continue;
+
+			reason = 3;
+			goto deadlock;
 		}
 
 		/*
-		 * Within the same btree, cached paths come before non
-		 * cached paths:
+		 * Within the same btree, non-cached paths come before cached
+		 * paths:
 		 */
 		if (linked->cached != path->cached) {
-			if (path->cached) {
-				deadlock_path = linked;
-				reason = 4;
-			}
-			continue;
+			if (!linked->cached)
+				continue;
+
+			reason = 4;
+			goto deadlock;
 		}
 
 		/*
@@ -354,50 +355,33 @@ bool __bch2_btree_node_lock(struct btree_trans *trans,
 		 * we're about to lock, it must have the ancestors locked too:
 		 */
 		if (level > __fls(linked->nodes_locked)) {
-			deadlock_path = linked;
 			reason = 5;
+			goto deadlock;
 		}
 
 		/* Must lock btree nodes in key order: */
 		if (btree_node_locked(linked, level) &&
 		    bpos_cmp(pos, btree_node_pos((void *) linked->l[level].b,
 						 linked->cached)) <= 0) {
-			deadlock_path = linked;
-			reason = 7;
 			BUG_ON(trans->in_traverse_all);
+			reason = 7;
+			goto deadlock;
 		}
 	}
 
-	if (unlikely(deadlock_path)) {
-		trace_trans_restart_would_deadlock(trans->fn, ip,
-				trans->in_traverse_all, reason,
-				deadlock_path->btree_id,
-				deadlock_path->cached,
-				&deadlock_path->pos,
-				path->btree_id,
-				path->cached,
-				&pos);
-		btree_trans_restart(trans);
-		return false;
-	}
-
-	if (six_trylock_type(&b->c.lock, type))
-		return true;
-
-	trans->locking_path_idx = path->idx;
-	trans->locking_pos	= pos;
-	trans->locking_btree_id	= path->btree_id;
-	trans->locking_level	= level;
-	trans->locking		= b;
-
-	ret = six_lock_type(&b->c.lock, type, should_sleep_fn, p) == 0;
-
-	trans->locking = NULL;
-
-	if (ret)
-		bch2_time_stats_update(&trans->c->times[lock_to_time_stat(type)],
-				       start_time);
-	return ret;
+	return btree_node_lock_type(trans, path, b, pos, level,
+				    type, should_sleep_fn, p);
+deadlock:
+	trace_trans_restart_would_deadlock(trans->fn, ip,
+			trans->in_traverse_all, reason,
+			linked->btree_id,
+			linked->cached,
+			&linked->pos,
+			path->btree_id,
+			path->cached,
+			&pos);
+	btree_trans_restart(trans);
+	return false;
 }
 
 /* Btree iterator locking: */
@@ -1005,8 +989,6 @@ static inline struct bkey_s_c __btree_iter_unpack(struct bch_fs *c,
 						  struct bkey *u,
 						  struct bkey_packed *k)
 {
-	struct bkey_s_c ret;
-
 	if (unlikely(!k)) {
 		/*
 		 * signal to bch2_btree_iter_peek_slot() that we're currently at
@@ -1016,19 +998,7 @@ static inline struct bkey_s_c __btree_iter_unpack(struct bch_fs *c,
 		return bkey_s_c_null;
 	}
 
-	ret = bkey_disassemble(l->b, k, u);
-
-	/*
-	 * XXX: bch2_btree_bset_insert_key() generates invalid keys when we
-	 * overwrite extents - it sets k->type = KEY_TYPE_deleted on the key
-	 * being overwritten but doesn't change k->size. But this is ok, because
-	 * those keys are never written out, we just have to avoid a spurious
-	 * assertion here:
-	 */
-	if (bch2_debug_check_bkeys && !bkey_deleted(ret.k))
-		bch2_bkey_debugcheck(c, l->b, ret);
-
-	return ret;
+	return bkey_disassemble(l->b, k, u);
 }
 
 static inline struct bkey_s_c btree_path_level_peek_all(struct bch_fs *c,
@@ -1504,17 +1474,17 @@ retry_all:
 	while (i < trans->nr_sorted) {
 		path = trans->paths + trans->sorted[i];
 
-		EBUG_ON(!(trans->paths_allocated & (1ULL << path->idx)));
-
-		ret = btree_path_traverse_one(trans, path, 0, _THIS_IP_);
-		if (ret)
-			goto retry_all;
-
-		EBUG_ON(!(trans->paths_allocated & (1ULL << path->idx)));
-
-		if (path->nodes_locked ||
-		    !btree_path_node(path, path->level))
+		/*
+		 * Traversing a path can cause another path to be added at about
+		 * the same position:
+		 */
+		if (path->uptodate) {
+			ret = btree_path_traverse_one(trans, path, 0, _THIS_IP_);
+			if (ret)
+				goto retry_all;
+		} else {
 			i++;
+		}
 	}
 
 	/*
@@ -3092,6 +3062,8 @@ void __bch2_trans_init(struct btree_trans *trans, struct bch_fs *c,
 		       const char *fn)
 	__acquires(&c->btree_trans_barrier)
 {
+	BUG_ON(lock_class_is_held(&bch2_btree_node_lock_key));
+
 	memset(trans, 0, sizeof(*trans));
 	trans->c		= c;
 	trans->fn		= fn;
@@ -3213,6 +3185,7 @@ void bch2_btree_trans_to_text(struct printbuf *out, struct bch_fs *c)
 	struct btree_trans *trans;
 	struct btree_path *path;
 	struct btree *b;
+	static char lock_types[] = { 'r', 'i', 'w' };
 	unsigned l;
 
 	mutex_lock(&c->btree_trans_lock);
@@ -3249,10 +3222,11 @@ void bch2_btree_trans_to_text(struct printbuf *out, struct bch_fs *c)
 		b = READ_ONCE(trans->locking);
 		if (b) {
 			path = &trans->paths[trans->locking_path_idx];
-			pr_buf(out, "  locking path %u %c l=%u %s:",
+			pr_buf(out, "  locking path %u %c l=%u %c %s:",
 			       trans->locking_path_idx,
 			       path->cached ? 'c' : 'b',
 			       trans->locking_level,
+			       lock_types[trans->locking_lock_type],
 			       bch2_btree_ids[trans->locking_btree_id]);
 			bch2_bpos_to_text(out, trans->locking_pos);
 

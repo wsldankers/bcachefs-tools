@@ -702,6 +702,7 @@ static int migrate_fs(const char		*fs_path,
 	opt_set(opts, sb,	sb_offset);
 	opt_set(opts, nostart,	true);
 	opt_set(opts, noexcl,	true);
+	opt_set(opts, buckets_nouse, true);
 
 	c = bch2_fs_open(path, 1, opts);
 	if (IS_ERR(c))
