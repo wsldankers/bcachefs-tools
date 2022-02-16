@@ -700,9 +700,10 @@ static int check_bucket_ref(struct bch_fs *c,
 
 	if (b_gen != ptr->gen && !ptr->cached) {
 		bch2_fsck_err(c, FSCK_CAN_IGNORE|FSCK_NEED_FSCK,
-			"bucket %u:%zu gen %u data type %s: stale dirty ptr (gen %u)\n"
+			"bucket %u:%zu gen %u (mem gen %u) data type %s: stale dirty ptr (gen %u)\n"
 			"while marking %s",
 			ptr->dev, bucket_nr, b_gen,
+			*bucket_gen(ca, bucket_nr),
 			bch2_data_types[bucket_data_type ?: ptr_data_type],
 			ptr->gen,
 			(bch2_bkey_val_to_text(&PBUF(buf), c, k), buf));
@@ -726,10 +727,9 @@ static int check_bucket_ref(struct bch_fs *c,
 
 	if ((unsigned) (bucket_sectors + sectors) > U16_MAX) {
 		bch2_fsck_err(c, FSCK_CAN_IGNORE|FSCK_NEED_FSCK,
-			"bucket %u:%zu gen %u (mem gen %u) data type %s sector count overflow: %u + %lli > U16_MAX\n"
+			"bucket %u:%zu gen %u data type %s sector count overflow: %u + %lli > U16_MAX\n"
 			"while marking %s",
 			ptr->dev, bucket_nr, b_gen,
-			*bucket_gen(ca, bucket_nr),
 			bch2_data_types[bucket_data_type ?: ptr_data_type],
 			bucket_sectors, sectors,
 			(bch2_bkey_val_to_text(&PBUF(buf), c, k), buf));
