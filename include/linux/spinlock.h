@@ -2,27 +2,27 @@
 #define __TOOLS_LINUX_SPINLOCK_H
 
 #include <linux/atomic.h>
+#include <pthread.h>
 
 typedef struct {
-	int		count;
+	pthread_mutex_t lock;
 } raw_spinlock_t;
 
-#define __RAW_SPIN_LOCK_UNLOCKED(name)	(raw_spinlock_t) { .count = 0 }
+#define __RAW_SPIN_LOCK_UNLOCKED(name)	(raw_spinlock_t) { .lock = PTHREAD_MUTEX_INITIALIZER  }
 
 static inline void raw_spin_lock_init(raw_spinlock_t *lock)
 {
-	smp_store_release(&lock->count, 0);
+	pthread_mutex_init(&lock->lock, NULL);
 }
 
 static inline void raw_spin_lock(raw_spinlock_t *lock)
 {
-	while (xchg_acquire(&lock->count, 1))
-		;
+	pthread_mutex_lock(&lock->lock);
 }
 
 static inline void raw_spin_unlock(raw_spinlock_t *lock)
 {
-	smp_store_release(&lock->count, 0);
+	pthread_mutex_unlock(&lock->lock);
 }
 
 #define raw_spin_lock_irq(lock)		raw_spin_lock(lock)
