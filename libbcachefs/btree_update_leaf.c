@@ -1465,8 +1465,7 @@ int __must_check bch2_trans_update(struct btree_trans *trans, struct btree_iter 
 							_THIS_IP_);
 
 			ret = bch2_btree_path_traverse(trans, iter->key_cache_path,
-						       BTREE_ITER_CACHED|
-						       BTREE_ITER_CACHED_NOFILL);
+						       BTREE_ITER_CACHED);
 			if (unlikely(ret))
 				return ret;
 
