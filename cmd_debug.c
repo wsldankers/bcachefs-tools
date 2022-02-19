@@ -597,19 +597,25 @@ int cmd_list_journal(int argc, char *argv[])
 	struct jset_entry *entry;
 
 	list_for_each_entry(p, &c->journal_entries, list) {
-		printf("journal entry   %8llu\n"
-		       "    version     %8u\n"
-		       "    last seq    %8llu\n"
+		char _buf[4096];
+		struct printbuf buf = PBUF(_buf);
+
+		bch2_journal_ptrs_to_text(&buf, c, p);
+
+		printf("journal entry       %llu\n"
+		       "    version         %u\n"
+		       "    last seq        %llu\n"
+		       "    written at      %s\n"
 		       ,
 		       le64_to_cpu(p->j.seq),
 		       le32_to_cpu(p->j.version),
-		       le64_to_cpu(p->j.last_seq));
+		       le64_to_cpu(p->j.last_seq),
+		       _buf);
 
 		vstruct_for_each(&p->j, entry) {
-			char _buf[4096];
-			struct printbuf buf = PBUF(_buf);
+			buf = PBUF(_buf);
 
-			printbuf_indent_push(&buf, 2);
+			printbuf_indent_push(&buf, 4);
 			bch2_journal_entry_to_text(&buf, c, entry);
 			printf("%s\n", _buf);
 		}
