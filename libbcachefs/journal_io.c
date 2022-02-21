@@ -303,7 +303,7 @@ static void journal_entry_btree_keys_to_text(struct printbuf *out, struct bch_fs
 
 	vstruct_for_each(entry, k) {
 		if (!first) {
-			printbuf_newline(out);
+			pr_newline(out);
 			pr_buf(out, "%s: ", bch2_jset_entry_types[entry->type]);
 		}
 		pr_buf(out, "btree=%s l=%u ", bch2_btree_ids[entry->btree_id], entry->level);
@@ -596,7 +596,7 @@ static void journal_entry_log_to_text(struct printbuf *out, struct bch_fs *c,
 	struct jset_entry_log *l = container_of(entry, struct jset_entry_log, entry);
 	unsigned bytes = vstruct_bytes(entry) - offsetof(struct jset_entry_log, d);
 
-	bch_scnmemcpy(out, l->d, strnlen(l->d, bytes));
+	pr_buf(out, "%.*s", bytes, l->d);
 }
 
 struct jset_entry_ops {

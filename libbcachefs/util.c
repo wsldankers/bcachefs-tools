@@ -120,6 +120,27 @@ void bch2_hprint(struct printbuf *buf, s64 v)
 		pr_buf(buf, "%c", si_units[u]);
 }
 
+void bch2_pr_units(struct printbuf *out, s64 raw, s64 bytes)
+{
+	if (raw < 0) {
+		pr_buf(out, "-");
+		raw	= -raw;
+		bytes	= -bytes;
+	}
+
+	switch (out->units) {
+	case PRINTBUF_UNITS_RAW:
+		pr_buf(out, "%llu", raw);
+		break;
+	case PRINTBUF_UNITS_BYTES:
+		pr_buf(out, "%llu", bytes);
+		break;
+	case PRINTBUF_UNITS_HUMAN_READABLE:
+		bch2_hprint(out, bytes);
+		break;
+	}
+}
+
 void bch2_string_opt_to_text(struct printbuf *out,
 			     const char * const list[],
 			     size_t selected)
@@ -576,19 +597,6 @@ void memcpy_from_bio(void *dst, struct bio *src, struct bvec_iter src_iter)
 		kunmap_atomic(srcp);
 
 		dst += bv.bv_len;
-	}
-}
-
-void bch_scnmemcpy(struct printbuf *out,
-		   const char *src, size_t len)
-{
-	size_t n = printbuf_remaining(out);
-
-	if (n) {
-		n = min(n - 1, len);
-		memcpy(out->pos, src, n);
-		out->pos += n;
-		*out->pos = '\0';
 	}
 }
 
