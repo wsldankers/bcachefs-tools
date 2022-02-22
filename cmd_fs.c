@@ -14,56 +14,90 @@
 #include "cmds.h"
 #include "libbcachefs.h"
 
-static void print_dev_usage_type(const char *type,
-				 unsigned bucket_size,
-				 u64 buckets, u64 sectors,
-				 enum units units)
+static void dev_usage_type_to_text(struct printbuf *out,
+				   const char *type,
+				   unsigned bucket_size,
+				   u64 buckets, u64 sectors)
 {
 	u64 frag = max((s64) buckets * bucket_size - (s64) sectors, 0LL);
 
-	printf_pad(20, "  %s:", type);
-	printf(" %15s %15llu %15s\n",
-	       pr_units(sectors, units),
-	       buckets,
-	       pr_units(frag, units));
+	pr_buf(out, "%s:", type);
+	pr_tab(out);
+	pr_sectors(out, sectors);
+	pr_tab_rjust(out);
+	pr_buf(out, "%llu", buckets);
+	pr_tab_rjust(out);
+	pr_sectors(out, frag);
+	pr_tab_rjust(out);
+	pr_newline(out);
 }
 
-static void print_dev_usage(struct bchfs_handle fs,
-			    struct dev_name *d,
-			    enum units units)
+static void dev_usage_to_text(struct printbuf *out,
+			      struct bchfs_handle fs,
+			      struct dev_name *d)
 {
 	struct bch_ioctl_dev_usage u = bchu_dev_usage(fs, d->idx);
 	unsigned i;
 
-	printf("\n");
-	printf_pad(20, "%s (device %u):", d->label ?: "(no label)", d->idx);
-	printf("%30s%16s\n", d->dev ?: "(device not found)", bch2_member_states[u.state]);
+	pr_newline(out);
+	pr_buf(out, "%s (device %u):", d->label ?: "(no label)", d->idx);
+	pr_tab(out);
+	pr_buf(out, "%s", d->dev ?: "(device not found)");
+	pr_tab_rjust(out);
 
-	printf("%-20s%16s%16s%16s\n",
-	       "", "data", "buckets", "fragmented");
+	pr_buf(out, "%s", bch2_member_states[u.state]);
+	pr_tab_rjust(out);
+
+	pr_newline(out);
+
+	pr_indent_push(out, 2);
+	pr_tab(out);
+
+	pr_buf(out, "data");
+	pr_tab_rjust(out);
+
+	pr_buf(out, "buckets");
+	pr_tab_rjust(out);
+
+	pr_buf(out, "fragmented");
+	pr_tab_rjust(out);
+
+	pr_newline(out);
 
 	for (i = BCH_DATA_sb; i < BCH_DATA_NR; i++)
-		print_dev_usage_type(bch2_data_types[i],
-				     u.bucket_size,
-				     u.buckets[i],
-				     u.sectors[i],
-				     units);
+		dev_usage_type_to_text(out,
+				       bch2_data_types[i],
+				       u.bucket_size,
+				       u.buckets[i],
+				       u.sectors[i]);
 
-	print_dev_usage_type("erasure coded",
-			     u.bucket_size,
-			     u.ec_buckets,
-			     u.ec_sectors,
-			     units);
+	dev_usage_type_to_text(out,
+			       "erasure coded",
+			       u.bucket_size,
+			       u.ec_buckets,
+			       u.ec_sectors);
 
-	printf_pad(20, "  available:");
-	printf(" %15s %15llu\n",
-	       pr_units(u.available_buckets * u.bucket_size, units),
-	       u.available_buckets);
+	pr_buf(out, "available:");
+	pr_tab(out);
 
-	printf_pad(20, "  capacity:");
-	printf(" %15s %15llu\n",
-	       pr_units(u.nr_buckets * u.bucket_size, units),
-	       u.nr_buckets);
+	pr_sectors(out, u.available_buckets * u.bucket_size);
+	pr_tab_rjust(out);
+
+	pr_buf(out, "%llu", u.available_buckets);
+	pr_tab_rjust(out);
+	pr_newline(out);
+
+	pr_buf(out, "capacity:");
+	pr_tab(out);
+
+	pr_sectors(out, u.nr_buckets * u.bucket_size);
+	pr_tab_rjust(out);
+	pr_buf(out, "%llu", u.nr_buckets);
+	pr_tab_rjust(out);
+
+	pr_indent_pop(out, 2);
+
+	pr_newline(out);
 }
 
 static int dev_by_label_cmp(const void *_l, const void *_r)
@@ -88,8 +122,9 @@ static struct dev_name *dev_idx_to_name(dev_names *dev_names, unsigned idx)
 	return NULL;
 }
 
-static void print_replicas_usage(const struct bch_replicas_usage *r,
-				 dev_names *dev_names, enum units units)
+static void replicas_usage_to_text(struct printbuf *out,
+				   const struct bch_replicas_usage *r,
+				   dev_names *dev_names)
 {
 	unsigned i;
 
@@ -113,10 +148,18 @@ static void print_replicas_usage(const struct bch_replicas_usage *r,
 	*d++ = ']';
 	*d++ = '\0';
 
-	printf_pad(16, "%s: ", bch2_data_types[r->r.data_type]);
-	printf_pad(16, "%u/%u ", r->r.nr_required, r->r.nr_devs);
-	printf_pad(32, "%s ", devs);
-	printf(" %s\n", pr_units(r->sectors, units));
+	pr_buf(out, "%s: ", bch2_data_types[r->r.data_type]);
+	pr_tab(out);
+
+	pr_buf(out, "%u/%u ", r->r.nr_required, r->r.nr_devs);
+	pr_tab(out);
+
+	pr_buf(out, "%s ", devs);
+	pr_tab(out);
+
+	pr_sectors(out, r->sectors);
+	pr_tab_rjust(out);
+	pr_newline(out);
 }
 
 #define for_each_usage_replica(_u, _r)					\
@@ -125,10 +168,9 @@ static void print_replicas_usage(const struct bch_replicas_usage *r,
 	     _r = replicas_usage_next(_r),				\
 	     BUG_ON((void *) _r > (void *) (_u)->replicas + (_u)->replica_entries_bytes))
 
-static void print_fs_usage(const char *path, enum units units)
+static void fs_usage_to_text(struct printbuf *out, const char *path)
 {
 	unsigned i;
-	char uuid[40];
 
 	struct bchfs_handle fs = bcache_fs_open(path);
 
@@ -137,54 +179,93 @@ static void print_fs_usage(const char *path, enum units units)
 
 	struct bch_ioctl_fs_usage *u = bchu_fs_usage(fs);
 
-	uuid_unparse(fs.uuid.b, uuid);
-	printf("Filesystem %s:\n", uuid);
+	pr_buf(out, "Filesystem: ");
+	pr_uuid(out, fs.uuid.b);
+	pr_newline(out);
 
-	printf("%-20s%12s\n", "Size:", pr_units(u->capacity, units));
-	printf("%-20s%12s\n", "Used:", pr_units(u->used, units));
+	out->tabstops[0] = 20;
+	out->tabstops[1] = 36;
 
-	printf("%-20s%12s\n", "Online reserved:", pr_units(u->online_reserved, units));
+	pr_buf(out, "Size:");
+	pr_tab(out);
+	pr_sectors(out, u->capacity);
+	pr_tab_rjust(out);
+	pr_newline(out);
 
-	printf("\n");
-	printf("%-16s%-16s%s\n", "Data type", "Required/total", "Devices");
+	pr_buf(out, "Used:");
+	pr_tab(out);
+	pr_sectors(out, u->used);
+	pr_tab_rjust(out);
+	pr_newline(out);
+
+	pr_buf(out, "Online reserved:");
+	pr_tab(out);
+	pr_sectors(out, u->online_reserved);
+	pr_tab_rjust(out);
+	pr_newline(out);
+
+	pr_newline(out);
+
+	out->tabstops[0] = 16;
+	out->tabstops[1] = 32;
+	out->tabstops[2] = 50;
+	out->tabstops[3] = 68;
+
+	pr_buf(out, "Data type");
+	pr_tab(out);
+
+	pr_buf(out, "Required/total");
+	pr_tab(out);
+
+	pr_buf(out, "Devices");
+	pr_newline(out);
 
 	for (i = 0; i < BCH_REPLICAS_MAX; i++) {
 		if (!u->persistent_reserved[i])
 			continue;
 
-		printf_pad(16, "%s: ", "reserved");
-		printf_pad(16, "%u/%u ", 1, i);
-		printf_pad(32, "[] ");
-		printf("%s\n", pr_units(u->persistent_reserved[i], units));
+		pr_buf(out, "reserved:");
+		pr_tab(out);
+		pr_buf(out, "%u/%u ", 1, i);
+		pr_tab(out);
+		pr_buf(out, "[] ");
+		pr_sectors(out, u->persistent_reserved[i]);
+		pr_tab_rjust(out);
+		pr_newline(out);
 	}
 
 	struct bch_replicas_usage *r;
 
 	for_each_usage_replica(u, r)
 		if (r->r.data_type < BCH_DATA_user)
-			print_replicas_usage(r, &dev_names, units);
+			replicas_usage_to_text(out, r, &dev_names);
 
 	for_each_usage_replica(u, r)
 		if (r->r.data_type == BCH_DATA_user &&
 		    r->r.nr_required <= 1)
-			print_replicas_usage(r, &dev_names, units);
+			replicas_usage_to_text(out, r, &dev_names);
 
 	for_each_usage_replica(u, r)
 		if (r->r.data_type == BCH_DATA_user &&
 		    r->r.nr_required > 1)
-			print_replicas_usage(r, &dev_names, units);
+			replicas_usage_to_text(out, r, &dev_names);
 
 	for_each_usage_replica(u, r)
 		if (r->r.data_type > BCH_DATA_user)
-			print_replicas_usage(r, &dev_names, units);
+			replicas_usage_to_text(out, r, &dev_names);
 
 	free(u);
 
 	sort(&darray_item(dev_names, 0), darray_size(dev_names),
 	     sizeof(darray_item(dev_names, 0)), dev_by_label_cmp, NULL);
 
+	out->tabstops[0] = 16;
+	out->tabstops[1] = 36;
+	out->tabstops[2] = 52;
+	out->tabstops[3] = 68;
+
 	darray_foreach(dev, dev_names)
-		print_dev_usage(fs, dev, units);
+		dev_usage_to_text(out, fs, dev);
 
 	darray_foreach(dev, dev_names) {
 		free(dev->dev);
@@ -209,23 +290,34 @@ int fs_usage(void)
 
 int cmd_fs_usage(int argc, char *argv[])
 {
-	enum units units = BYTES;
+	enum printbuf_units units = PRINTBUF_UNITS_BYTES;
+	char _buf[1 << 16];
+	struct printbuf buf;
 	char *fs;
 	int opt;
 
 	while ((opt = getopt(argc, argv, "h")) != -1)
 		switch (opt) {
 		case 'h':
-			units = HUMAN_READABLE;
+			units = PRINTBUF_UNITS_HUMAN_READABLE;
 			break;
 		}
 	args_shift(optind);
 
 	if (!argc) {
-		print_fs_usage(".", units);
+		buf = PBUF(_buf);
+		buf.units = units;
+		fs_usage_to_text(&buf, ".");
+		*buf.pos = 0;
+		printf("%s", _buf);
 	} else {
-		while ((fs = arg_pop()))
-			print_fs_usage(fs, units);
+		while ((fs = arg_pop())) {
+			buf = PBUF(_buf);
+			buf.units = units;
+			fs_usage_to_text(&buf, fs);
+			*buf.pos = 0;
+			printf("%s", _buf);
+		}
 	}
 
 	return 0;

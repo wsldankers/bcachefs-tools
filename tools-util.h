@@ -55,20 +55,6 @@ struct stat xstat(const char *);
 
 int printf_pad(unsigned pad, const char * fmt, ...);
 
-enum units {
-	BYTES,
-	SECTORS,
-	HUMAN_READABLE,
-};
-
-struct units_buf __pr_units(s64, enum units);
-
-struct units_buf {
-	char	b[20];
-};
-
-#define pr_units(_v, _u)	&(__pr_units(_v, _u).b[0])
-
 char *read_file_str(int, const char *);
 u64 read_file_u64(int, const char *);
 

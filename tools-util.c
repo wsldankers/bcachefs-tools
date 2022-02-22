@@ -143,42 +143,6 @@ int printf_pad(unsigned pad, const char * fmt, ...)
        return ret;
 }
 
-struct units_buf __pr_units(s64 _v, enum units units)
-{
-	struct units_buf ret;
-	char *out = ret.b, *end = out + sizeof(ret.b);
-	u64 v = _v;
-
-	if (_v < 0) {
-		out += scnprintf(out, end - out, "-");
-		v = -_v;
-	}
-
-	switch (units) {
-	case BYTES:
-		snprintf(out, end - out, "%llu", v << 9);
-		break;
-	case SECTORS:
-		snprintf(out, end - out, "%llu", v);
-		break;
-	case HUMAN_READABLE:
-		v <<= 9;
-
-		if (v >= 1024) {
-			int exp = log(v) / log(1024);
-			snprintf(out, end - out, "%.1f%c",
-				 v / pow(1024, exp),
-				 "KMGTPE"[exp-1]);
-		} else {
-			snprintf(out, end - out, "%llu", v);
-		}
-
-		break;
-	}
-
-	return ret;
-}
-
 /* Argument parsing stuff: */
 
 /* File parsing (i.e. sysfs) */

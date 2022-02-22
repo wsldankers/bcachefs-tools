@@ -236,8 +236,15 @@ int cmd_format(int argc, char *argv[])
 			    devices.item, darray_size(devices));
 	bch2_opt_strs_free(&fs_opt_strs);
 
-	if (!quiet)
-		bch2_sb_print(sb, false, 1 << BCH_SB_FIELD_members, HUMAN_READABLE);
+	if (!quiet) {
+		char buf[4096];
+		struct printbuf out = PBUF(buf);
+
+		out.units = PRINTBUF_UNITS_HUMAN_READABLE;
+
+		bch2_sb_to_text(&PBUF(buf), sb, false, 1 << BCH_SB_FIELD_members);
+		printf("%s", buf);
+	}
 	free(sb);
 
 	if (opts.passphrase) {
@@ -325,7 +332,14 @@ int cmd_show_super(int argc, char *argv[])
 	if (ret)
 		die("Error opening %s: %s", dev, strerror(-ret));
 
-	bch2_sb_print(sb.sb, print_layout, fields, HUMAN_READABLE);
+	char buf[4096 << 2];
+	struct printbuf out = PBUF(buf);
+
+	out.units = PRINTBUF_UNITS_HUMAN_READABLE;
+
+	bch2_sb_to_text(&PBUF(buf), sb.sb, print_layout, fields);
+	printf("%s", buf);
+
 	bch2_free_super(&sb);
 	return 0;
 }

@@ -79,8 +79,6 @@ struct bch_sb *bch2_format(struct bch_opt_strs,
 void bch2_super_write(int, struct bch_sb *);
 struct bch_sb *__bch2_super_read(int, u64);
 
-void bch2_sb_print(struct bch_sb *, bool, unsigned, enum units);
-
 /* ioctl interface: */
 
 int bcachectl_open(void);

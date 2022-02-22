@@ -620,7 +620,7 @@ int cmd_list_journal(int argc, char *argv[])
 			 * log entries denote the start of a new transaction
 			 * commit:
 			 */
-			printbuf_indent_push(&buf,
+			pr_indent_push(&buf,
 				entry->type == BCH_JSET_ENTRY_log ? 2 : 4);
 			bch2_journal_entry_to_text(&buf, c, entry);
 			printf("%s\n", _buf);
