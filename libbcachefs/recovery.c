@@ -94,6 +94,24 @@ size_t bch2_journal_key_search(struct journal_keys *journal_keys,
 	return l;
 }
 
+struct bkey_i *bch2_journal_keys_peek(struct bch_fs *c, enum btree_id btree_id,
+				      unsigned level, struct bpos pos)
+{
+	struct journal_keys *keys = &c->journal_keys;
+	struct journal_key *end = keys->d + keys->nr;
+	struct journal_key *k = keys->d +
+		bch2_journal_key_search(keys, btree_id, level, pos);
+
+	while (k < end && k->overwritten)
+		k++;
+
+	if (k < end &&
+	    k->btree_id	== btree_id &&
+	    k->level	== level)
+		return k->k;
+	return NULL;
+}
+
 static void journal_iter_fix(struct bch_fs *c, struct journal_iter *iter, unsigned idx)
 {
 	struct bkey_i *n = iter->keys->d[idx].k;
@@ -742,6 +760,8 @@ static int verify_superblock_clean(struct bch_fs *c,
 {
 	unsigned i;
 	struct bch_sb_field_clean *clean = *cleanp;
+	struct printbuf buf1 = PRINTBUF;
+	struct printbuf buf2 = PRINTBUF;
 	int ret = 0;
 
 	if (mustfix_fsck_err_on(j->seq != clean->journal_seq, c,
@@ -754,7 +774,6 @@ static int verify_superblock_clean(struct bch_fs *c,
 	}
 
 	for (i = 0; i < BTREE_ID_NR; i++) {
-		char buf1[200], buf2[200];
 		struct bkey_i *k1, *k2;
 		unsigned l1 = 0, l2 = 0;
 
@@ -763,6 +782,19 @@ static int verify_superblock_clean(struct bch_fs *c,
 
 		if (!k1 && !k2)
 			continue;
+
+		printbuf_reset(&buf1);
+		printbuf_reset(&buf2);
+
+		if (k1)
+			bch2_bkey_val_to_text(&buf1, c, bkey_i_to_s_c(k1));
+		else
+			pr_buf(&buf1, "(none)");
+
+		if (k2)
+			bch2_bkey_val_to_text(&buf2, c, bkey_i_to_s_c(k2));
+		else
+			pr_buf(&buf2, "(none)");
 
 		mustfix_fsck_err_on(!k1 || !k2 ||
 				    IS_ERR(k1) ||
@@ -773,10 +805,12 @@ static int verify_superblock_clean(struct bch_fs *c,
 			"superblock btree root %u doesn't match journal after clean shutdown\n"
 			"sb:      l=%u %s\n"
 			"journal: l=%u %s\n", i,
-			l1, (bch2_bkey_val_to_text(&PBUF(buf1), c, bkey_i_to_s_c(k1)), buf1),
-			l2, (bch2_bkey_val_to_text(&PBUF(buf2), c, bkey_i_to_s_c(k2)), buf2));
+			l1, buf1.buf,
+			l2, buf2.buf);
 	}
 fsck_err:
+	printbuf_exit(&buf2);
+	printbuf_exit(&buf1);
 	return ret;
 }
 
@@ -1139,6 +1173,7 @@ use_clean:
 
 	clear_bit(BCH_FS_REBUILD_REPLICAS, &c->flags);
 	set_bit(BCH_FS_INITIAL_GC_DONE, &c->flags);
+	set_bit(BCH_FS_MAY_GO_RW, &c->flags);
 
 	/*
 	 * Skip past versions that might have possibly been used (as nonces),
@@ -1299,6 +1334,7 @@ int bch2_fs_initialize(struct bch_fs *c)
 	mutex_unlock(&c->sb_lock);
 
 	set_bit(BCH_FS_INITIAL_GC_DONE, &c->flags);
+	set_bit(BCH_FS_MAY_GO_RW, &c->flags);
 	set_bit(BCH_FS_FSCK_DONE, &c->flags);
 
 	for (i = 0; i < BTREE_ID_NR; i++)

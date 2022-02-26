@@ -34,10 +34,8 @@ unsigned bch2_journal_dev_buckets_available(struct journal *j,
 					    struct journal_device *ja,
 					    enum journal_space_from from)
 {
-	unsigned available = !test_bit(JOURNAL_NOCHANGES, &j->flags)
-		? ((journal_space_from(ja, from) -
-		    ja->cur_idx - 1 + ja->nr) % ja->nr)
-		: ja->nr;
+	unsigned available = (journal_space_from(ja, from) -
+			      ja->cur_idx - 1 + ja->nr) % ja->nr;
 
 	/*
 	 * Don't use the last bucket unless writing the new last_seq
@@ -218,14 +216,11 @@ void bch2_journal_space_available(struct journal *j)
 	if (!clean_ondisk &&
 	    j->reservations.idx ==
 	    j->reservations.unwritten_idx) {
-		char *buf = kmalloc(4096, GFP_ATOMIC);
+		struct printbuf buf = PRINTBUF;
 
-		bch_err(c, "journal stuck");
-		if (buf) {
-			__bch2_journal_debug_to_text(&_PBUF(buf, 4096), j);
-			pr_err("\n%s", buf);
-			kfree(buf);
-		}
+		__bch2_journal_debug_to_text(&buf, j);
+		bch_err(c, "journal stuck\n%s", buf.buf);
+		printbuf_exit(&buf);
 
 		bch2_fatal_error(c);
 		ret = cur_entry_journal_stuck;
@@ -669,7 +664,7 @@ static int __bch2_journal_reclaim(struct journal *j, bool direct)
 
 		if (nr_flushed)
 			wake_up(&j->reclaim_wait);
-	} while ((min_nr || min_key_cache) && !direct);
+	} while ((min_nr || min_key_cache) && nr_flushed && !direct);
 
 	memalloc_noreclaim_restore(flags);
 
@@ -767,7 +762,8 @@ static int journal_flush_done(struct journal *j, u64 seq_to_flush,
 
 	mutex_lock(&j->reclaim_lock);
 
-	*did_work = journal_flush_pins(j, seq_to_flush, 0, 0) != 0;
+	if (journal_flush_pins(j, seq_to_flush, 0, 0))
+		*did_work = true;
 
 	spin_lock(&j->lock);
 	/*

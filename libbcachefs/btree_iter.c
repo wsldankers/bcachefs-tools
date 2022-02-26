@@ -20,7 +20,7 @@
 #include <trace/events/bcachefs.h>
 
 static void btree_trans_verify_sorted(struct btree_trans *);
-static void btree_path_check_sort(struct btree_trans *, struct btree_path *, int);
+inline void bch2_btree_path_check_sort(struct btree_trans *, struct btree_path *, int);
 
 static inline void btree_path_list_remove(struct btree_trans *, struct btree_path *);
 static inline void btree_path_list_add(struct btree_trans *, struct btree_path *,
@@ -589,7 +589,9 @@ static void bch2_btree_path_verify_level(struct btree_trans *trans,
 	struct btree_node_iter tmp;
 	bool locked;
 	struct bkey_packed *p, *k;
-	char buf1[100], buf2[100], buf3[100];
+	struct printbuf buf1 = PRINTBUF;
+	struct printbuf buf2 = PRINTBUF;
+	struct printbuf buf3 = PRINTBUF;
 	const char *msg;
 
 	if (!bch2_debug_check_iterators)
@@ -637,26 +639,27 @@ static void bch2_btree_path_verify_level(struct btree_trans *trans,
 		btree_node_unlock(path, level);
 	return;
 err:
-	strcpy(buf2, "(none)");
-	strcpy(buf3, "(none)");
-
-	bch2_bpos_to_text(&PBUF(buf1), path->pos);
+	bch2_bpos_to_text(&buf1, path->pos);
 
 	if (p) {
 		struct bkey uk = bkey_unpack_key(l->b, p);
-		bch2_bkey_to_text(&PBUF(buf2), &uk);
+		bch2_bkey_to_text(&buf2, &uk);
+	} else {
+		pr_buf(&buf2, "(none)");
 	}
 
 	if (k) {
 		struct bkey uk = bkey_unpack_key(l->b, k);
-		bch2_bkey_to_text(&PBUF(buf3), &uk);
+		bch2_bkey_to_text(&buf3, &uk);
+	} else {
+		pr_buf(&buf3, "(none)");
 	}
 
 	panic("path should be %s key at level %u:\n"
 	      "path pos %s\n"
 	      "prev key %s\n"
 	      "cur  key %s\n",
-	      msg, level, buf1, buf2, buf3);
+	      msg, level, buf1.buf, buf2.buf, buf3.buf);
 }
 
 static void bch2_btree_path_verify(struct btree_trans *trans,
@@ -754,16 +757,16 @@ static int bch2_btree_iter_verify_ret(struct btree_iter *iter, struct bkey_s_c k
 	if (!bkey_cmp(prev.k->p, k.k->p) &&
 	    bch2_snapshot_is_ancestor(trans->c, iter->snapshot,
 				      prev.k->p.snapshot) > 0) {
-		char buf1[100], buf2[200];
+		struct printbuf buf1 = PRINTBUF, buf2 = PRINTBUF;
 
-		bch2_bkey_to_text(&PBUF(buf1), k.k);
-		bch2_bkey_to_text(&PBUF(buf2), prev.k);
+		bch2_bkey_to_text(&buf1, k.k);
+		bch2_bkey_to_text(&buf2, prev.k);
 
 		panic("iter snap %u\n"
 		      "k    %s\n"
 		      "prev %s\n",
 		      iter->snapshot,
-		      buf1, buf2);
+		      buf1.buf, buf2.buf);
 	}
 out:
 	bch2_trans_iter_exit(trans, &copy);
@@ -775,7 +778,7 @@ void bch2_assert_pos_locked(struct btree_trans *trans, enum btree_id id,
 {
 	struct btree_path *path;
 	unsigned idx;
-	char buf[100];
+	struct printbuf buf = PRINTBUF;
 
 	trans_for_each_path_inorder(trans, path, idx) {
 		int cmp = cmp_int(path->btree_id, id) ?:
@@ -801,9 +804,10 @@ void bch2_assert_pos_locked(struct btree_trans *trans, enum btree_id id,
 	}
 
 	bch2_dump_trans_paths_updates(trans);
+	bch2_bpos_to_text(&buf, pos);
+
 	panic("not locked: %s %s%s\n",
-	      bch2_btree_ids[id],
-	      (bch2_bpos_to_text(&PBUF(buf), pos), buf),
+	      bch2_btree_ids[id], buf.buf,
 	      key_cache ? " cached" : "");
 }
 
@@ -1084,23 +1088,23 @@ static void btree_path_verify_new_node(struct btree_trans *trans,
 	if (!k ||
 	    bkey_deleted(k) ||
 	    bkey_cmp_left_packed(l->b, k, &b->key.k.p)) {
-		char buf1[100];
-		char buf2[100];
-		char buf3[100];
-		char buf4[100];
+		struct printbuf buf1 = PRINTBUF;
+		struct printbuf buf2 = PRINTBUF;
+		struct printbuf buf3 = PRINTBUF;
+		struct printbuf buf4 = PRINTBUF;
 		struct bkey uk = bkey_unpack_key(b, k);
 
 		bch2_dump_btree_node(c, l->b);
-		bch2_bpos_to_text(&PBUF(buf1), path->pos);
-		bch2_bkey_to_text(&PBUF(buf2), &uk);
-		bch2_bpos_to_text(&PBUF(buf3), b->data->min_key);
-		bch2_bpos_to_text(&PBUF(buf3), b->data->max_key);
+		bch2_bpos_to_text(&buf1, path->pos);
+		bch2_bkey_to_text(&buf2, &uk);
+		bch2_bpos_to_text(&buf3, b->data->min_key);
+		bch2_bpos_to_text(&buf3, b->data->max_key);
 		panic("parent iter doesn't point to new node:\n"
 		      "iter pos %s %s\n"
 		      "iter key %s\n"
 		      "new node %s-%s\n",
-		      bch2_btree_ids[path->btree_id], buf1,
-		      buf2, buf3, buf4);
+		      bch2_btree_ids[path->btree_id],
+		      buf1.buf, buf2.buf, buf3.buf, buf4.buf);
 	}
 
 	if (!parent_locked)
@@ -1644,7 +1648,7 @@ static void btree_path_copy(struct btree_trans *trans, struct btree_path *dst,
 			six_lock_increment(&dst->l[i].b->c.lock,
 					   __btree_lock_want(dst, i));
 
-	btree_path_check_sort(trans, dst, 0);
+	bch2_btree_path_check_sort(trans, dst, 0);
 }
 
 static struct btree_path *btree_path_clone(struct btree_trans *trans, struct btree_path *src,
@@ -1694,7 +1698,7 @@ bch2_btree_path_set_pos(struct btree_trans *trans,
 	path->pos		= new_pos;
 	path->should_be_locked	= false;
 
-	btree_path_check_sort(trans, path, cmp);
+	bch2_btree_path_check_sort(trans, path, cmp);
 
 	if (unlikely(path->cached)) {
 		btree_node_unlock(path, 0);
@@ -1803,18 +1807,21 @@ void bch2_dump_trans_paths_updates(struct btree_trans *trans)
 {
 	struct btree_path *path;
 	struct btree_insert_entry *i;
+	struct printbuf buf1 = PRINTBUF, buf2 = PRINTBUF;
 	unsigned idx;
-	char buf1[300], buf2[300];
 
-	btree_trans_verify_sorted(trans);
+	trans_for_each_path_inorder(trans, path, idx) {
+		printbuf_reset(&buf1);
 
-	trans_for_each_path_inorder(trans, path, idx)
-		printk(KERN_ERR "path: idx %u ref %u:%u%s%s btree %s pos %s locks %u %pS\n",
+		bch2_bpos_to_text(&buf1, path->pos);
+
+		printk(KERN_ERR "path: idx %u ref %u:%u%s%s btree=%s l=%u pos %s locks %u %pS\n",
 		       path->idx, path->ref, path->intent_ref,
 		       path->should_be_locked ? " S" : "",
 		       path->preserve ? " P" : "",
 		       bch2_btree_ids[path->btree_id],
-		       (bch2_bpos_to_text(&PBUF(buf1), path->pos), buf1),
+		       path->level,
+		       buf1.buf,
 		       path->nodes_locked,
 #ifdef CONFIG_BCACHEFS_DEBUG
 		       (void *) path->ip_allocated
@@ -1822,17 +1829,25 @@ void bch2_dump_trans_paths_updates(struct btree_trans *trans)
 		       NULL
 #endif
 		       );
+	}
 
 	trans_for_each_update(trans, i) {
 		struct bkey u;
 		struct bkey_s_c old = bch2_btree_path_peek_slot(i->path, &u);
 
+		printbuf_reset(&buf1);
+		printbuf_reset(&buf2);
+		bch2_bkey_val_to_text(&buf1, trans->c, old);
+		bch2_bkey_val_to_text(&buf2, trans->c, bkey_i_to_s_c(i->k));
+
 		printk(KERN_ERR "update: btree %s %pS\n  old %s\n  new %s",
 		       bch2_btree_ids[i->btree_id],
 		       (void *) i->ip_allocated,
-		       (bch2_bkey_val_to_text(&PBUF(buf1), trans->c, old), buf1),
-		       (bch2_bkey_val_to_text(&PBUF(buf2), trans->c, bkey_i_to_s_c(i->k)), buf2));
+		       buf1.buf, buf2.buf);
 	}
+
+	printbuf_exit(&buf2);
+	printbuf_exit(&buf1);
 }
 
 static struct btree_path *btree_path_alloc(struct btree_trans *trans,
@@ -1873,6 +1888,7 @@ struct btree_path *bch2_path_get(struct btree_trans *trans,
 	int i;
 
 	BUG_ON(trans->restarted);
+	btree_trans_verify_sorted(trans);
 
 	trans_for_each_path_inorder(trans, path, i) {
 		if (__btree_path_cmp(path,
@@ -1967,6 +1983,7 @@ inline struct bkey_s_c bch2_btree_path_peek_slot(struct btree_path *path, struct
 
 		EBUG_ON(path->uptodate != BTREE_ITER_UPTODATE);
 
+		*u = ck->k->k;
 		k = bkey_i_to_s_c(ck->k);
 	}
 
@@ -2173,30 +2190,13 @@ static inline struct bkey_i *btree_trans_peek_updates(struct btree_trans *trans,
 }
 
 static noinline
-struct bkey_i *__btree_trans_peek_journal(struct btree_trans *trans,
-					  struct btree_path *path)
-{
-	struct journal_keys *keys = &trans->c->journal_keys;
-	size_t idx = bch2_journal_key_search(keys, path->btree_id,
-					     path->level, path->pos);
-
-	while (idx < keys->nr && keys->d[idx].overwritten)
-		idx++;
-
-	return (idx < keys->nr &&
-		keys->d[idx].btree_id	== path->btree_id &&
-		keys->d[idx].level	== path->level)
-		? keys->d[idx].k
-		: NULL;
-}
-
-static noinline
 struct bkey_s_c btree_trans_peek_journal(struct btree_trans *trans,
 					 struct btree_iter *iter,
 					 struct bkey_s_c k)
 {
 	struct bkey_i *next_journal =
-		__btree_trans_peek_journal(trans, iter->path);
+		bch2_journal_keys_peek(trans->c, iter->btree_id, 0,
+				       iter->path->pos);
 
 	if (next_journal &&
 	    bpos_cmp(next_journal->k.p,
@@ -2503,7 +2503,7 @@ struct bkey_s_c bch2_btree_iter_peek_prev(struct btree_iter *iter)
 			k = btree_path_level_prev(trans->c, iter->path,
 						  &iter->path->l[0], &iter->k);
 
-		btree_path_check_sort(trans, iter->path, 0);
+		bch2_btree_path_check_sort(trans, iter->path, 0);
 
 		if (likely(k.k)) {
 			if (iter->flags & BTREE_ITER_FILTER_SNAPSHOTS) {
@@ -2635,7 +2635,8 @@ struct bkey_s_c bch2_btree_iter_peek_slot(struct btree_iter *iter)
 		}
 
 		if (unlikely(iter->flags & BTREE_ITER_WITH_JOURNAL) &&
-		    (next_update = __btree_trans_peek_journal(trans, iter->path)) &&
+		    (next_update = bch2_journal_keys_peek(trans->c, iter->btree_id,
+							  0, iter->pos)) &&
 		    !bpos_cmp(next_update->k.p, iter->pos)) {
 			iter->k = next_update->k;
 			k = bkey_i_to_s_c(next_update);
@@ -2748,7 +2749,10 @@ static void btree_trans_verify_sorted(struct btree_trans *trans)
 	unsigned i;
 
 	trans_for_each_path_inorder(trans, path, i) {
-		BUG_ON(prev && btree_path_cmp(prev, path) > 0);
+		if (prev && btree_path_cmp(prev, path) > 0) {
+			bch2_dump_trans_paths_updates(trans);
+			panic("trans paths out of order!\n");
+		}
 		prev = path;
 	}
 #endif
@@ -2765,8 +2769,8 @@ static inline void btree_path_swap(struct btree_trans *trans,
 	btree_path_verify_sorted_ref(trans, r);
 }
 
-static void btree_path_check_sort(struct btree_trans *trans, struct btree_path *path,
-				  int cmp)
+inline void bch2_btree_path_check_sort(struct btree_trans *trans, struct btree_path *path,
+				       int cmp)
 {
 	struct btree_path *n;
 
@@ -3005,6 +3009,8 @@ void bch2_trans_begin(struct btree_trans *trans)
 	}
 
 	trans_for_each_path(trans, path) {
+		path->should_be_locked = false;
+
 		/*
 		 * XXX: we probably shouldn't be doing this if the transaction
 		 * was restarted, but currently we still overflow transaction
@@ -3013,7 +3019,7 @@ void bch2_trans_begin(struct btree_trans *trans)
 		if (!path->ref && !path->preserve)
 			__bch2_path_free(trans, path);
 		else
-			path->preserve = path->should_be_locked = false;
+			path->preserve = false;
 	}
 
 	bch2_trans_cond_resched(trans);

@@ -99,6 +99,38 @@ STRTO_H(strtoll, long long)
 STRTO_H(strtoull, unsigned long long)
 STRTO_H(strtou64, u64)
 
+static int bch2_printbuf_realloc(struct printbuf *out, unsigned extra)
+{
+	unsigned new_size = roundup_pow_of_two(out->size + extra);
+	char *buf = krealloc(out->buf, new_size, !out->atomic ? GFP_KERNEL : GFP_ATOMIC);
+
+	if (!buf) {
+		out->allocation_failure = true;
+		return -ENOMEM;
+	}
+
+	out->buf	= buf;
+	out->size	= new_size;
+	return 0;
+}
+
+void bch2_pr_buf(struct printbuf *out, const char *fmt, ...)
+{
+	va_list args;
+	int len;
+
+	do {
+		va_start(args, fmt);
+		len = vsnprintf(out->buf + out->pos, printbuf_remaining(out), fmt, args);
+		va_end(args);
+	} while (len + 1 >= printbuf_remaining(out) &&
+		 !bch2_printbuf_realloc(out, len + 1));
+
+	len = min_t(size_t, len,
+		  printbuf_remaining(out) ? printbuf_remaining(out) - 1 : 0);
+	out->pos += len;
+}
+
 void bch2_hprint(struct printbuf *buf, s64 v)
 {
 	int u, t = 0;
@@ -150,9 +182,6 @@ void bch2_flags_to_text(struct printbuf *out,
 {
 	unsigned bit, nr = 0;
 	bool first = true;
-
-	if (out->pos != out->end)
-		*out->pos = '\0';
 
 	while (list[nr])
 		nr++;
@@ -482,36 +511,44 @@ void bch2_pd_controller_init(struct bch_pd_controller *pd)
 	pd->backpressure	= 1;
 }
 
-size_t bch2_pd_controller_print_debug(struct bch_pd_controller *pd, char *buf)
+void bch2_pd_controller_debug_to_text(struct printbuf *out, struct bch_pd_controller *pd)
 {
-	/* 2^64 - 1 is 20 digits, plus null byte */
-	char rate[21];
-	char actual[21];
-	char target[21];
-	char proportional[21];
-	char derivative[21];
-	char change[21];
-	s64 next_io;
+	out->tabstops[0] = 20;
 
-	bch2_hprint(&PBUF(rate),	pd->rate.rate);
-	bch2_hprint(&PBUF(actual),	pd->last_actual);
-	bch2_hprint(&PBUF(target),	pd->last_target);
-	bch2_hprint(&PBUF(proportional), pd->last_proportional);
-	bch2_hprint(&PBUF(derivative),	pd->last_derivative);
-	bch2_hprint(&PBUF(change),	pd->last_change);
+	pr_buf(out, "rate:");
+	pr_tab(out);
+	bch2_hprint(out, pd->rate.rate);
+	pr_newline(out);
 
-	next_io = div64_s64(pd->rate.next - local_clock(), NSEC_PER_MSEC);
+	pr_buf(out, "target:");
+	pr_tab(out);
+	bch2_hprint(out, pd->last_target);
+	pr_newline(out);
 
-	return sprintf(buf,
-		       "rate:\t\t%s/sec\n"
-		       "target:\t\t%s\n"
-		       "actual:\t\t%s\n"
-		       "proportional:\t%s\n"
-		       "derivative:\t%s\n"
-		       "change:\t\t%s/sec\n"
-		       "next io:\t%llims\n",
-		       rate, target, actual, proportional,
-		       derivative, change, next_io);
+	pr_buf(out, "actual:");
+	pr_tab(out);
+	bch2_hprint(out, pd->last_actual);
+	pr_newline(out);
+
+	pr_buf(out, "proportional:");
+	pr_tab(out);
+	bch2_hprint(out, pd->last_proportional);
+	pr_newline(out);
+
+	pr_buf(out, "derivative:");
+	pr_tab(out);
+	bch2_hprint(out, pd->last_derivative);
+	pr_newline(out);
+
+	pr_buf(out, "change:");
+	pr_tab(out);
+	bch2_hprint(out, pd->last_change);
+	pr_newline(out);
+
+	pr_buf(out, "next io:");
+	pr_tab(out);
+	pr_buf(out, "%llims", div64_s64(pd->rate.next - local_clock(), NSEC_PER_MSEC));
+	pr_newline(out);
 }
 
 /* misc: */

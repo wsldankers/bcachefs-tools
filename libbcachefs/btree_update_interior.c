@@ -41,7 +41,7 @@ static void btree_node_interior_verify(struct bch_fs *c, struct btree *b)
 	struct bkey_s_c k;
 	struct bkey_s_c_btree_ptr_v2 bp;
 	struct bkey unpacked;
-	char buf1[100], buf2[100];
+	struct printbuf buf1 = PRINTBUF, buf2 = PRINTBUF;
 
 	BUG_ON(!b->c.level);
 
@@ -58,9 +58,9 @@ static void btree_node_interior_verify(struct bch_fs *c, struct btree *b)
 
 		if (bpos_cmp(next_node, bp.v->min_key)) {
 			bch2_dump_btree_node(c, b);
-			panic("expected next min_key %s got %s\n",
-			      (bch2_bpos_to_text(&PBUF(buf1), next_node), buf1),
-			      (bch2_bpos_to_text(&PBUF(buf2), bp.v->min_key), buf2));
+			bch2_bpos_to_text(&buf1, next_node);
+			bch2_bpos_to_text(&buf2, bp.v->min_key);
+			panic("expected next min_key %s got %s\n", buf1.buf, buf2.buf);
 		}
 
 		bch2_btree_node_iter_advance(&iter, b);
@@ -68,9 +68,9 @@ static void btree_node_interior_verify(struct bch_fs *c, struct btree *b)
 		if (bch2_btree_node_iter_end(&iter)) {
 			if (bpos_cmp(k.k->p, b->key.k.p)) {
 				bch2_dump_btree_node(c, b);
-				panic("expected end %s got %s\n",
-				      (bch2_bpos_to_text(&PBUF(buf1), b->key.k.p), buf1),
-				      (bch2_bpos_to_text(&PBUF(buf2), k.k->p), buf2));
+				bch2_bpos_to_text(&buf1, b->key.k.p);
+				bch2_bpos_to_text(&buf2, k.k->p);
+				panic("expected end %s got %s\n", buf1.buf, buf2.buf);
 			}
 			break;
 		}
@@ -523,19 +523,13 @@ static int btree_update_nodes_written_trans(struct btree_trans *trans,
 	trans->journal_pin = &as->journal;
 
 	for_each_keylist_key(&as->new_keys, k) {
-		ret = bch2_trans_mark_key(trans,
-					  bkey_s_c_null,
-					  bkey_i_to_s_c(k),
-					  BTREE_TRIGGER_INSERT);
+		ret = bch2_trans_mark_new(trans, k, 0);
 		if (ret)
 			return ret;
 	}
 
 	for_each_keylist_key(&as->old_keys, k) {
-		ret = bch2_trans_mark_key(trans,
-					  bkey_i_to_s_c(k),
-					  bkey_s_c_null,
-					  BTREE_TRIGGER_OVERWRITE);
+		ret = bch2_trans_mark_old(trans, bkey_i_to_s_c(k), 0);
 		if (ret)
 			return ret;
 	}
@@ -1149,10 +1143,11 @@ static void bch2_insert_fixup_btree_ptr(struct btree_update *as,
 	invalid = bch2_bkey_invalid(c, bkey_i_to_s_c(insert), btree_node_type(b)) ?:
 		bch2_bkey_in_btree_node(b, bkey_i_to_s_c(insert));
 	if (invalid) {
-		char buf[160];
+		struct printbuf buf = PRINTBUF;
 
-		bch2_bkey_val_to_text(&PBUF(buf), c, bkey_i_to_s_c(insert));
-		bch2_fs_inconsistent(c, "inserting invalid bkey %s: %s", buf, invalid);
+		bch2_bkey_val_to_text(&buf, c, bkey_i_to_s_c(insert));
+		bch2_fs_inconsistent(c, "inserting invalid bkey %s: %s", buf.buf, invalid);
+		printbuf_exit(&buf);
 		dump_stack();
 	}
 
@@ -1634,15 +1629,17 @@ int __bch2_foreground_maybe_merge(struct btree_trans *trans,
 	}
 
 	if (bkey_cmp(bpos_successor(prev->data->max_key), next->data->min_key)) {
-		char buf1[100], buf2[100];
+		struct printbuf buf1 = PRINTBUF, buf2 = PRINTBUF;
 
-		bch2_bpos_to_text(&PBUF(buf1), prev->data->max_key);
-		bch2_bpos_to_text(&PBUF(buf2), next->data->min_key);
+		bch2_bpos_to_text(&buf1, prev->data->max_key);
+		bch2_bpos_to_text(&buf2, next->data->min_key);
 		bch_err(c,
 			"btree topology error in btree merge:\n"
 			"  prev ends at   %s\n"
 			"  next starts at %s",
-			buf1, buf2);
+			buf1.buf, buf2.buf);
+		printbuf_exit(&buf1);
+		printbuf_exit(&buf2);
 		bch2_topology_error(c);
 		ret = -EIO;
 		goto err;
@@ -1688,6 +1685,10 @@ int __bch2_foreground_maybe_merge(struct btree_trans *trans,
 
 	n = bch2_btree_node_alloc(as, b->c.level);
 	bch2_btree_update_add_new_node(as, n);
+
+	SET_BTREE_NODE_SEQ(n->data,
+			   max(BTREE_NODE_SEQ(b->data),
+			       BTREE_NODE_SEQ(m->data)) + 1);
 
 	btree_set_min(n, prev->data->min_key);
 	btree_set_max(n, next->data->max_key);
@@ -1879,17 +1880,11 @@ static int __bch2_btree_node_update_key(struct btree_trans *trans,
 	int ret;
 
 	if (!skip_triggers) {
-		ret = bch2_trans_mark_key(trans,
-					  bkey_s_c_null,
-					  bkey_i_to_s_c(new_key),
-					  BTREE_TRIGGER_INSERT);
+		ret = bch2_trans_mark_new(trans, new_key, 0);
 		if (ret)
 			return ret;
 
-		ret = bch2_trans_mark_key(trans,
-					  bkey_i_to_s_c(&b->key),
-					  bkey_s_c_null,
-					  BTREE_TRIGGER_OVERWRITE);
+		ret = bch2_trans_mark_old(trans, bkey_i_to_s_c(&b->key), 0);
 		if (ret)
 			return ret;
 	}
@@ -1915,6 +1910,8 @@ static int __bch2_btree_node_update_key(struct btree_trans *trans,
 		btree_node_unlock(iter2.path, iter2.path->level);
 		path_l(iter2.path)->b = BTREE_ITER_NO_NODE_UP;
 		iter2.path->level++;
+
+		bch2_btree_path_check_sort(trans, iter2.path, 0);
 
 		ret   = bch2_btree_iter_traverse(&iter2) ?:
 			bch2_trans_update(trans, &iter2, new_key, BTREE_TRIGGER_NORUN);

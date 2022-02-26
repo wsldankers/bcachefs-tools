@@ -415,18 +415,18 @@ unlock:
 	    !can_discard &&
 	    j->reservations.idx == j->reservations.unwritten_idx &&
 	    (flags & JOURNAL_RES_GET_RESERVED)) {
-		char *journal_debug_buf = kmalloc(4096, GFP_ATOMIC);
+		struct printbuf buf = PRINTBUF;
 
-		bch_err(c, "Journal stuck!");
-		if (journal_debug_buf) {
-			bch2_journal_debug_to_text(&_PBUF(journal_debug_buf, 4096), j);
-			bch_err(c, "%s", journal_debug_buf);
+		bch_err(c, "Journal stuck! Hava a pre-reservation but journal full");
 
-			bch2_journal_pins_to_text(&_PBUF(journal_debug_buf, 4096), j);
-			bch_err(c, "Journal pins:\n%s", journal_debug_buf);
-			kfree(journal_debug_buf);
-		}
+		bch2_journal_debug_to_text(&buf, j);
+		bch_err(c, "%s", buf.buf);
 
+		printbuf_reset(&buf);
+		bch2_journal_pins_to_text(&buf, j);
+		bch_err(c, "Journal pins:\n%s", buf.buf);
+
+		printbuf_exit(&buf);
 		bch2_fatal_error(c);
 		dump_stack();
 	}
@@ -1184,6 +1184,8 @@ void __bch2_journal_debug_to_text(struct printbuf *out, struct journal *j)
 	unsigned long now = jiffies;
 	unsigned i;
 
+	out->atomic++;
+
 	rcu_read_lock();
 	s = READ_ONCE(j->reservations);
 
@@ -1268,6 +1270,8 @@ void __bch2_journal_debug_to_text(struct printbuf *out, struct journal *j)
 	}
 
 	rcu_read_unlock();
+
+	--out->atomic;
 }
 
 void bch2_journal_debug_to_text(struct printbuf *out, struct journal *j)
@@ -1284,9 +1288,15 @@ void bch2_journal_pins_to_text(struct printbuf *out, struct journal *j)
 	u64 i;
 
 	spin_lock(&j->lock);
+	out->atomic++;
+
 	fifo_for_each_entry_ptr(pin_list, &j->pin, i) {
 		pr_buf(out, "%llu: count %u\n",
 		       i, atomic_read(&pin_list->count));
+
+		list_for_each_entry(pin, &pin_list->key_cache_list, list)
+			pr_buf(out, "\t%px %ps\n",
+			       pin, pin->flush);
 
 		list_for_each_entry(pin, &pin_list->list, list)
 			pr_buf(out, "\t%px %ps\n",
@@ -1299,5 +1309,7 @@ void bch2_journal_pins_to_text(struct printbuf *out, struct journal *j)
 			pr_buf(out, "\t%px %ps\n",
 			       pin, pin->flush);
 	}
+
+	--out->atomic;
 	spin_unlock(&j->lock);
 }
