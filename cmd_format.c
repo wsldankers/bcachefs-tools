@@ -237,13 +237,14 @@ int cmd_format(int argc, char *argv[])
 	bch2_opt_strs_free(&fs_opt_strs);
 
 	if (!quiet) {
-		char buf[4096];
-		struct printbuf out = PBUF(buf);
+		struct printbuf buf = PRINTBUF;
 
-		out.units = PRINTBUF_UNITS_HUMAN_READABLE;
+		buf.units = PRINTBUF_UNITS_HUMAN_READABLE;
 
-		bch2_sb_to_text(&PBUF(buf), sb, false, 1 << BCH_SB_FIELD_members);
-		printf("%s", buf);
+		bch2_sb_to_text(&buf, sb, false, 1 << BCH_SB_FIELD_members);
+		printf("%s", buf.buf);
+
+		printbuf_exit(&buf);
 	}
 	free(sb);
 
@@ -332,14 +333,14 @@ int cmd_show_super(int argc, char *argv[])
 	if (ret)
 		die("Error opening %s: %s", dev, strerror(-ret));
 
-	char buf[4096 << 2];
-	struct printbuf out = PBUF(buf);
+	struct printbuf buf = PRINTBUF;
 
-	out.units = PRINTBUF_UNITS_HUMAN_READABLE;
+	buf.units = PRINTBUF_UNITS_HUMAN_READABLE;
 
-	bch2_sb_to_text(&PBUF(buf), sb.sb, print_layout, fields);
-	printf("%s", buf);
+	bch2_sb_to_text(&buf, sb.sb, print_layout, fields);
+	printf("%s", buf.buf);
 
 	bch2_free_super(&sb);
+	printbuf_exit(&buf);
 	return 0;
 }

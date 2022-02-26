@@ -291,8 +291,7 @@ int fs_usage(void)
 int cmd_fs_usage(int argc, char *argv[])
 {
 	enum printbuf_units units = PRINTBUF_UNITS_BYTES;
-	char _buf[1 << 16];
-	struct printbuf buf;
+	struct printbuf buf = PRINTBUF;
 	char *fs;
 	int opt;
 
@@ -305,20 +304,19 @@ int cmd_fs_usage(int argc, char *argv[])
 	args_shift(optind);
 
 	if (!argc) {
-		buf = PBUF(_buf);
+		printbuf_reset(&buf);
 		buf.units = units;
 		fs_usage_to_text(&buf, ".");
-		*buf.pos = 0;
-		printf("%s", _buf);
+		printf("%s", buf.buf);
 	} else {
 		while ((fs = arg_pop())) {
-			buf = PBUF(_buf);
+			printbuf_reset(&buf);
 			buf.units = units;
 			fs_usage_to_text(&buf, fs);
-			*buf.pos = 0;
-			printf("%s", _buf);
+			printf("%s", buf.buf);
 		}
 	}
 
+	printbuf_exit(&buf);
 	return 0;
 }
