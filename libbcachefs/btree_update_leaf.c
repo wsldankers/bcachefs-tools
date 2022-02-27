@@ -387,7 +387,12 @@ btree_key_can_insert_cached(struct btree_trans *trans,
 	 */
 	trace_trans_restart_key_cache_key_realloced(trans->fn, _RET_IP_,
 					     path->btree_id, &path->pos);
-	return btree_trans_restart(trans);
+	/*
+	 * Not using btree_trans_restart() because we can't unlock here, we have
+	 * write locks held:
+	 */
+	trans->restarted = true;
+	return -EINTR;
 }
 
 static inline void do_btree_insert_one(struct btree_trans *trans,
