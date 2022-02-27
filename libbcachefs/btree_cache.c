@@ -15,6 +15,13 @@
 
 struct lock_class_key bch2_btree_node_lock_key;
 
+const char * const bch2_btree_node_flags[] = {
+#define x(f)	#f,
+	BTREE_FLAGS()
+#undef x
+	NULL
+};
+
 void bch2_recalc_btree_reserve(struct bch_fs *c)
 {
 	unsigned i, reserve = 16;
@@ -217,15 +224,13 @@ wait_on_io:
 		goto wait_on_io;
 	}
 
-	if (btree_node_noevict(b))
-		goto out_unlock;
-
-	if (!btree_node_may_write(b))
+	if (btree_node_noevict(b) ||
+	    btree_node_write_blocked(b) ||
+	    btree_node_will_make_reachable(b))
 		goto out_unlock;
 
 	if (btree_node_dirty(b)) {
-		if (!flush ||
-		    test_bit(BCH_FS_HOLD_BTREE_WRITES, &c->flags))
+		if (!flush)
 			goto out_unlock;
 		/*
 		 * Using the underscore version because we don't want to compact
@@ -234,9 +239,9 @@ wait_on_io:
 		 * the post write cleanup:
 		 */
 		if (bch2_verify_btree_ondisk)
-			bch2_btree_node_write(c, b, SIX_LOCK_intent);
+			bch2_btree_node_write(c, b, SIX_LOCK_intent, 0);
 		else
-			__bch2_btree_node_write(c, b, false);
+			__bch2_btree_node_write(c, b, 0);
 
 		six_unlock_write(&b->c.lock);
 		six_unlock_intent(&b->c.lock);
@@ -415,7 +420,7 @@ void bch2_fs_btree_cache_exit(struct bch_fs *c)
 
 		if (btree_node_dirty(b))
 			bch2_btree_complete_write(c, b, btree_current_write(b));
-		clear_btree_node_dirty(c, b);
+		clear_btree_node_dirty_acct(c, b);
 
 		btree_node_data_free(c, b);
 	}
@@ -1059,7 +1064,7 @@ wait_on_io:
 	six_lock_write(&b->c.lock, NULL, NULL);
 
 	if (btree_node_dirty(b)) {
-		__bch2_btree_node_write(c, b, false);
+		__bch2_btree_node_write(c, b, 0);
 		six_unlock_write(&b->c.lock);
 		six_unlock_intent(&b->c.lock);
 		goto wait_on_io;

@@ -167,10 +167,24 @@ static int __btree_node_flush(struct journal *j, struct journal_entry_pin *pin,
 	struct bch_fs *c = container_of(j, struct bch_fs, journal);
 	struct btree_write *w = container_of(pin, struct btree_write, journal);
 	struct btree *b = container_of(w, struct btree, writes[i]);
+	unsigned long old, new, v;
+	unsigned idx = w - b->writes;
 
 	six_lock_read(&b->c.lock, NULL, NULL);
-	bch2_btree_node_write_cond(c, b,
-		(btree_current_write(b) == w && w->journal.seq == seq));
+	v = READ_ONCE(b->flags);
+
+	do {
+		old = new = v;
+
+		if (!(old & (1 << BTREE_NODE_dirty)) ||
+		    !!(old & (1 << BTREE_NODE_write_idx)) != idx ||
+		    w->journal.seq != seq)
+			break;
+
+		new |= 1 << BTREE_NODE_need_write;
+	} while ((v = cmpxchg(&b->flags, old, new)) != old);
+
+	btree_node_write_if_need(c, b, SIX_LOCK_read);
 	six_unlock_read(&b->c.lock);
 	return 0;
 }
@@ -220,7 +234,7 @@ static bool btree_insert_key_leaf(struct btree_trans *trans,
 	bch2_btree_add_journal_pin(c, b, trans->journal_res.seq);
 
 	if (unlikely(!btree_node_dirty(b)))
-		set_btree_node_dirty(c, b);
+		set_btree_node_dirty_acct(c, b);
 
 	live_u64s_added = (int) b->nr.live_u64s - old_live_u64s;
 	u64s_added = (int) bset_u64s(t) - old_u64s;
@@ -367,7 +381,13 @@ btree_key_can_insert_cached(struct btree_trans *trans,
 
 	ck->u64s	= new_u64s;
 	ck->k		= new_k;
-	return BTREE_INSERT_OK;
+	/*
+	 * Keys returned by peek() are no longer valid pointers, so we need a
+	 * transaction restart:
+	 */
+	trace_trans_restart_key_cache_key_realloced(trans->fn, _RET_IP_,
+					     path->btree_id, &path->pos);
+	return btree_trans_restart(trans);
 }
 
 static inline void do_btree_insert_one(struct btree_trans *trans,

@@ -271,7 +271,7 @@ static struct btree *bch2_btree_node_alloc(struct btree_update *as, unsigned lev
 	six_lock_write(&b->c.lock, NULL, NULL);
 
 	set_btree_node_accessed(b);
-	set_btree_node_dirty(c, b);
+	set_btree_node_dirty_acct(c, b);
 	set_btree_node_need_write(b);
 
 	bch2_bset_init_first(b, &b->data->keys);
@@ -619,6 +619,8 @@ err:
 		mutex_lock(&c->btree_interior_update_lock);
 
 		list_del(&as->write_blocked_list);
+		if (list_empty(&b->write_blocked))
+			clear_btree_node_write_blocked(b);
 
 		/*
 		 * Node might have been freed, recheck under
@@ -663,6 +665,7 @@ err:
 
 		BUG_ON(b->will_make_reachable != (unsigned long) as);
 		b->will_make_reachable = 0;
+		clear_btree_node_will_make_reachable(b);
 	}
 	mutex_unlock(&c->btree_interior_update_lock);
 
@@ -729,6 +732,8 @@ static void btree_update_updated_node(struct btree_update *as, struct btree *b)
 
 	as->mode	= BTREE_INTERIOR_UPDATING_NODE;
 	as->b		= b;
+
+	set_btree_node_write_blocked(b);
 	list_add(&as->write_blocked_list, &b->write_blocked);
 
 	mutex_unlock(&c->btree_interior_update_lock);
@@ -794,6 +799,7 @@ static void bch2_btree_update_add_new_node(struct btree_update *as, struct btree
 
 	as->new_nodes[as->nr_new_nodes++] = b;
 	b->will_make_reachable = 1UL|(unsigned long) as;
+	set_btree_node_will_make_reachable(b);
 
 	mutex_unlock(&c->btree_interior_update_lock);
 
@@ -816,6 +822,7 @@ static void btree_update_drop_new_node(struct bch_fs *c, struct btree *b)
 	 * xchg() is for synchronization with bch2_btree_complete_write:
 	 */
 	v = xchg(&b->will_make_reachable, 0);
+	clear_btree_node_will_make_reachable(b);
 	as = (struct btree_update *) (v & ~1UL);
 
 	if (!as) {
@@ -881,7 +888,7 @@ static void bch2_btree_interior_update_will_free_node(struct btree_update *as,
 		closure_wake_up(&c->btree_interior_update_wait);
 	}
 
-	clear_btree_node_dirty(c, b);
+	clear_btree_node_dirty_acct(c, b);
 	clear_btree_node_need_write(b);
 
 	/*
@@ -1096,8 +1103,7 @@ static void bch2_btree_set_root(struct btree_update *as,
 	struct btree *old;
 
 	trace_btree_set_root(c, b);
-	BUG_ON(!b->written &&
-	       !test_bit(BCH_FS_HOLD_BTREE_WRITES, &c->flags));
+	BUG_ON(!b->written);
 
 	old = btree_node_root(c, b);
 
@@ -1165,7 +1171,7 @@ static void bch2_insert_fixup_btree_ptr(struct btree_update *as,
 		bch2_btree_node_iter_advance(node_iter, b);
 
 	bch2_btree_bset_insert_key(trans, path, b, node_iter, insert);
-	set_btree_node_dirty(c, b);
+	set_btree_node_dirty_acct(c, b);
 	set_btree_node_need_write(b);
 }
 
@@ -1386,8 +1392,8 @@ static void btree_split(struct btree_update *as, struct btree_trans *trans,
 		six_unlock_write(&n2->c.lock);
 		six_unlock_write(&n1->c.lock);
 
-		bch2_btree_node_write(c, n1, SIX_LOCK_intent);
-		bch2_btree_node_write(c, n2, SIX_LOCK_intent);
+		bch2_btree_node_write(c, n1, SIX_LOCK_intent, 0);
+		bch2_btree_node_write(c, n2, SIX_LOCK_intent, 0);
 
 		/*
 		 * Note that on recursive parent_keys == keys, so we
@@ -1406,7 +1412,7 @@ static void btree_split(struct btree_update *as, struct btree_trans *trans,
 
 			btree_split_insert_keys(as, trans, path, n3, &as->parent_keys);
 
-			bch2_btree_node_write(c, n3, SIX_LOCK_intent);
+			bch2_btree_node_write(c, n3, SIX_LOCK_intent, 0);
 		}
 	} else {
 		trace_btree_compact(c, b);
@@ -1414,7 +1420,7 @@ static void btree_split(struct btree_update *as, struct btree_trans *trans,
 		bch2_btree_build_aux_trees(n1);
 		six_unlock_write(&n1->c.lock);
 
-		bch2_btree_node_write(c, n1, SIX_LOCK_intent);
+		bch2_btree_node_write(c, n1, SIX_LOCK_intent, 0);
 
 		if (parent)
 			bch2_keylist_add(&as->parent_keys, &n1->key);
@@ -1702,7 +1708,7 @@ int __bch2_foreground_maybe_merge(struct btree_trans *trans,
 	bch2_btree_build_aux_trees(n);
 	six_unlock_write(&n->c.lock);
 
-	bch2_btree_node_write(c, n, SIX_LOCK_intent);
+	bch2_btree_node_write(c, n, SIX_LOCK_intent, 0);
 
 	bkey_init(&delete.k);
 	delete.k.p = prev->key.k.p;
@@ -1776,7 +1782,7 @@ int bch2_btree_node_rewrite(struct btree_trans *trans,
 
 	trace_btree_gc_rewrite_node(c, b);
 
-	bch2_btree_node_write(c, n, SIX_LOCK_intent);
+	bch2_btree_node_write(c, n, SIX_LOCK_intent, 0);
 
 	if (parent) {
 		bch2_keylist_add(&as->parent_keys, &n->key);

@@ -534,14 +534,10 @@ enum {
 	BCH_FS_NEED_ANOTHER_GC,
 	BCH_FS_DELETED_NODES,
 	BCH_FS_REBUILD_REPLICAS,
-	BCH_FS_HOLD_BTREE_WRITES,
 };
 
 struct btree_debug {
 	unsigned		id;
-	struct dentry		*btree;
-	struct dentry		*btree_format;
-	struct dentry		*failed;
 };
 
 struct bch_fs_pcpu {
@@ -886,7 +882,8 @@ struct bch_fs {
 	struct bch_memquota_type quotas[QTYP_NR];
 
 	/* DEBUG JUNK */
-	struct dentry		*debug;
+	struct dentry		*fs_debug_dir;
+	struct dentry		*btree_debug_dir;
 	struct btree_debug	btree_debug[BTREE_ID_NR];
 	struct btree		*verify_data;
 	struct btree_node	*verify_ondisk;

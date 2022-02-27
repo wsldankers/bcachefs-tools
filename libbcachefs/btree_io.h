@@ -15,18 +15,13 @@ struct btree;
 struct btree_iter;
 struct btree_node_read_all;
 
-static inline bool btree_node_dirty(struct btree *b)
-{
-	return test_bit(BTREE_NODE_dirty, &b->flags);
-}
-
-static inline void set_btree_node_dirty(struct bch_fs *c, struct btree *b)
+static inline void set_btree_node_dirty_acct(struct bch_fs *c, struct btree *b)
 {
 	if (!test_and_set_bit(BTREE_NODE_dirty, &b->flags))
 		atomic_inc(&c->btree_cache.dirty);
 }
 
-static inline void clear_btree_node_dirty(struct bch_fs *c, struct btree *b)
+static inline void clear_btree_node_dirty_acct(struct bch_fs *c, struct btree *b)
 {
 	if (test_and_clear_bit(BTREE_NODE_dirty, &b->flags))
 		atomic_dec(&c->btree_cache.dirty);
@@ -66,12 +61,6 @@ void __bch2_btree_node_wait_on_read(struct btree *);
 void __bch2_btree_node_wait_on_write(struct btree *);
 void bch2_btree_node_wait_on_read(struct btree *);
 void bch2_btree_node_wait_on_write(struct btree *);
-
-static inline bool btree_node_may_write(struct btree *b)
-{
-	return list_empty_careful(&b->write_blocked) &&
-		(!b->written || !b->will_make_reachable);
-}
 
 enum compact_mode {
 	COMPACT_LAZY,
@@ -148,41 +137,23 @@ int bch2_btree_root_read(struct bch_fs *, enum btree_id,
 void bch2_btree_complete_write(struct bch_fs *, struct btree *,
 			      struct btree_write *);
 
-void __bch2_btree_node_write(struct bch_fs *, struct btree *, bool);
 bool bch2_btree_post_write_cleanup(struct bch_fs *, struct btree *);
 
+#define BTREE_WRITE_ONLY_IF_NEED	(1U << 0)
+#define BTREE_WRITE_ALREADY_STARTED	(1U << 1)
+
+void __bch2_btree_node_write(struct bch_fs *, struct btree *, unsigned);
 void bch2_btree_node_write(struct bch_fs *, struct btree *,
-			  enum six_lock_type);
+			   enum six_lock_type, unsigned);
 
 static inline void btree_node_write_if_need(struct bch_fs *c, struct btree *b,
 					    enum six_lock_type lock_held)
 {
-	if (b->written &&
-	    btree_node_need_write(b) &&
-	    btree_node_may_write(b) &&
-	    !btree_node_write_in_flight(b))
-		bch2_btree_node_write(c, b, lock_held);
+	bch2_btree_node_write(c, b, lock_held, BTREE_WRITE_ONLY_IF_NEED);
 }
-
-#define bch2_btree_node_write_cond(_c, _b, cond)			\
-do {									\
-	unsigned long old, new, v = READ_ONCE((_b)->flags);		\
-									\
-	do {								\
-		old = new = v;						\
-									\
-		if (!(old & (1 << BTREE_NODE_dirty)) || !(cond))	\
-			break;						\
-									\
-		new |= (1 << BTREE_NODE_need_write);			\
-	} while ((v = cmpxchg(&(_b)->flags, old, new)) != old);		\
-									\
-	btree_node_write_if_need(_c, _b, SIX_LOCK_read);		\
-} while (0)
 
 void bch2_btree_flush_all_reads(struct bch_fs *);
 void bch2_btree_flush_all_writes(struct bch_fs *);
-void bch2_dirty_btree_nodes_to_text(struct printbuf *, struct bch_fs *);
 
 static inline void compat_bformat(unsigned level, enum btree_id btree_id,
 				  unsigned version, unsigned big_endian,
