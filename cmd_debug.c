@@ -18,6 +18,7 @@
 #include "libbcachefs/error.h"
 #include "libbcachefs/journal.h"
 #include "libbcachefs/journal_io.h"
+#include "libbcachefs/journal_seq_blacklist.h"
 #include "libbcachefs/super.h"
 
 static void dump_usage(void)
@@ -577,6 +578,17 @@ static void list_journal_usage(void)
 	     "Report bugs to <linux-bcache@vger.kernel.org>");
 }
 
+static void star_start_of_lines(char *buf)
+{
+	char *p = buf;
+
+	if (*p == ' ')
+		*p = '*';
+
+	while ((p = strstr(p, "\n ")))
+		p[1] = '*';
+}
+
 int cmd_list_journal(int argc, char *argv[])
 {
 	struct bch_opts opts = bch2_opts_empty();
@@ -610,21 +622,34 @@ int cmd_list_journal(int argc, char *argv[])
 
 	struct journal_replay *p;
 	struct jset_entry *entry;
+	struct printbuf buf = PRINTBUF;
 
 	list_for_each_entry(p, &c->journal_entries, list) {
-		struct printbuf buf = PRINTBUF;
+		bool blacklisted =
+			bch2_journal_seq_is_blacklisted(c,
+					le64_to_cpu(p->j.seq), false);
 
-		bch2_journal_ptrs_to_text(&buf, c, p);
 
-		printf("journal entry       %llu\n"
-		       "    version         %u\n"
-		       "    last seq        %llu\n"
-		       "    written at      %s\n"
-		       ,
-		       le64_to_cpu(p->j.seq),
+		if (blacklisted)
+			printf("blacklisted ");
+
+		printf("journal entry       %llu\n", le64_to_cpu(p->j.seq));
+
+		printbuf_reset(&buf);
+
+		pr_buf(&buf,
+		       "  version         %u\n"
+		       "  last seq        %llu\n"
+		       "  flush           %u\n"
+		       "  written at      ",
 		       le32_to_cpu(p->j.version),
 		       le64_to_cpu(p->j.last_seq),
-		       buf.buf);
+		       !JSET_NO_FLUSH(&p->j));
+		bch2_journal_ptrs_to_text(&buf, c, p);
+
+		if (blacklisted)
+			star_start_of_lines(buf.buf);
+		printf("%s\n", buf.buf);
 
 		vstruct_for_each(&p->j, entry) {
 			printbuf_reset(&buf);
@@ -636,12 +661,14 @@ int cmd_list_journal(int argc, char *argv[])
 			pr_indent_push(&buf,
 				entry->type == BCH_JSET_ENTRY_log ? 2 : 4);
 			bch2_journal_entry_to_text(&buf, c, entry);
+
+			if (blacklisted)
+				star_start_of_lines(buf.buf);
 			printf("%s\n", buf.buf);
 		}
-
-		printbuf_exit(&buf);
 	}
 
+	printbuf_exit(&buf);
 	bch2_fs_stop(c);
 	return 0;
 }
