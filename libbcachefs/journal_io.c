@@ -1332,7 +1332,7 @@ static void journal_buf_realloc(struct journal *j, struct journal_buf *buf)
 
 static inline struct journal_buf *journal_last_unwritten_buf(struct journal *j)
 {
-	return j->buf + j->reservations.unwritten_idx;
+	return j->buf + (journal_last_unwritten_seq(j) & JOURNAL_BUF_MASK);
 }
 
 static void journal_write_done(struct closure *cl)
@@ -1369,14 +1369,14 @@ static void journal_write_done(struct closure *cl)
 		journal_seq_pin(j, seq)->devs = w->devs_written;
 
 	if (!err) {
-		j->seq_ondisk		= seq;
-
 		if (!JSET_NO_FLUSH(w->data)) {
 			j->flushed_seq_ondisk = seq;
 			j->last_seq_ondisk = w->last_seq;
 		}
 	} else if (!j->err_seq || seq < j->err_seq)
 		j->err_seq	= seq;
+
+	j->seq_ondisk		= seq;
 
 	/*
 	 * Updating last_seq_ondisk may let bch2_journal_reclaim_work() discard
@@ -1393,7 +1393,7 @@ static void journal_write_done(struct closure *cl)
 	v = atomic64_read(&j->reservations.counter);
 	do {
 		old.v = new.v = v;
-		BUG_ON(new.idx == new.unwritten_idx);
+		BUG_ON(journal_state_count(new, new.unwritten_idx));
 
 		new.unwritten_idx++;
 	} while ((v = atomic64_cmpxchg(&j->reservations.counter,
@@ -1404,13 +1404,24 @@ static void journal_write_done(struct closure *cl)
 	closure_wake_up(&w->wait);
 	journal_wake(j);
 
-	if (test_bit(JOURNAL_NEED_WRITE, &j->flags))
-		mod_delayed_work(c->io_complete_wq, &j->write_work, 0);
-	spin_unlock(&j->lock);
-
-	if (new.unwritten_idx != new.idx &&
-	    !journal_state_count(new, new.unwritten_idx))
+	if (!journal_state_count(new, new.unwritten_idx) &&
+	    journal_last_unwritten_seq(j) <= journal_cur_seq(j)) {
 		closure_call(&j->io, bch2_journal_write, c->io_complete_wq, NULL);
+	} else if (journal_last_unwritten_seq(j) == journal_cur_seq(j) &&
+		   new.cur_entry_offset < JOURNAL_ENTRY_CLOSED_VAL) {
+		struct journal_buf *buf = journal_cur_buf(j);
+		long delta = buf->expires - jiffies;
+
+		/*
+		 * We don't close a journal entry to write it while there's
+		 * previous entries still in flight - the current journal entry
+		 * might want to be written now:
+		 */
+
+		mod_delayed_work(c->io_complete_wq, &j->write_work, max(0L, delta));
+	}
+
+	spin_unlock(&j->lock);
 }
 
 static void journal_write_endio(struct bio *bio)
@@ -1505,11 +1516,11 @@ void bch2_journal_write(struct closure *cl)
 	j->write_start_time = local_clock();
 
 	spin_lock(&j->lock);
-	if (c->sb.features & (1ULL << BCH_FEATURE_journal_no_flush) &&
-	    (w->noflush ||
-	     (!w->must_flush &&
-	      (jiffies - j->last_flush_write) < msecs_to_jiffies(c->opts.journal_flush_delay) &&
-	      test_bit(JOURNAL_MAY_SKIP_FLUSH, &j->flags)))) {
+	if (bch2_journal_error(j) ||
+	    w->noflush ||
+	    (!w->must_flush &&
+	     (jiffies - j->last_flush_write) < msecs_to_jiffies(c->opts.journal_flush_delay) &&
+	     test_bit(JOURNAL_MAY_SKIP_FLUSH, &j->flags))) {
 		w->noflush = true;
 		SET_JSET_NO_FLUSH(jset, true);
 		jset->last_seq	= 0;

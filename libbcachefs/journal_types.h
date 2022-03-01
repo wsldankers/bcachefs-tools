@@ -25,6 +25,8 @@ struct journal_buf {
 
 	struct closure_waitlist	wait;
 	u64			last_seq;	/* copy of data->last_seq */
+	long			expires;
+	u64			flush_time;
 
 	unsigned		buf_size;	/* size in bytes of @data */
 	unsigned		sectors;	/* maximum size for current entry */
@@ -139,16 +141,9 @@ enum journal_space_from {
 	journal_space_nr,
 };
 
-/*
- * JOURNAL_NEED_WRITE - current (pending) journal entry should be written ASAP,
- * either because something's waiting on the write to complete or because it's
- * been dirty too long and the timer's expired.
- */
-
 enum {
 	JOURNAL_REPLAY_DONE,
 	JOURNAL_STARTED,
-	JOURNAL_NEED_WRITE,
 	JOURNAL_MAY_GET_UNRESERVED,
 	JOURNAL_MAY_SKIP_FLUSH,
 };
@@ -172,6 +167,7 @@ struct journal {
 	enum {
 		cur_entry_ok,
 		cur_entry_blocked,
+		cur_entry_max_in_flight,
 		cur_entry_journal_full,
 		cur_entry_journal_pin_full,
 		cur_entry_journal_stuck,
@@ -263,7 +259,6 @@ struct journal {
 	unsigned long		last_flush_write;
 
 	u64			res_get_blocked_start;
-	u64			need_write_time;
 	u64			write_start_time;
 
 	u64			nr_flush_writes;

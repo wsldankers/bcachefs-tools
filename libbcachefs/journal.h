@@ -141,6 +141,11 @@ static inline u64 journal_cur_seq(struct journal *j)
 	return j->pin.back - 1;
 }
 
+static inline u64 journal_last_unwritten_seq(struct journal *j)
+{
+	return j->seq_ondisk + 1;
+}
+
 void bch2_journal_set_has_inum(struct journal *, u64, u64);
 
 static inline int journal_state_count(union journal_res_state s, int idx)
@@ -260,9 +265,6 @@ static inline void bch2_journal_buf_put(struct journal *j, unsigned idx)
 				    .buf2_count = idx == 2,
 				    .buf3_count = idx == 3,
 				    }).v, &j->reservations.counter);
-
-	EBUG_ON(((s.idx - idx) & 3) >
-		((s.idx - s.unwritten_idx) & 3));
 
 	if (!journal_state_count(s, idx) && idx == s.unwritten_idx)
 		__bch2_journal_buf_put(j);

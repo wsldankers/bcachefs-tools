@@ -59,25 +59,13 @@ static void journal_set_remaining(struct journal *j, unsigned u64s_remaining)
 				       old.v, new.v)) != old.v);
 }
 
-static inline unsigned get_unwritten_sectors(struct journal *j, unsigned *idx)
-{
-	unsigned sectors = 0;
-
-	while (!sectors && *idx != j->reservations.idx) {
-		sectors = j->buf[*idx].sectors;
-
-		*idx = (*idx + 1) & JOURNAL_BUF_MASK;
-	}
-
-	return sectors;
-}
-
 static struct journal_space
 journal_dev_space_available(struct journal *j, struct bch_dev *ca,
 			    enum journal_space_from from)
 {
 	struct journal_device *ja = &ca->journal;
-	unsigned sectors, buckets, unwritten, idx = j->reservations.unwritten_idx;
+	unsigned sectors, buckets, unwritten;
+	u64 seq;
 
 	if (from == journal_space_total)
 		return (struct journal_space) {
@@ -92,7 +80,14 @@ journal_dev_space_available(struct journal *j, struct bch_dev *ca,
 	 * We that we don't allocate the space for a journal entry
 	 * until we write it out - thus, account for it here:
 	 */
-	while ((unwritten = get_unwritten_sectors(j, &idx))) {
+	for (seq = journal_last_unwritten_seq(j);
+	     seq <= journal_cur_seq(j);
+	     seq++) {
+		unwritten = j->buf[seq & JOURNAL_BUF_MASK].sectors;
+
+		if (!unwritten)
+			continue;
+
 		/* entry won't fit on this device, skip: */
 		if (unwritten > ca->mi.bucket_size)
 			continue;
@@ -214,8 +209,7 @@ void bch2_journal_space_available(struct journal *j)
 	total		= j->space[journal_space_total].total;
 
 	if (!clean_ondisk &&
-	    j->reservations.idx ==
-	    j->reservations.unwritten_idx) {
+	    journal_cur_seq(j) == j->seq_ondisk) {
 		struct printbuf buf = PRINTBUF;
 
 		__bch2_journal_debug_to_text(&buf, j);
@@ -226,8 +220,6 @@ void bch2_journal_space_available(struct journal *j)
 		ret = cur_entry_journal_stuck;
 	} else if (!j->space[journal_space_discarded].next_entry)
 		ret = cur_entry_journal_full;
-	else if (!fifo_free(&j->pin))
-		ret = cur_entry_journal_pin_full;
 
 	if ((j->space[journal_space_clean_ondisk].next_entry <
 	     j->space[journal_space_clean_ondisk].total) &&
@@ -369,9 +361,6 @@ static inline void __journal_pin_drop(struct journal *j,
 	if (atomic_dec_and_test(&pin_list->count) &&
 	    pin_list == &fifo_peek_front(&j->pin))
 		bch2_journal_reclaim_fast(j);
-	else if (fifo_used(&j->pin) == 1 &&
-		 atomic_read(&pin_list->count) == 1)
-		journal_wake(j);
 }
 
 void bch2_journal_pin_drop(struct journal *j,
@@ -772,8 +761,7 @@ static int journal_flush_done(struct journal *j, u64 seq_to_flush,
 	 */
 	ret = !test_bit(JOURNAL_REPLAY_DONE, &j->flags) ||
 		journal_last_seq(j) > seq_to_flush ||
-		(fifo_used(&j->pin) == 1 &&
-		 atomic_read(&fifo_peek_front(&j->pin).count) == 1);
+		!fifo_used(&j->pin);
 
 	spin_unlock(&j->lock);
 	mutex_unlock(&j->reclaim_lock);
