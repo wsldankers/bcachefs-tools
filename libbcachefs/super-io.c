@@ -1619,7 +1619,8 @@ void bch2_sb_to_text(struct printbuf *out, struct bch_sb *sb,
 
 				pr_buf(out, "%s:", opt->attr.name);
 				pr_tab(out);
-				bch2_opt_to_text(out, NULL, opt, v, OPT_HUMAN_READABLE|OPT_SHOW_FULL_LIST);
+				bch2_opt_to_text(out, NULL, sb, opt, v,
+						 OPT_HUMAN_READABLE|OPT_SHOW_FULL_LIST);
 				pr_newline(out);
 			}
 		}

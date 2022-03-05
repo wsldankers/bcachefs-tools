@@ -461,7 +461,7 @@ struct bch_option {
 	};
 	struct {
 		int (*parse)(struct bch_fs *, const char *, u64 *);
-		void (*to_text)(struct printbuf *, struct bch_fs *, u64);
+		void (*to_text)(struct printbuf *, struct bch_fs *, struct bch_sb *, u64);
 	};
 	};
 
@@ -488,7 +488,7 @@ int bch2_opt_parse(struct bch_fs *, const char *, const struct bch_option *,
 #define OPT_SHOW_FULL_LIST	(1 << 0)
 #define OPT_SHOW_MOUNT_STYLE	(1 << 1)
 
-void bch2_opt_to_text(struct printbuf *, struct bch_fs *,
+void bch2_opt_to_text(struct printbuf *, struct bch_fs *, struct bch_sb *,
 		      const struct bch_option *, u64, unsigned);
 
 int bch2_opt_check_may_set(struct bch_fs *, int, u64);

@@ -290,7 +290,8 @@ int bch2_opt_parse(struct bch_fs *c, const char *msg,
 	return bch2_opt_validate(opt, msg, *res);
 }
 
-void bch2_opt_to_text(struct printbuf *out, struct bch_fs *c,
+void bch2_opt_to_text(struct printbuf *out,
+		      struct bch_fs *c, struct bch_sb *sb,
 		      const struct bch_option *opt, u64 v,
 		      unsigned flags)
 {
@@ -320,7 +321,7 @@ void bch2_opt_to_text(struct printbuf *out, struct bch_fs *c,
 			pr_buf(out, opt->choices[v]);
 		break;
 	case BCH_OPT_FN:
-		opt->to_text(out, c, v);
+		opt->to_text(out, c, sb, v);
 		break;
 	default:
 		BUG();

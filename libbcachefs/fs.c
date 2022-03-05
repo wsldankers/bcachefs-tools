@@ -933,7 +933,8 @@ retry:
 	bch2_trans_iter_init(&trans, &iter, BTREE_ID_extents,
 			     SPOS(ei->v.i_ino, start, snapshot), 0);
 
-	while ((k = bch2_btree_iter_peek(&iter)).k &&
+	while (!(ret = btree_trans_too_many_iters(&trans)) &&
+	       (k = bch2_btree_iter_peek(&iter)).k &&
 	       !(ret = bkey_err(k)) &&
 	       bkey_cmp(iter.pos, end) < 0) {
 		enum btree_id data_btree = BTREE_ID_extents;
@@ -980,9 +981,6 @@ retry:
 
 		bch2_btree_iter_set_pos(&iter,
 			POS(iter.pos.inode, iter.pos.offset + sectors));
-
-		if (btree_trans_too_many_iters(&trans))
-			goto retry;
 	}
 	start = iter.pos.offset;
 	bch2_trans_iter_exit(&trans, &iter);
@@ -1691,7 +1689,7 @@ static int bch2_show_options(struct seq_file *seq, struct dentry *root)
 			continue;
 
 		printbuf_reset(&buf);
-		bch2_opt_to_text(&buf, c, opt, v,
+		bch2_opt_to_text(&buf, c, c->disk_sb.sb, opt, v,
 				 OPT_SHOW_MOUNT_STYLE);
 		seq_putc(seq, ',');
 		seq_puts(seq, buf.buf);
