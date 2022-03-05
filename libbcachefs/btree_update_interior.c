@@ -181,6 +181,7 @@ static void bch2_btree_node_free_inmem(struct btree_trans *trans,
 static struct btree *__bch2_btree_node_alloc(struct bch_fs *c,
 					     struct disk_reservation *res,
 					     struct closure *cl,
+					     bool interior_node,
 					     unsigned flags)
 {
 	struct write_point *wp;
@@ -242,7 +243,7 @@ retry:
 	bch2_open_bucket_get(c, wp, &ob);
 	bch2_alloc_sectors_done(c, wp);
 mem_alloc:
-	b = bch2_btree_node_mem_alloc(c);
+	b = bch2_btree_node_mem_alloc(c, interior_node);
 	six_unlock_write(&b->c.lock);
 	six_unlock_intent(&b->c.lock);
 
@@ -260,12 +261,13 @@ static struct btree *bch2_btree_node_alloc(struct btree_update *as, unsigned lev
 {
 	struct bch_fs *c = as->c;
 	struct btree *b;
+	struct prealloc_nodes *p = &as->prealloc_nodes[!!level];
 	int ret;
 
 	BUG_ON(level >= BTREE_MAX_DEPTH);
-	BUG_ON(!as->nr_prealloc_nodes);
+	BUG_ON(!p->nr);
 
-	b = as->prealloc_nodes[--as->nr_prealloc_nodes];
+	b = p->b[--p->nr];
 
 	six_lock_intent(&b->c.lock, NULL, NULL);
 	six_lock_write(&b->c.lock, NULL, NULL);
@@ -377,47 +379,54 @@ static struct btree *__btree_root_alloc(struct btree_update *as, unsigned level)
 static void bch2_btree_reserve_put(struct btree_update *as)
 {
 	struct bch_fs *c = as->c;
+	struct prealloc_nodes *p;
 
 	mutex_lock(&c->btree_reserve_cache_lock);
 
-	while (as->nr_prealloc_nodes) {
-		struct btree *b = as->prealloc_nodes[--as->nr_prealloc_nodes];
+	for (p = as->prealloc_nodes;
+	     p < as->prealloc_nodes + ARRAY_SIZE(as->prealloc_nodes);
+	     p++) {
+		while (p->nr) {
+			struct btree *b = p->b[--p->nr];
 
-		six_lock_intent(&b->c.lock, NULL, NULL);
-		six_lock_write(&b->c.lock, NULL, NULL);
+			six_lock_intent(&b->c.lock, NULL, NULL);
+			six_lock_write(&b->c.lock, NULL, NULL);
 
-		if (c->btree_reserve_cache_nr <
-		    ARRAY_SIZE(c->btree_reserve_cache)) {
-			struct btree_alloc *a =
-				&c->btree_reserve_cache[c->btree_reserve_cache_nr++];
+			if (c->btree_reserve_cache_nr <
+			    ARRAY_SIZE(c->btree_reserve_cache)) {
+				struct btree_alloc *a =
+					&c->btree_reserve_cache[c->btree_reserve_cache_nr++];
 
-			a->ob = b->ob;
-			b->ob.nr = 0;
-			bkey_copy(&a->k, &b->key);
-		} else {
-			bch2_open_buckets_put(c, &b->ob);
+				a->ob = b->ob;
+				b->ob.nr = 0;
+				bkey_copy(&a->k, &b->key);
+			} else {
+				bch2_open_buckets_put(c, &b->ob);
+			}
+
+			__btree_node_free(c, b);
+			six_unlock_write(&b->c.lock);
+			six_unlock_intent(&b->c.lock);
 		}
-
-		__btree_node_free(c, b);
-		six_unlock_write(&b->c.lock);
-		six_unlock_intent(&b->c.lock);
 	}
 
 	mutex_unlock(&c->btree_reserve_cache_lock);
 }
 
-static int bch2_btree_reserve_get(struct btree_update *as, unsigned nr_nodes,
+static int bch2_btree_reserve_get(struct btree_update *as,
+				  unsigned nr_nodes[2],
 				  unsigned flags)
 {
 	struct bch_fs *c = as->c;
 	struct closure cl;
 	struct btree *b;
+	unsigned interior;
 	int ret;
 
 	closure_init_stack(&cl);
 retry:
 
-	BUG_ON(nr_nodes > BTREE_RESERVE_MAX);
+	BUG_ON(nr_nodes[0] + nr_nodes[1] > BTREE_RESERVE_MAX);
 
 	/*
 	 * Protects reaping from the btree node cache and using the btree node
@@ -430,16 +439,21 @@ retry:
 	if (ret)
 		goto err;
 
-	while (as->nr_prealloc_nodes < nr_nodes) {
-		b = __bch2_btree_node_alloc(c, &as->disk_res,
-					    flags & BTREE_INSERT_NOWAIT
-					    ? NULL : &cl, flags);
-		if (IS_ERR(b)) {
-			ret = PTR_ERR(b);
-			goto err;
-		}
+	for (interior = 0; interior < 2; interior++) {
+		struct prealloc_nodes *p = as->prealloc_nodes + interior;
 
-		as->prealloc_nodes[as->nr_prealloc_nodes++] = b;
+		while (p->nr < nr_nodes[interior]) {
+			b = __bch2_btree_node_alloc(c, &as->disk_res,
+						    flags & BTREE_INSERT_NOWAIT
+						    ? NULL : &cl,
+						    interior, flags);
+			if (IS_ERR(b)) {
+				ret = PTR_ERR(b);
+				goto err;
+			}
+
+			p->b[p->nr++] = b;
+		}
 	}
 
 	bch2_btree_cache_cannibalize_unlock(c);
@@ -452,7 +466,7 @@ err:
 	if (ret == -EAGAIN)
 		goto retry;
 
-	trace_btree_reserve_get_fail(c, nr_nodes, &cl);
+	trace_btree_reserve_get_fail(c, nr_nodes[0] + nr_nodes[1], &cl);
 	return ret;
 }
 
@@ -947,13 +961,15 @@ static void bch2_btree_update_done(struct btree_update *as)
 
 static struct btree_update *
 bch2_btree_update_start(struct btree_trans *trans, struct btree_path *path,
-			unsigned level, unsigned nr_nodes, unsigned flags)
+			unsigned level, bool split, unsigned flags)
 {
 	struct bch_fs *c = trans->c;
 	struct btree_update *as;
 	u64 start_time = local_clock();
 	int disk_res_flags = (flags & BTREE_INSERT_NOFAIL)
 		? BCH_DISK_RESERVATION_NOFAIL : 0;
+	unsigned nr_nodes[2] = { 0, 0 };
+	unsigned update_level = level;
 	int journal_flags = 0;
 	int ret = 0;
 
@@ -964,10 +980,24 @@ bch2_btree_update_start(struct btree_trans *trans, struct btree_path *path,
 	if (flags & BTREE_INSERT_JOURNAL_RECLAIM)
 		journal_flags |= JOURNAL_RES_GET_NONBLOCK;
 
-	/*
-	 * XXX: figure out how far we might need to split,
-	 * instead of locking/reserving all the way to the root:
-	 */
+	while (1) {
+		nr_nodes[!!update_level] += 1 + split;
+		update_level++;
+
+		if (!btree_path_node(path, update_level))
+			break;
+
+		/*
+		 * XXX: figure out how far we might need to split,
+		 * instead of locking/reserving all the way to the root:
+		 */
+		split = update_level + 1 < BTREE_MAX_DEPTH;
+	}
+
+	/* Might have to allocate a new root: */
+	if (update_level < BTREE_MAX_DEPTH)
+		nr_nodes[1] += 1;
+
 	if (!bch2_btree_path_upgrade(trans, path, U8_MAX)) {
 		trace_trans_restart_iter_upgrade(trans->fn, _RET_IP_,
 						 path->btree_id, &path->pos);
@@ -1030,7 +1060,7 @@ bch2_btree_update_start(struct btree_trans *trans, struct btree_path *path,
 	}
 
 	ret = bch2_disk_reservation_get(c, &as->disk_res,
-			nr_nodes * btree_sectors(c),
+			(nr_nodes[0] + nr_nodes[1]) * btree_sectors(c),
 			c->opts.metadata_replicas,
 			disk_res_flags);
 	if (ret)
@@ -1551,14 +1581,13 @@ int bch2_btree_split_leaf(struct btree_trans *trans,
 			  struct btree_path *path,
 			  unsigned flags)
 {
-	struct bch_fs *c = trans->c;
 	struct btree *b = path_l(path)->b;
 	struct btree_update *as;
 	unsigned l;
 	int ret = 0;
 
 	as = bch2_btree_update_start(trans, path, path->level,
-		btree_update_reserve_required(c, b), flags);
+				     true, flags);
 	if (IS_ERR(as))
 		return PTR_ERR(as);
 
@@ -1669,11 +1698,10 @@ int __bch2_foreground_maybe_merge(struct btree_trans *trans,
 		goto out;
 
 	parent = btree_node_parent(path, b);
-	as = bch2_btree_update_start(trans, path, level,
-			 btree_update_reserve_required(c, parent) + 1,
-			 flags|
+	as = bch2_btree_update_start(trans, path, level, false,
 			 BTREE_INSERT_NOFAIL|
-			 BTREE_INSERT_USE_RESERVE);
+			 BTREE_INSERT_USE_RESERVE|
+			 flags);
 	ret = PTR_ERR_OR_ZERO(as);
 	if (ret)
 		goto err;
@@ -1756,10 +1784,7 @@ int bch2_btree_node_rewrite(struct btree_trans *trans,
 
 	parent = btree_node_parent(iter->path, b);
 	as = bch2_btree_update_start(trans, iter->path, b->c.level,
-		(parent
-		 ? btree_update_reserve_required(c, parent)
-		 : 0) + 1,
-		flags);
+				     false, flags);
 	ret = PTR_ERR_OR_ZERO(as);
 	if (ret) {
 		trace_btree_gc_rewrite_node_fail(c, b);
@@ -1996,7 +2021,7 @@ int bch2_btree_node_update_key(struct btree_trans *trans, struct btree_iter *ite
 				return -EINTR;
 		}
 
-		new_hash = bch2_btree_node_mem_alloc(c);
+		new_hash = bch2_btree_node_mem_alloc(c, false);
 	}
 
 	path->intent_ref++;
@@ -2072,7 +2097,7 @@ void bch2_btree_root_alloc(struct bch_fs *c, enum btree_id id)
 		closure_sync(&cl);
 	} while (ret);
 
-	b = bch2_btree_node_mem_alloc(c);
+	b = bch2_btree_node_mem_alloc(c, false);
 	bch2_btree_cache_cannibalize_unlock(c);
 
 	set_btree_node_fake(b);

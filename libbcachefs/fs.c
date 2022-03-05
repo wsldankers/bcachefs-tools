@@ -980,6 +980,9 @@ retry:
 
 		bch2_btree_iter_set_pos(&iter,
 			POS(iter.pos.inode, iter.pos.offset + sectors));
+
+		if (btree_trans_too_many_iters(&trans))
+			goto retry;
 	}
 	start = iter.pos.offset;
 	bch2_trans_iter_exit(&trans, &iter);
