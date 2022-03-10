@@ -256,13 +256,18 @@ int cmd_format(int argc, char *argv[])
 	darray_free(devices);
 
 	if (initialize) {
+		struct bch_opts mount_opts = bch2_opts_empty();
+
+
+		opt_set(mount_opts, verbose, true);
+
 		/*
 		 * Start the filesystem once, to allocate the journal and create
 		 * the root directory:
 		 */
 		struct bch_fs *c = bch2_fs_open(device_paths.item,
 						darray_size(device_paths),
-						bch2_opts_empty());
+						mount_opts);
 		if (IS_ERR(c))
 			die("error opening %s: %s", device_paths.item[0],
 			    strerror(-PTR_ERR(c)));
