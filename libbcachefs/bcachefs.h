@@ -391,6 +391,9 @@ enum gc_phase {
 	GC_PHASE_BTREE_reflink,
 	GC_PHASE_BTREE_subvolumes,
 	GC_PHASE_BTREE_snapshots,
+	GC_PHASE_BTREE_lru,
+	GC_PHASE_BTREE_freespace,
+	GC_PHASE_BTREE_need_discard,
 
 	GC_PHASE_PENDING_DELETE,
 };
@@ -447,7 +450,7 @@ struct bch_dev {
 	 * gc_lock, for device resize - holding any is sufficient for access:
 	 * Or rcu_read_lock(), but only for ptr_stale():
 	 */
-	struct bucket_array __rcu *buckets[2];
+	struct bucket_array __rcu *buckets_gc;
 	struct bucket_gens __rcu *bucket_gens;
 	u8			*oldest_gen;
 	unsigned long		*buckets_nouse;
@@ -459,33 +462,16 @@ struct bch_dev {
 
 	/* Allocator: */
 	u64			new_fs_bucket_idx;
-	struct task_struct __rcu *alloc_thread;
 
-	/*
-	 * free: Buckets that are ready to be used
-	 *
-	 * free_inc: Incoming buckets - these are buckets that currently have
-	 * cached data in them, and we can't reuse them until after we write
-	 * their new gen to disk. After prio_write() finishes writing the new
-	 * gens/prios, they'll be moved to the free list (and possibly discarded
-	 * in the process)
-	 */
-	alloc_fifo		free[RESERVE_NR];
-	alloc_fifo		free_inc;
 	unsigned		nr_open_buckets;
+	unsigned		nr_btree_reserve;
 
 	open_bucket_idx_t	open_buckets_partial[OPEN_BUCKETS_COUNT];
 	open_bucket_idx_t	open_buckets_partial_nr;
 
-	size_t			fifo_last_bucket;
-
 	size_t			inc_gen_needs_gc;
 	size_t			inc_gen_really_needs_gc;
 	size_t			buckets_waiting_on_journal;
-
-	enum allocator_states	allocator_state;
-
-	alloc_heap		alloc_heap;
 
 	atomic64_t		rebalance_work;
 
@@ -508,8 +494,6 @@ struct bch_dev {
 enum {
 	/* startup: */
 	BCH_FS_ALLOC_CLEAN,
-	BCH_FS_ALLOCATOR_RUNNING,
-	BCH_FS_ALLOCATOR_STOPPING,
 	BCH_FS_INITIAL_GC_DONE,
 	BCH_FS_INITIAL_GC_UNFIXED,
 	BCH_FS_TOPOLOGY_REPAIR_DONE,
@@ -773,6 +757,8 @@ struct bch_fs {
 	unsigned		write_points_nr;
 
 	struct buckets_waiting_for_journal buckets_waiting_for_journal;
+	struct work_struct	discard_work;
+	struct work_struct	invalidate_work;
 
 	/* GARBAGE COLLECTION */
 	struct task_struct	*gc_thread;
@@ -911,6 +897,7 @@ struct bch_fs {
 	atomic_long_t		read_realloc_races;
 	atomic_long_t		extent_migrate_done;
 	atomic_long_t		extent_migrate_raced;
+	atomic_long_t		bucket_alloc_fail;
 
 	unsigned		btree_gc_periodic:1;
 	unsigned		copy_gc_enabled:1;

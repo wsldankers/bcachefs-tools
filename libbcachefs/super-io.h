@@ -75,15 +75,6 @@ static inline void bch2_check_set_feature(struct bch_fs *c, unsigned feat)
 		__bch2_check_set_feature(c, feat);
 }
 
-/* BCH_SB_FIELD_journal: */
-
-static inline unsigned bch2_nr_journal_buckets(struct bch_sb_field_journal *j)
-{
-	return j
-		? (__le64 *) vstruct_end(&j->field) - j->buckets
-		: 0;
-}
-
 /* BCH_SB_FIELD_members: */
 
 static inline bool bch2_member_exists(struct bch_member *m)
@@ -112,6 +103,7 @@ static inline struct bch_member_cpu bch2_mi_to_cpu(struct bch_member *mi)
 		.durability	= BCH_MEMBER_DURABILITY(mi)
 			? BCH_MEMBER_DURABILITY(mi) - 1
 			: 1,
+		.freespace_initialized = BCH_MEMBER_FREESPACE_INITIALIZED(mi),
 		.valid		= !bch2_is_zero(mi->uuid.b, sizeof(uuid_le)),
 	};
 }
