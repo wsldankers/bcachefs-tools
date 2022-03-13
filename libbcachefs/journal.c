@@ -241,6 +241,9 @@ static int journal_entry_open(struct journal *j)
 	if (u64s <= 0)
 		return cur_entry_journal_full;
 
+	if (fifo_empty(&j->pin) && j->reclaim_thread)
+		wake_up_process(j->reclaim_thread);
+
 	/*
 	 * The fifo_push() needs to happen at the same time as j->seq is
 	 * incremented for journal_last_seq() to be calculated correctly
@@ -628,31 +631,6 @@ int bch2_journal_flush_seq(struct journal *j, u64 seq)
 	return ret ?: ret2 < 0 ? ret2 : 0;
 }
 
-int bch2_journal_meta(struct journal *j)
-{
-	struct journal_buf *buf;
-	struct journal_res res;
-	int ret;
-
-	memset(&res, 0, sizeof(res));
-
-	ret = bch2_journal_res_get(j, &res, jset_u64s(0), 0);
-	if (ret)
-		return ret;
-
-	buf = j->buf + (res.seq & JOURNAL_BUF_MASK);
-	buf->must_flush = true;
-
-	if (!buf->flush_time) {
-		buf->flush_time	= local_clock() ?: 1;
-		buf->expires = jiffies;
-	}
-
-	bch2_journal_res_put(j, &res);
-
-	return bch2_journal_flush_seq(j, res.seq);
-}
-
 /*
  * bch2_journal_flush_async - if there is an open journal entry, or a journal
  * still being written, write it and wait for the write to complete
@@ -703,6 +681,64 @@ bool bch2_journal_noflush_seq(struct journal *j, u64 seq)
 out:
 	spin_unlock(&j->lock);
 	return ret;
+}
+
+int bch2_journal_meta(struct journal *j)
+{
+	struct journal_buf *buf;
+	struct journal_res res;
+	int ret;
+
+	memset(&res, 0, sizeof(res));
+
+	ret = bch2_journal_res_get(j, &res, jset_u64s(0), 0);
+	if (ret)
+		return ret;
+
+	buf = j->buf + (res.seq & JOURNAL_BUF_MASK);
+	buf->must_flush = true;
+
+	if (!buf->flush_time) {
+		buf->flush_time	= local_clock() ?: 1;
+		buf->expires = jiffies;
+	}
+
+	bch2_journal_res_put(j, &res);
+
+	return bch2_journal_flush_seq(j, res.seq);
+}
+
+int bch2_journal_log_msg(struct journal *j, const char *fmt, ...)
+{
+	struct jset_entry_log *entry;
+	struct journal_res res = { 0 };
+	unsigned msglen, u64s;
+	va_list args;
+	int ret;
+
+	va_start(args, fmt);
+	msglen = vsnprintf(NULL, 0, fmt, args) + 1;
+	va_end(args);
+
+	u64s = jset_u64s(DIV_ROUND_UP(msglen, sizeof(u64)));
+
+	ret = bch2_journal_res_get(j, &res, u64s, 0);
+	if (ret)
+		return ret;
+
+	entry = container_of(journal_res_entry(j, &res),
+			     struct jset_entry_log, entry);;
+	memset(entry, 0, u64s * sizeof(u64));
+	entry->entry.type = BCH_JSET_ENTRY_log;
+	entry->entry.u64s = u64s - 1;
+
+	va_start(args, fmt);
+	vsnprintf(entry->d, INT_MAX, fmt, args);
+	va_end(args);
+
+	bch2_journal_res_put(j, &res);
+
+	return bch2_journal_flush_seq(j, res.seq);
 }
 
 /* block/unlock the journal: */
@@ -802,7 +838,7 @@ static int __bch2_set_nr_journal_buckets(struct bch_dev *ca, unsigned nr,
 		 * superblock before inserting into the journal array
 		 */
 
-		pos = ja->nr ? (ja->cur_idx + 1) % ja->nr : 0;
+		pos = ja->discard_idx ?: ja->nr;
 		__array_insert_item(ja->buckets,		ja->nr, pos);
 		__array_insert_item(ja->bucket_seq,		ja->nr, pos);
 		__array_insert_item(journal_buckets->buckets,	ja->nr, pos);

@@ -35,6 +35,15 @@
 #include <trace/events/bcachefs.h>
 #include <trace/events/writeback.h>
 
+static inline bool bio_full(struct bio *bio, unsigned len)
+{
+	if (bio->bi_vcnt >= bio->bi_max_vecs)
+		return true;
+	if (bio->bi_iter.bi_size > UINT_MAX - len)
+		return true;
+	return false;
+}
+
 static inline struct address_space *faults_disabled_mapping(void)
 {
 	return (void *) (((unsigned long) current->faults_disabled_mapping) & ~1UL);
@@ -1808,11 +1817,11 @@ again:
 		 * to check that the address is actually valid, when atomic
 		 * usercopies are used, below.
 		 */
-		if (unlikely(iov_iter_fault_in_readable(iter, bytes))) {
+		if (unlikely(fault_in_iov_iter_readable(iter, bytes))) {
 			bytes = min_t(unsigned long, iov_iter_count(iter),
 				      PAGE_SIZE - offset);
 
-			if (unlikely(iov_iter_fault_in_readable(iter, bytes))) {
+			if (unlikely(fault_in_iov_iter_readable(iter, bytes))) {
 				ret = -EFAULT;
 				break;
 			}
@@ -1870,7 +1879,7 @@ static void bch2_dio_read_complete(struct closure *cl)
 {
 	struct dio_read *dio = container_of(cl, struct dio_read, cl);
 
-	dio->req->ki_complete(dio->req, dio->ret, 0);
+	dio->req->ki_complete(dio->req, dio->ret);
 	bio_check_or_release(&dio->rbio.bio, dio->should_dirty);
 }
 
@@ -1919,7 +1928,7 @@ static int bch2_direct_IO_read(struct kiocb *req, struct iov_iter *iter)
 	iter->count -= shorten;
 
 	bio = bio_alloc_bioset(GFP_KERNEL,
-			       iov_iter_npages(iter, BIO_MAX_VECS),
+			       bio_iov_vecs_to_alloc(iter, BIO_MAX_VECS),
 			       &c->dio_read_bioset);
 
 	bio->bi_end_io = bch2_direct_IO_read_endio;
@@ -1954,7 +1963,7 @@ static int bch2_direct_IO_read(struct kiocb *req, struct iov_iter *iter)
 	goto start;
 	while (iter->count) {
 		bio = bio_alloc_bioset(GFP_KERNEL,
-				       iov_iter_npages(iter, BIO_MAX_VECS),
+				       bio_iov_vecs_to_alloc(iter, BIO_MAX_VECS),
 				       &c->bio_read);
 		bio->bi_end_io		= bch2_direct_IO_read_split_endio;
 start:
@@ -2101,7 +2110,7 @@ static long bch2_dio_write_loop(struct dio_write *dio)
 	while (1) {
 		iter_count = dio->iter.count;
 
-		if (kthread)
+		if (kthread && dio->mm)
 			kthread_use_mm(dio->mm);
 		BUG_ON(current->faults_disabled_mapping);
 		current->faults_disabled_mapping = mapping;
@@ -2111,7 +2120,7 @@ static long bch2_dio_write_loop(struct dio_write *dio)
 		dropped_locks = fdm_dropped_locks();
 
 		current->faults_disabled_mapping = NULL;
-		if (kthread)
+		if (kthread && dio->mm)
 			kthread_unuse_mm(dio->mm);
 
 		/*
@@ -2244,7 +2253,7 @@ err:
 	inode_dio_end(&inode->v);
 
 	if (!sync) {
-		req->ki_complete(req, ret, 0);
+		req->ki_complete(req, ret);
 		ret = -EIOCBQUEUED;
 	}
 	return ret;
@@ -2304,9 +2313,7 @@ ssize_t bch2_direct_write(struct kiocb *req, struct iov_iter *iter)
 	}
 
 	bio = bio_alloc_bioset(GFP_KERNEL,
-			       iov_iter_is_bvec(iter)
-			       ? 0
-			       : iov_iter_npages(iter, BIO_MAX_VECS),
+			       bio_iov_vecs_to_alloc(iter, BIO_MAX_VECS),
 			       &c->dio_write_bioset);
 	dio = container_of(bio, struct dio_write, op.wbio.bio);
 	init_completion(&dio->done);

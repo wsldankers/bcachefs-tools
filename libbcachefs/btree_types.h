@@ -361,7 +361,11 @@ struct btree_insert_entry {
 	unsigned long		ip_allocated;
 };
 
+#ifndef CONFIG_LOCKDEP
 #define BTREE_ITER_MAX		64
+#else
+#define BTREE_ITER_MAX		32
+#endif
 
 struct btree_trans_commit_hook;
 typedef int (btree_trans_commit_hook_fn)(struct btree_trans *, struct btree_trans_commit_hook *);
@@ -388,6 +392,7 @@ struct btree_trans {
 
 	u8			nr_sorted;
 	u8			nr_updates;
+	u8			traverse_all_idx;
 	bool			used_mempool:1;
 	bool			in_traverse_all:1;
 	bool			restarted:1;
