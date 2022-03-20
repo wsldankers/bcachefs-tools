@@ -29,11 +29,13 @@ static void dump_usage(void)
 	     "Options:\n"
 	     "  -o output     Output qcow2 image(s)\n"
 	     "  -f            Force; overwrite when needed\n"
+	     "  -j            Dump entire journal, not just dirty entries\n"
 	     "  -h            Display this help and exit\n"
 	     "Report bugs to <linux-bcache@vger.kernel.org>");
 }
 
-static void dump_one_device(struct bch_fs *c, struct bch_dev *ca, int fd)
+static void dump_one_device(struct bch_fs *c, struct bch_dev *ca, int fd,
+			    bool entire_journal)
 {
 	struct bch_sb *sb = ca->disk_sb.sb;
 	ranges data;
@@ -53,7 +55,8 @@ static void dump_one_device(struct bch_fs *c, struct bch_dev *ca, int fd)
 
 	/* Journal: */
 	for (i = 0; i < ca->journal.nr; i++)
-		if (ca->journal.bucket_seq[i] >= c->journal.last_seq_ondisk) {
+		if (entire_journal ||
+		    ca->journal.bucket_seq[i] >= c->journal.last_seq_ondisk) {
 			u64 bucket = ca->journal.buckets[i];
 
 			range_add(&data,
@@ -116,7 +119,7 @@ int cmd_dump(int argc, char *argv[])
 	struct bch_dev *ca;
 	char *out = NULL;
 	unsigned i, nr_devices = 0;
-	bool force = false;
+	bool force = false, entire_journal = false;
 	int fd, opt;
 
 	opt_set(opts, nochanges,	true);
@@ -125,13 +128,16 @@ int cmd_dump(int argc, char *argv[])
 	opt_set(opts, errors,		BCH_ON_ERROR_continue);
 	opt_set(opts, fix_errors,	FSCK_OPT_NO);
 
-	while ((opt = getopt(argc, argv, "o:fvh")) != -1)
+	while ((opt = getopt(argc, argv, "o:fjvh")) != -1)
 		switch (opt) {
 		case 'o':
 			out = optarg;
 			break;
 		case 'f':
 			force = true;
+			break;
+		case 'j':
+			entire_journal = true;
 			break;
 		case 'v':
 			opt_set(opts, verbose, true);
@@ -174,7 +180,7 @@ int cmd_dump(int argc, char *argv[])
 		fd = xopen(path, flags, 0600);
 		free(path);
 
-		dump_one_device(c, ca, fd);
+		dump_one_device(c, ca, fd, entire_journal);
 		close(fd);
 	}
 
