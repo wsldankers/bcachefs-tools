@@ -212,23 +212,19 @@ static inline struct bio *bio_next_split(struct bio *bio, int sectors,
 
 struct bio_set {
 	unsigned int front_pad;
+	unsigned int back_pad;
+	mempool_t bio_pool;
+	mempool_t bvec_pool;
 };
 
-static inline void bioset_exit(struct bio_set *bs) {}
 
 static inline void bioset_free(struct bio_set *bs)
 {
 	kfree(bs);
 }
 
-static inline int bioset_init(struct bio_set *bs,
-			      unsigned pool_size,
-			      unsigned front_pad,
-			      int flags)
-{
-	bs->front_pad = front_pad;
-	return 0;
-}
+void bioset_exit(struct bio_set *);
+int bioset_init(struct bio_set *, unsigned, unsigned, int);
 
 extern struct bio_set *bioset_create(unsigned int, unsigned int);
 extern struct bio_set *bioset_create_nobvec(unsigned int, unsigned int);
@@ -246,10 +242,7 @@ extern void __bio_clone_fast(struct bio *, struct bio *);
 extern struct bio *bio_clone_fast(struct bio *, gfp_t, struct bio_set *);
 extern struct bio *bio_clone_bioset(struct bio *, gfp_t, struct bio_set *bs);
 
-static inline struct bio *bio_kmalloc(gfp_t gfp_mask, unsigned int nr_iovecs)
-{
-	return bio_alloc_bioset(gfp_mask, nr_iovecs, NULL);
-}
+struct bio *bio_kmalloc(gfp_t, unsigned int);
 
 static inline struct bio *bio_clone_kmalloc(struct bio *bio, gfp_t gfp_mask)
 {

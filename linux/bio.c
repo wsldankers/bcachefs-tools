@@ -188,9 +188,16 @@ void bio_advance(struct bio *bio, unsigned bytes)
 
 static void bio_free(struct bio *bio)
 {
-	unsigned front_pad = bio->bi_pool ? bio->bi_pool->front_pad : 0;
+	struct bio_set *bs = bio->bi_pool;
 
-	kfree((void *) bio - front_pad);
+	if (bs) {
+		if (bio->bi_max_vecs > BIO_INLINE_VECS)
+			mempool_free(bio->bi_io_vec, &bs->bvec_pool);
+
+		mempool_free((void *) bio - bs->front_pad, &bs->bio_pool);
+	} else {
+		kfree(bio);
+	}
 }
 
 void bio_put(struct bio *bio)
@@ -291,25 +298,73 @@ void bio_reset(struct bio *bio)
 	atomic_set(&bio->__bi_remaining, 1);
 }
 
+struct bio *bio_kmalloc(gfp_t gfp_mask, unsigned int nr_iovecs)
+{
+	struct bio *bio;
+
+	bio = kmalloc(sizeof(struct bio) +
+		      sizeof(struct bio_vec) * nr_iovecs, gfp_mask);
+	if (unlikely(!bio))
+		return NULL;
+	bio_init(bio, nr_iovecs ? bio->bi_inline_vecs : NULL, nr_iovecs);
+	bio->bi_pool = NULL;
+	return bio;
+}
+
+static struct bio_vec *bvec_alloc(mempool_t *pool, int *nr_vecs,
+		gfp_t gfp_mask)
+{
+	*nr_vecs = roundup_pow_of_two(*nr_vecs);
+	/*
+	 * Try a slab allocation first for all smaller allocations.  If that
+	 * fails and __GFP_DIRECT_RECLAIM is set retry with the mempool.
+	 * The mempool is sized to handle up to BIO_MAX_VECS entries.
+	 */
+	if (*nr_vecs < BIO_MAX_VECS) {
+		struct bio_vec *bvl;
+
+		bvl = kmalloc(sizeof(*bvl) * *nr_vecs, gfp_mask);
+		if (likely(bvl))
+			return bvl;
+		*nr_vecs = BIO_MAX_VECS;
+	}
+
+	return mempool_alloc(pool, gfp_mask);
+}
+
 struct bio *bio_alloc_bioset(gfp_t gfp_mask, int nr_iovecs, struct bio_set *bs)
 {
-	unsigned front_pad = bs ? bs->front_pad : 0;
 	struct bio *bio;
 	void *p;
 
-	p = kmalloc(front_pad +
-		    sizeof(struct bio) +
-		    nr_iovecs * sizeof(struct bio_vec),
-		    gfp_mask);
+	if (nr_iovecs > BIO_MAX_VECS)
+		return NULL;
 
+	p = mempool_alloc(&bs->bio_pool, gfp_mask);
 	if (unlikely(!p))
 		return NULL;
 
-	bio = p + front_pad;
-	bio_init(bio, bio->bi_inline_vecs, nr_iovecs);
-	bio->bi_pool = bs;
+	bio = p + bs->front_pad;
+	if (nr_iovecs > BIO_INLINE_VECS) {
+		struct bio_vec *bvl = NULL;
 
+		bvl = bvec_alloc(&bs->bvec_pool, &nr_iovecs, gfp_mask);
+		if (unlikely(!bvl))
+			goto err_free;
+
+		bio_init(bio, bvl, nr_iovecs);
+	} else if (nr_iovecs) {
+		bio_init(bio, bio->bi_inline_vecs, BIO_INLINE_VECS);
+	} else {
+		bio_init(bio, NULL, 0);
+	}
+
+	bio->bi_pool = bs;
 	return bio;
+
+err_free:
+	mempool_free(p, &bs->bio_pool);
+	return NULL;
 }
 
 struct bio *bio_clone_bioset(struct bio *bio_src, gfp_t gfp_mask,
@@ -342,4 +397,32 @@ struct bio *bio_clone_bioset(struct bio *bio_src, gfp_t gfp_mask,
 	}
 
 	return bio;
+}
+
+void bioset_exit(struct bio_set *bs)
+{
+	mempool_exit(&bs->bio_pool);
+	mempool_exit(&bs->bvec_pool);
+}
+
+int bioset_init(struct bio_set *bs,
+		unsigned int pool_size,
+		unsigned int front_pad,
+		int flags)
+{
+	int ret;
+
+	bs->front_pad = front_pad;
+	if (flags & BIOSET_NEED_BVECS)
+		bs->back_pad = BIO_INLINE_VECS * sizeof(struct bio_vec);
+	else
+		bs->back_pad = 0;
+
+	ret   = mempool_init_kmalloc_pool(&bs->bio_pool, pool_size, bs->front_pad +
+					  sizeof(struct bio) + bs->back_pad) ?:
+		mempool_init_kmalloc_pool(&bs->bvec_pool, pool_size,
+					  sizeof(struct bio_vec) * BIO_MAX_VECS);
+	if (ret)
+		bioset_exit(bs);
+	return ret;
 }

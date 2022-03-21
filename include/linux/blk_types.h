@@ -65,6 +65,8 @@ typedef u8 __bitwise blk_status_t;
 
 #define BLK_STS_AGAIN		((__force blk_status_t)12)
 
+#define BIO_INLINE_VECS 4
+
 /*
  * main unit of I/O for the block layer and lower layers (ie drivers and
  * stacking drivers)
