@@ -9,10 +9,10 @@
 #include "super-io.h"
 #include "util.h"
 
-#define x(t, n) #t,
+#define x(t, n) [n] = #t,
 
 const char * const bch2_metadata_versions[] = {
-	BCH_MEMBER_STATES()
+	BCH_METADATA_VERSIONS()
 	NULL
 };
 
