@@ -597,6 +597,7 @@ next:
 struct bch_opts bch2_parse_opts(struct bch_opt_strs strs)
 {
 	struct bch_opts opts = bch2_opts_empty();
+	struct printbuf err = PRINTBUF;
 	unsigned i;
 	int ret;
 	u64 v;
@@ -606,17 +607,16 @@ struct bch_opts bch2_parse_opts(struct bch_opt_strs strs)
 		    bch2_opt_table[i].type == BCH_OPT_FN)
 			continue;
 
-		ret = bch2_opt_parse(NULL, "option",
+		ret = bch2_opt_parse(NULL,
 				     &bch2_opt_table[i],
-				     strs.by_id[i], &v);
+				     strs.by_id[i], &v, &err);
 		if (ret < 0)
-			die("Invalid %s: %s",
-			    bch2_opt_table[i].attr.name,
-			    strerror(-ret));
+			die("Invalid option %s", err.buf);
 
 		bch2_opt_set_by_id(&opts, i, v);
 	}
 
+	printbuf_exit(&err);
 	return opts;
 }
 

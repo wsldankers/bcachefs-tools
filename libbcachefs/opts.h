@@ -8,6 +8,7 @@
 #include <linux/sysfs.h>
 #include "bcachefs_format.h"
 
+extern const char * const bch2_metadata_versions[];
 extern const char * const bch2_error_actions[];
 extern const char * const bch2_sb_features[];
 extern const char * const bch2_sb_compat[];
@@ -274,7 +275,7 @@ enum opt_type {
 	  NULL,		"Extra debugging information during mount/recovery")\
 	x(journal_flush_delay,		u32,				\
 	  OPT_FS|OPT_MOUNT|OPT_RUNTIME,					\
-	  OPT_UINT(0, U32_MAX),						\
+	  OPT_UINT(1, U32_MAX),						\
 	  BCH_SB_JOURNAL_FLUSH_DELAY,	1000,				\
 	  NULL,		"Delay in milliseconds before automatic journal commits")\
 	x(journal_flush_disabled,	u8,				\
@@ -482,8 +483,9 @@ void __bch2_opt_set_sb(struct bch_sb *, const struct bch_option *, u64);
 void bch2_opt_set_sb(struct bch_fs *, const struct bch_option *, u64);
 
 int bch2_opt_lookup(const char *);
-int bch2_opt_parse(struct bch_fs *, const char *, const struct bch_option *,
-		   const char *, u64 *);
+int bch2_opt_validate(const struct bch_option *, u64, struct printbuf *);
+int bch2_opt_parse(struct bch_fs *, const struct bch_option *,
+		   const char *, u64 *, struct printbuf *);
 
 #define OPT_SHOW_FULL_LIST	(1 << 0)
 #define OPT_SHOW_MOUNT_STYLE	(1 << 1)

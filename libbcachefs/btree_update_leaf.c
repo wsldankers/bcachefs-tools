@@ -295,11 +295,10 @@ static inline int bch2_trans_journal_res_get(struct btree_trans *trans,
 	struct bch_fs *c = trans->c;
 	int ret;
 
-	if (trans->flags & BTREE_INSERT_JOURNAL_RESERVED)
-		flags |= JOURNAL_RES_GET_RESERVED;
-
 	ret = bch2_journal_res_get(&c->journal, &trans->journal_res,
-				   trans->journal_u64s, flags);
+				   trans->journal_u64s,
+				   flags|
+				   (trans->flags & JOURNAL_WATERMARK_MASK));
 
 	return ret == -EAGAIN ? BTREE_INSERT_NEED_JOURNAL_RES : ret;
 }
@@ -350,7 +349,7 @@ btree_key_can_insert_cached(struct btree_trans *trans,
 {
 	struct bch_fs *c = trans->c;
 	struct bkey_cached *ck = (void *) path->l[0].b;
-	unsigned new_u64s;
+	unsigned old_u64s = ck->u64s, new_u64s;
 	struct bkey_i *new_k;
 
 	EBUG_ON(path->level);
@@ -384,7 +383,8 @@ btree_key_can_insert_cached(struct btree_trans *trans,
 	 * transaction restart:
 	 */
 	trace_trans_restart_key_cache_key_realloced(trans->fn, _RET_IP_,
-					     path->btree_id, &path->pos);
+					     path->btree_id, &path->pos,
+					     old_u64s, new_u64s);
 	/*
 	 * Not using btree_trans_restart() because we can't unlock here, we have
 	 * write locks held:
@@ -459,7 +459,13 @@ static int run_one_mem_trigger(struct btree_trans *trans,
 static int run_one_trans_trigger(struct btree_trans *trans, struct btree_insert_entry *i,
 			   bool overwrite)
 {
-	struct bkey_s_c old = { &i->old_k, i->old_v };
+	/*
+	 * Transactional triggers create new btree_insert_entries, so we can't
+	 * pass them a pointer to a btree_insert_entry, that memory is going to
+	 * move:
+	 */
+	struct bkey old_k = i->old_k;
+	struct bkey_s_c old = { &old_k, i->old_v };
 	int ret = 0;
 
 	if ((i->flags & BTREE_TRIGGER_NORUN) ||
@@ -900,8 +906,7 @@ static inline int do_bch2_trans_commit(struct btree_trans *trans,
 	ret = bch2_journal_preres_get(&c->journal,
 			&trans->journal_preres, trans->journal_preres_u64s,
 			JOURNAL_RES_GET_NONBLOCK|
-			((trans->flags & BTREE_INSERT_JOURNAL_RESERVED)
-			 ? JOURNAL_RES_GET_RESERVED : 0));
+			(trans->flags & JOURNAL_WATERMARK_MASK));
 	if (unlikely(ret == -EAGAIN))
 		ret = bch2_trans_journal_preres_get_cold(trans,
 						trans->journal_preres_u64s, trace_ip);
@@ -986,7 +991,7 @@ int bch2_trans_commit_error(struct btree_trans *trans,
 		bch2_trans_unlock(trans);
 
 		if ((trans->flags & BTREE_INSERT_JOURNAL_RECLAIM) &&
-		    !(trans->flags & BTREE_INSERT_JOURNAL_RESERVED)) {
+		    !(trans->flags & JOURNAL_WATERMARK_reserved)) {
 			trans->restarted = true;
 			ret = -EAGAIN;
 			break;

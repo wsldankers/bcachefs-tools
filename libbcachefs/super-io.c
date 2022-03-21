@@ -253,12 +253,13 @@ static int bch2_sb_validate(struct bch_sb_handle *disk_sb, struct printbuf *out)
 	struct bch_sb *sb = disk_sb->sb;
 	struct bch_sb_field *f;
 	struct bch_sb_field_members *mi;
+	enum bch_opt_id opt_id;
 	u32 version, version_min;
 	u16 block_size;
 	int ret;
 
 	version		= le16_to_cpu(sb->version);
-	version_min	= version >= bcachefs_metadata_version_new_versioning
+	version_min	= version >= bcachefs_metadata_version_bkey_renumber
 		? le16_to_cpu(sb->version_min)
 		: version;
 
@@ -322,6 +323,21 @@ static int bch2_sb_validate(struct bch_sb_handle *disk_sb, struct printbuf *out)
 		pr_buf(out, "Invalid time precision: %u (min 1, max %lu)",
 		       le32_to_cpu(sb->time_precision), NSEC_PER_SEC);
 		return -EINVAL;
+	}
+
+	for (opt_id = 0; opt_id < bch2_opts_nr; opt_id++) {
+		const struct bch_option *opt = bch2_opt_table + opt_id;
+
+		if (opt->get_sb != BCH2_NO_SB_OPT) {
+			u64 v = bch2_opt_from_sb(sb, opt_id);
+
+			pr_buf(out, "Invalid option ");
+			ret = bch2_opt_validate(opt, v, out);
+			if (ret)
+				return ret;
+
+			printbuf_reset(out);
+		}
 	}
 
 	/* validate layout */
@@ -514,7 +530,7 @@ reread:
 	}
 
 	version		= le16_to_cpu(sb->sb->version);
-	version_min	= version >= bcachefs_metadata_version_new_versioning
+	version_min	= version >= bcachefs_metadata_version_bkey_renumber
 		? le16_to_cpu(sb->sb->version_min)
 		: version;
 
@@ -1476,12 +1492,12 @@ void bch2_sb_to_text(struct printbuf *out, struct bch_sb *sb,
 
 	pr_buf(out, "Version:");
 	pr_tab(out);
-	pr_buf(out, "%u", le16_to_cpu(sb->version));
+	pr_buf(out, "%s", bch2_metadata_versions[le16_to_cpu(sb->version)]);
 	pr_newline(out);
 
 	pr_buf(out, "Oldest version on disk:");
 	pr_tab(out);
-	pr_buf(out, "%u", le16_to_cpu(sb->version_min));
+	pr_buf(out, "%u", bch2_metadata_versions[le16_to_cpu(sb->version_min)]);
 	pr_newline(out);
 
 	pr_buf(out, "Created:");
