@@ -65,7 +65,24 @@ static struct meminfo read_meminfo(void)
 	return ret;
 }
 
-void run_shrinkers(void)
+static void run_shrinkers_allocation_failed(gfp_t gfp_mask)
+{
+	struct shrinker *shrinker;
+
+	mutex_lock(&shrinker_lock);
+	list_for_each_entry(shrinker, &shrinker_list, list) {
+		struct shrink_control sc = { .gfp_mask	= gfp_mask, };
+
+		unsigned long have = shrinker->count_objects(shrinker, &sc);
+
+		sc.nr_to_scan = have / 8;
+
+		shrinker->scan_objects(shrinker, &sc);
+	}
+	mutex_unlock(&shrinker_lock);
+}
+
+void run_shrinkers(gfp_t gfp_mask, bool allocation_failed)
 {
 	struct shrinker *shrinker;
 	struct meminfo info;
@@ -74,6 +91,11 @@ void run_shrinkers(void)
 	/* Fast out if there are no shrinkers to run. */
 	if (list_empty(&shrinker_list))
 		return;
+
+	if (allocation_failed) {
+		run_shrinkers_allocation_failed(gfp_mask);
+		return;
+	}
 
 	info = read_meminfo();
 
@@ -92,7 +114,8 @@ void run_shrinkers(void)
 	mutex_lock(&shrinker_lock);
 	list_for_each_entry(shrinker, &shrinker_list, list) {
 		struct shrink_control sc = {
-			.nr_to_scan = want_shrink >> PAGE_SHIFT
+			.gfp_mask	= gfp_mask,
+			.nr_to_scan	= want_shrink >> PAGE_SHIFT
 		};
 
 		shrinker->scan_objects(shrinker, &sc);

@@ -20,7 +20,7 @@ static inline void *__vmalloc(unsigned long size, gfp_t gfp_mask)
 	size = round_up(size, PAGE_SIZE);
 
 	do {
-		run_shrinkers();
+		run_shrinkers(gfp_mask, i != 0);
 
 		p = aligned_alloc(PAGE_SIZE, size);
 		if (p && gfp_mask & __GFP_ZERO)

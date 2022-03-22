@@ -20,7 +20,7 @@ static inline void *kmalloc(size_t size, gfp_t flags)
 	void *p;
 
 	do {
-		run_shrinkers();
+		run_shrinkers(flags, i != 0);
 
 		if (size) {
 			size_t alignment = min(rounddown_pow_of_two(size), (size_t)PAGE_SIZE);
@@ -83,7 +83,7 @@ static inline struct page *alloc_pages(gfp_t flags, unsigned int order)
 	void *p;
 
 	do {
-		run_shrinkers();
+		run_shrinkers(flags, i != 0);
 
 		p = aligned_alloc(PAGE_SIZE, size);
 		if (p && (flags & __GFP_ZERO))
