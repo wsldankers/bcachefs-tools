@@ -99,7 +99,7 @@ Format one or a list of devices with bcachefs data structures.
 You need to do this before you create a volume.
 .Pp
 Device specific options must come before corresponding devices, e.g.
-.Dl bcachefs format --group=ssd /dev/sda --label=hdd /dev/sdb
+.Dl bcachefs format --label=ssd /dev/sda --label=hdd /dev/sdb
 .Bl -tag -width Ds
 .It Fl b , Fl -block Ns = Ns Ar size
 block size, in bytes (e.g. 4k)
