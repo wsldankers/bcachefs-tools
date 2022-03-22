@@ -46,6 +46,7 @@ x(0,	version,		required_argument)	\
 x(0,	no_initialize,		no_argument)		\
 x('f',	force,			no_argument)		\
 x('q',	quiet,			no_argument)		\
+x('v',	verbose,		no_argument)		\
 x('h',	help,			no_argument)
 
 static void usage(void)
@@ -73,6 +74,7 @@ static void usage(void)
 	     "\n"
 	     "  -f, --force\n"
 	     "  -q, --quiet                 Only print errors\n"
+	     "  -v, --verbose               Verbose filesystem initialization\n"
 	     "  -h, --help                  Display this help and exit\n"
 	     "\n"
 	     "Device specific options must come before corresponding devices, e.g.\n"
@@ -116,7 +118,7 @@ int cmd_format(int argc, char *argv[])
 	darray(char *) device_paths;
 	struct format_opts opts	= format_opts_default();
 	struct dev_opts dev_opts = dev_opts_default(), *dev;
-	bool force = false, no_passphrase = false, quiet = false, initialize = true;
+	bool force = false, no_passphrase = false, quiet = false, initialize = true, verbose = false;
 	unsigned v;
 	int opt;
 
@@ -128,7 +130,7 @@ int cmd_format(int argc, char *argv[])
 	struct bch_opts fs_opts = bch2_parse_opts(fs_opt_strs);
 
 	while ((opt = getopt_long(argc, argv,
-				  "-L:U:g:fqh",
+				  "-L:U:g:fqhv",
 				  format_opts,
 				  NULL)) != -1)
 		switch (opt) {
@@ -208,6 +210,8 @@ int cmd_format(int argc, char *argv[])
 		case 'q':
 			quiet = true;
 			break;
+		case 'v':
+			verbose = true;
 		case O_help:
 		case 'h':
 			usage();
@@ -259,7 +263,7 @@ int cmd_format(int argc, char *argv[])
 		struct bch_opts mount_opts = bch2_opts_empty();
 
 
-		opt_set(mount_opts, verbose, true);
+		opt_set(mount_opts, verbose, verbose);
 
 		/*
 		 * Start the filesystem once, to allocate the journal and create
