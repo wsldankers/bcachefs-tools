@@ -93,9 +93,11 @@ do {									\
 									\
 	BUG_ON(_i >= (h)->used);					\
 	(h)->used--;							\
-	heap_swap(h, _i, (h)->used);					\
-	heap_sift_down(h, _i, cmp);					\
-	heap_sift(h, _i, cmp);						\
+	if ((_i) < (h)->used) {						\
+		heap_swap(h, _i, (h)->used);				\
+		heap_sift_down(h, _i, cmp);				\
+		heap_sift(h, _i, cmp);					\
+	}								\
 } while (0)
 
 #define heap_pop(h, d, cmp)						\
