@@ -15,3 +15,24 @@
    ...
    fun:call_rcu_data_init
 }
+{
+   urcu_memb_call_rcu
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:pthread_create*
+   obj:/*/liburcu.so.*
+   ...
+   fun:urcu_memb_call_rcu
+}
+{
+   pthread_create
+   Memcheck:Leak
+   match-leak-kinds: possible
+   fun:calloc
+   ...
+   fun:allocate_stack
+   fun:pthread_create*
+   fun:kthread_create
+   fun:bch2_rebalance_start
+}
