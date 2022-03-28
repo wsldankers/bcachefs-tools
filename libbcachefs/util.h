@@ -210,9 +210,11 @@ do {									\
 									\
 	BUG_ON(_i >= (h)->used);					\
 	(h)->used--;							\
-	heap_swap(h, _i, (h)->used, set_backpointer);			\
-	heap_sift_up(h, _i, cmp, set_backpointer);			\
-	heap_sift_down(h, _i, cmp, set_backpointer);			\
+	if ((_i) < (h)->used) {						\
+		heap_swap(h, _i, (h)->used, set_backpointer);		\
+		heap_sift_up(h, _i, cmp, set_backpointer);		\
+		heap_sift_down(h, _i, cmp, set_backpointer);		\
+	}								\
 } while (0)
 
 #define heap_pop(h, d, cmp, set_backpointer)				\
@@ -282,7 +284,8 @@ static inline size_t printbuf_linelen(struct printbuf *buf)
 	return buf->pos - buf->last_newline;
 }
 
-void bch2_pr_buf(struct printbuf *out, const char *fmt, ...);
+void bch2_pr_buf(struct printbuf *out, const char *fmt, ...)
+	__attribute__ ((format (printf, 2, 3)));
 
 #define pr_buf(_out, ...) bch2_pr_buf(_out, __VA_ARGS__)
 
