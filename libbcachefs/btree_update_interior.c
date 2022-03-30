@@ -532,8 +532,15 @@ static int btree_update_nodes_written_trans(struct btree_trans *trans,
 	struct bkey_i *k;
 	int ret;
 
-	trans->extra_journal_entries = (void *) &as->journal_entries[0];
-	trans->extra_journal_entry_u64s = as->journal_u64s;
+	ret = darray_make_room(trans->extra_journal_entries, as->journal_u64s);
+	if (ret)
+		return ret;
+
+	memcpy(&darray_top(trans->extra_journal_entries),
+	       as->journal_entries,
+	       as->journal_u64s * sizeof(u64));
+	trans->extra_journal_entries.nr += as->journal_u64s;
+
 	trans->journal_pin = &as->journal;
 
 	for_each_keylist_key(&as->new_keys, k) {
@@ -1899,7 +1906,6 @@ static int __bch2_btree_node_update_key(struct btree_trans *trans,
 	struct bch_fs *c = trans->c;
 	struct btree_iter iter2 = { NULL };
 	struct btree *parent;
-	u64 journal_entries[BKEY_BTREE_PTR_U64s_MAX];
 	int ret;
 
 	if (!skip_triggers) {
@@ -1933,6 +1939,7 @@ static int __bch2_btree_node_update_key(struct btree_trans *trans,
 		btree_node_unlock(iter2.path, iter2.path->level);
 		path_l(iter2.path)->b = BTREE_ITER_NO_NODE_UP;
 		iter2.path->level++;
+		btree_path_set_dirty(iter2.path, BTREE_ITER_NEED_TRAVERSE);
 
 		bch2_btree_path_check_sort(trans, iter2.path, 0);
 
@@ -1943,12 +1950,16 @@ static int __bch2_btree_node_update_key(struct btree_trans *trans,
 	} else {
 		BUG_ON(btree_node_root(c, b) != b);
 
-		trans->extra_journal_entries = (void *) &journal_entries[0];
-		trans->extra_journal_entry_u64s =
-			journal_entry_set((void *) &journal_entries[0],
-					  BCH_JSET_ENTRY_btree_root,
-					  b->c.btree_id, b->c.level,
-					  new_key, new_key->k.u64s);
+		ret = darray_make_room(trans->extra_journal_entries,
+				       jset_u64s(new_key->k.u64s));
+		if (ret)
+			return ret;
+
+		journal_entry_set((void *) &darray_top(trans->extra_journal_entries),
+				  BCH_JSET_ENTRY_btree_root,
+				  b->c.btree_id, b->c.level,
+				  new_key, new_key->k.u64s);
+		trans->extra_journal_entries.nr += jset_u64s(new_key->k.u64s);
 	}
 
 	ret = bch2_trans_commit(trans, NULL, NULL,

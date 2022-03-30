@@ -18,7 +18,7 @@
 #include <linux/string.h>
 #include <linux/types.h>
 #include <linux/uuid.h>
-#include "ccan/darray/darray.h"
+#include "libbcachefs/darray.h"
 
 #define noreturn __attribute__((noreturn))
 
@@ -72,14 +72,14 @@ struct range {
 	u64		end;
 };
 
-typedef darray(struct range) ranges;
+typedef DARRAY(struct range) ranges;
 
 static inline void range_add(ranges *data, u64 offset, u64 size)
 {
-	darray_append(*data, (struct range) {
+	darray_push(*data, ((struct range) {
 		.start = offset,
 		.end = offset + size
-	});
+	}));
 }
 
 void ranges_sort_merge(ranges *);
@@ -95,9 +95,9 @@ struct hole_iter {
 static inline struct range hole_iter_next(struct hole_iter *iter)
 {
 	struct range r = {
-		.start	= iter->idx ? iter->r.item[iter->idx - 1].end : 0,
+		.start	= iter->idx ? iter->r.data[iter->idx - 1].end : 0,
 		.end	= iter->idx < iter->r.size
-			? iter->r.item[iter->idx].start : iter->end,
+			? iter->r.data[iter->idx].start : iter->end,
 	};
 
 	BUG_ON(r.start > r.end);

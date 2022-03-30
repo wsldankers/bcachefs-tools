@@ -713,7 +713,7 @@ dev_names bchu_fs_get_devices(struct bchfs_handle fs)
 		n.label = read_file_str(fs.sysfs_fd, label_attr);
 		free(label_attr);
 
-		darray_append(devs, n);
+		darray_push(devs, n);
 	}
 
 	closedir(dir);

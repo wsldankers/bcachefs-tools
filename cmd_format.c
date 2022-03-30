@@ -20,11 +20,10 @@
 
 #include <uuid/uuid.h>
 
-#include "ccan/darray/darray.h"
-
 #include "cmds.h"
 #include "libbcachefs.h"
 #include "crypto.h"
+#include "libbcachefs/darray.h"
 #include "libbcachefs/opts.h"
 #include "libbcachefs/super-io.h"
 #include "libbcachefs/util.h"
@@ -114,16 +113,13 @@ u64 read_flag_list_or_die(char *opt, const char * const list[],
 
 int cmd_format(int argc, char *argv[])
 {
-	darray(struct dev_opts) devices;
-	darray(char *) device_paths;
+	DARRAY(struct dev_opts) devices = { 0 };
+	DARRAY(char *) device_paths = { 0 };
 	struct format_opts opts	= format_opts_default();
 	struct dev_opts dev_opts = dev_opts_default(), *dev;
 	bool force = false, no_passphrase = false, quiet = false, initialize = true, verbose = false;
 	unsigned v;
 	int opt;
-
-	darray_init(devices);
-	darray_init(device_paths);
 
 	struct bch_opt_strs fs_opt_strs =
 		bch2_cmdline_opts_get(&argc, argv, OPT_FORMAT);
@@ -201,9 +197,9 @@ int cmd_format(int argc, char *argv[])
 			initialize = false;
 			break;
 		case O_no_opt:
-			darray_append(device_paths, optarg);
+			darray_push(device_paths, optarg);
 			dev_opts.path = optarg;
-			darray_append(devices, dev_opts);
+			darray_push(devices, dev_opts);
 			dev_opts.size = 0;
 			break;
 		case O_quiet:
@@ -222,7 +218,7 @@ int cmd_format(int argc, char *argv[])
 			break;
 		}
 
-	if (darray_empty(devices))
+	if (!devices.nr)
 		die("Please supply a device");
 
 	if (opts.encrypted && !no_passphrase) {
@@ -230,14 +226,14 @@ int cmd_format(int argc, char *argv[])
 		initialize = false;
 	}
 
-	darray_foreach(dev, devices)
+	darray_for_each(devices, dev)
 		dev->fd = open_for_format(dev->path, force);
 
 	struct bch_sb *sb =
 		bch2_format(fs_opt_strs,
 			    fs_opts,
 			    opts,
-			    devices.item, darray_size(devices));
+			    devices.data, devices.nr);
 	bch2_opt_strs_free(&fs_opt_strs);
 
 	if (!quiet) {
@@ -257,7 +253,7 @@ int cmd_format(int argc, char *argv[])
 		free(opts.passphrase);
 	}
 
-	darray_free(devices);
+	darray_exit(devices);
 
 	if (initialize) {
 		struct bch_opts mount_opts = bch2_opts_empty();
@@ -269,17 +265,17 @@ int cmd_format(int argc, char *argv[])
 		 * Start the filesystem once, to allocate the journal and create
 		 * the root directory:
 		 */
-		struct bch_fs *c = bch2_fs_open(device_paths.item,
-						darray_size(device_paths),
+		struct bch_fs *c = bch2_fs_open(device_paths.data,
+						device_paths.nr,
 						mount_opts);
 		if (IS_ERR(c))
-			die("error opening %s: %s", device_paths.item[0],
+			die("error opening %s: %s", device_paths.data[0],
 			    strerror(-PTR_ERR(c)));
 
 		bch2_fs_stop(c);
 	}
 
-	darray_free(device_paths);
+	darray_exit(device_paths);
 
 	return 0;
 }

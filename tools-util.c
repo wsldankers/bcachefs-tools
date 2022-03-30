@@ -295,22 +295,21 @@ static int range_cmp(const void *_l, const void *_r)
 void ranges_sort_merge(ranges *r)
 {
 	struct range *t, *i;
-	ranges tmp = { NULL };
+	ranges tmp = { 0 };
 
-	sort(&darray_item(*r, 0), darray_size(*r),
-	     sizeof(darray_item(*r, 0)), range_cmp, NULL);
+	sort(r->data, r->nr, sizeof(r->data[0]), range_cmp, NULL);
 
 	/* Merge contiguous ranges: */
-	darray_foreach(i, *r) {
-		t = tmp.size ?  &tmp.item[tmp.size - 1] : NULL;
+	darray_for_each(*r, i) {
+		t = tmp.nr ?  &tmp.data[tmp.nr - 1] : NULL;
 
 		if (t && t->end >= i->start)
 			t->end = max(t->end, i->end);
 		else
-			darray_append(tmp, *i);
+			darray_push(tmp, *i);
 	}
 
-	darray_free(*r);
+	darray_exit(*r);
 	*r = tmp;
 }
 
@@ -318,7 +317,7 @@ void ranges_roundup(ranges *r, unsigned block_size)
 {
 	struct range *i;
 
-	darray_foreach(i, *r) {
+	darray_for_each(*r, i) {
 		i->start = round_down(i->start, block_size);
 		i->end	= round_up(i->end, block_size);
 	}
@@ -328,7 +327,7 @@ void ranges_rounddown(ranges *r, unsigned block_size)
 {
 	struct range *i;
 
-	darray_foreach(i, *r) {
+	darray_for_each(*r, i) {
 		i->start = round_up(i->start, block_size);
 		i->end	= round_down(i->end, block_size);
 		i->end	= max(i->end, i->start);

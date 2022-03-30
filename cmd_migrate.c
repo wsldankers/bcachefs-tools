@@ -530,7 +530,7 @@ static ranges reserve_new_fs_space(const char *file_path, unsigned block_size,
 
 	struct fiemap_iter iter;
 	struct fiemap_extent e;
-	ranges extents = { NULL };
+	ranges extents = { 0 };
 
 	fiemap_for_each(fd, iter, e) {
 		if (e.fe_flags & (FIEMAP_EXTENT_UNKNOWN|
@@ -603,7 +603,7 @@ static void copy_fs(struct bch_fs *c, int src_fd, const char *src_path,
 
 	update_inode(c, &root_inode);
 
-	darray_free(s.extents);
+	darray_exit(s.extents);
 	genradix_free(&s.hardlinks);
 }
 
@@ -613,7 +613,7 @@ static void find_superblock_space(ranges extents,
 {
 	struct range *i;
 
-	darray_foreach(i, extents) {
+	darray_for_each(extents, i) {
 		u64 start = round_up(max(256ULL << 10, i->start),
 				     dev->bucket_size << 9);
 		u64 end = round_down(i->end,

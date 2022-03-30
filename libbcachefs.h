@@ -237,7 +237,7 @@ struct dev_name {
 	char		*label;
 	uuid_le		uuid;
 };
-typedef darray(struct dev_name) dev_names;
+typedef DARRAY(struct dev_name) dev_names;
 
 dev_names bchu_fs_get_devices(struct bchfs_handle);
 

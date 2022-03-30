@@ -94,7 +94,7 @@ void qcow2_write_image(int infd, int outfd, ranges *data,
 	ranges_sort_merge(data);
 
 	/* Write data: */
-	darray_foreach(r, *data)
+	darray_for_each(*data, r)
 		for (src_offset = r->start;
 		     src_offset < r->end;
 		     src_offset += block_size) {

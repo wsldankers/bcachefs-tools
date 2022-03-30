@@ -7,9 +7,13 @@
 
 #include <linux/kernel.h>
 #include <linux/log2.h>
+#include <linux/overflow.h>
 #include <linux/page.h>
 #include <linux/shrinker.h>
 #include <linux/types.h>
+
+#include <stdlib.h>
+#include <sys/mman.h>
 
 #define ARCH_KMALLOC_MINALIGN		16
 #define KMALLOC_MAX_SIZE		SIZE_MAX
@@ -56,6 +60,16 @@ static inline void *krealloc(void *old, size_t size, gfp_t flags)
 	}
 
 	return new;
+}
+
+static inline void *krealloc_array(void *p, size_t new_n, size_t new_size, gfp_t flags)
+{
+	size_t bytes;
+
+	if (unlikely(check_mul_overflow(new_n, new_size, &bytes)))
+		return NULL;
+
+	return krealloc(p, bytes, flags);
 }
 
 #define kzalloc(size, flags)		kmalloc(size, flags|__GFP_ZERO)
@@ -173,5 +187,54 @@ static inline struct kmem_cache *kmem_cache_create(size_t obj_size)
 }
 
 #define KMEM_CACHE(_struct, _flags)	kmem_cache_create(sizeof(struct _struct))
+
+#define PAGE_KERNEL		0
+#define PAGE_KERNEL_EXEC	1
+
+#define vfree(p)		free(p)
+
+static inline void *__vmalloc(unsigned long size, gfp_t gfp_mask)
+{
+	unsigned i = 0;
+	void *p;
+
+	size = round_up(size, PAGE_SIZE);
+
+	do {
+		run_shrinkers(gfp_mask, i != 0);
+
+		p = aligned_alloc(PAGE_SIZE, size);
+		if (p && gfp_mask & __GFP_ZERO)
+			memset(p, 0, size);
+	} while (!p && i++ < 10);
+
+	return p;
+}
+
+static inline void *vmalloc_exec(unsigned long size, gfp_t gfp_mask)
+{
+	void *p;
+
+	p = __vmalloc(size, gfp_mask);
+	if (!p)
+		return NULL;
+
+	if (mprotect(p, size, PROT_READ|PROT_WRITE|PROT_EXEC)) {
+		vfree(p);
+		return NULL;
+	}
+
+	return p;
+}
+
+static inline void *vmalloc(unsigned long size)
+{
+	return __vmalloc(size, GFP_KERNEL);
+}
+
+static inline void *vzalloc(unsigned long size)
+{
+	return __vmalloc(size, GFP_KERNEL|__GFP_ZERO);
+}
 
 #endif /* __TOOLS_LINUX_SLAB_H */

@@ -4,11 +4,10 @@
 
 #include <uuid/uuid.h>
 
-#include "ccan/darray/darray.h"
-
 #include "linux/sort.h"
 
 #include "libbcachefs/bcachefs_ioctl.h"
+#include "libbcachefs/darray.h"
 #include "libbcachefs/opts.h"
 
 #include "cmds.h"
@@ -115,7 +114,7 @@ static struct dev_name *dev_idx_to_name(dev_names *dev_names, unsigned idx)
 {
 	struct dev_name *dev;
 
-	darray_foreach(dev, *dev_names)
+	darray_for_each(*dev_names, dev)
 		if (dev->idx == idx)
 			return dev;
 
@@ -256,22 +255,22 @@ static void fs_usage_to_text(struct printbuf *out, const char *path)
 
 	free(u);
 
-	sort(&darray_item(dev_names, 0), darray_size(dev_names),
-	     sizeof(darray_item(dev_names, 0)), dev_by_label_cmp, NULL);
+	sort(dev_names.data, dev_names.nr,
+	     sizeof(dev_names.data[0]), dev_by_label_cmp, NULL);
 
 	out->tabstops[0] = 16;
 	out->tabstops[1] = 36;
 	out->tabstops[2] = 52;
 	out->tabstops[3] = 68;
 
-	darray_foreach(dev, dev_names)
+	darray_for_each(dev_names, dev)
 		dev_usage_to_text(out, fs, dev);
 
-	darray_foreach(dev, dev_names) {
+	darray_for_each(dev_names, dev) {
 		free(dev->dev);
 		free(dev->label);
 	}
-	darray_free(dev_names);
+	darray_exit(dev_names);
 
 	bcache_fs_close(fs);
 }

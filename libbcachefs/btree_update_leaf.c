@@ -700,13 +700,13 @@ bch2_trans_commit_write_locked(struct btree_trans *trans,
 		trans->journal_res.seq = c->journal.replay_journal_seq;
 	}
 
-	if (unlikely(trans->extra_journal_entry_u64s)) {
+	if (unlikely(trans->extra_journal_entries.nr)) {
 		memcpy_u64s_small(journal_res_entry(&c->journal, &trans->journal_res),
-				  trans->extra_journal_entries,
-				  trans->extra_journal_entry_u64s);
+				  trans->extra_journal_entries.data,
+				  trans->extra_journal_entries.nr);
 
-		trans->journal_res.offset	+= trans->extra_journal_entry_u64s;
-		trans->journal_res.u64s		-= trans->extra_journal_entry_u64s;
+		trans->journal_res.offset	+= trans->extra_journal_entries.nr;
+		trans->journal_res.u64s		-= trans->extra_journal_entries.nr;
 	}
 
 	/*
@@ -1088,7 +1088,7 @@ int __bch2_trans_commit(struct btree_trans *trans)
 	int ret = 0;
 
 	if (!trans->nr_updates &&
-	    !trans->extra_journal_entry_u64s)
+	    !trans->extra_journal_entries.nr)
 		goto out_reset;
 
 	if (trans->flags & BTREE_INSERT_GC_LOCK_HELD)
@@ -1112,7 +1112,7 @@ int __bch2_trans_commit(struct btree_trans *trans)
 
 	memset(&trans->journal_preres, 0, sizeof(trans->journal_preres));
 
-	trans->journal_u64s		= trans->extra_journal_entry_u64s;
+	trans->journal_u64s		= trans->extra_journal_entries.nr;
 	trans->journal_preres_u64s	= 0;
 
 	trans->journal_transaction_names = READ_ONCE(c->opts.journal_transaction_names);
@@ -1170,8 +1170,7 @@ out_reset:
 	trans->extra_journal_res	= 0;
 	trans->nr_updates		= 0;
 	trans->hooks			= NULL;
-	trans->extra_journal_entries	= NULL;
-	trans->extra_journal_entry_u64s	= 0;
+	trans->extra_journal_entries.nr	= 0;
 
 	if (trans->fs_usage_deltas) {
 		trans->fs_usage_deltas->used = 0;
@@ -1738,4 +1737,31 @@ int bch2_btree_delete_range(struct bch_fs *c, enum btree_id id,
 	return bch2_trans_do(c, NULL, journal_seq, 0,
 			     bch2_btree_delete_range_trans(&trans, id, start, end,
 							   update_flags, journal_seq));
+}
+
+int bch2_trans_log_msg(struct btree_trans *trans, const char *msg)
+{
+	unsigned len = strlen(msg);
+	unsigned u64s = DIV_ROUND_UP(len, sizeof(u64));
+	struct jset_entry_log *l;
+	int ret;
+
+	ret = darray_make_room(trans->extra_journal_entries, jset_u64s(u64s));
+	if (ret)
+		return ret;
+
+	l = (void *) &darray_top(trans->extra_journal_entries);
+	l->entry.u64s		= cpu_to_le16(u64s);
+	l->entry.btree_id	= 0;
+	l->entry.level		= 1;
+	l->entry.type		= BCH_JSET_ENTRY_log;
+	l->entry.pad[0]		= 0;
+	l->entry.pad[1]		= 0;
+	l->entry.pad[2]		= 0;
+	memcpy(l->d, msg, len);
+	while (len & 7)
+		l->d[len++] = '\0';
+
+	trans->extra_journal_entries.nr += jset_u64s(u64s);
+	return 0;
 }
