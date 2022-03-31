@@ -17,7 +17,7 @@
 
 #define BUILD_BUG_ON(cond)	((void)sizeof(char[1 - 2*!!(cond)]))
 
-#define BUG()			do { assert(0); unreachable(); } while (0)
+#define BUG()			do { fflush(stdout); assert(0); unreachable(); } while (0)
 #define BUG_ON(cond)		assert(!(cond))
 
 #define WARN(cond, fmt, ...)						\
